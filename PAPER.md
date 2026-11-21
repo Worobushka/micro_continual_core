@@ -301,4 +301,24 @@ cargo run --release --bin bench_step4_waves
 lean proofs\MicroContinualCoreProofs.lean
 ```
 
-Licensed under **`PolyForm-Noncommercial-1.0.0`** ([`LICENSE`](LICENSE); alternative OSI copyleft text provided in [`licenses/LICENSE-AGPL-3.0-only.txt`](licenses/LICENSE-AGPL-3.0-only.txt)). Commercial integration or closed corporate deployment inquiries require a separate commercial license from Adrian Aleksandrovich İşmuhanov ([mrwerdin@gmail.com](mailto:mrwerdin@gmail.com), [ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)). Citation metadata is provided in [`CITATION.cff`](CITATION.cff).
+Licensed under **`PolyForm-Noncommercial-1.0.0`** ([`LICENSE`](LICENSE); [`licenses/LICENSE-AGPL-3.0-only.txt`](licenses/LICENSE-AGPL-3.0-only.txt) is archived for reference only and is **not active** — this repository is not dual-licensed). Commercial integration or closed corporate deployment inquiries require a separate commercial license from Adrian Aleksandrovich İşmuhanov ([mrwerdin@gmail.com](mailto:mrwerdin@gmail.com), [ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)). Citation metadata is provided in [`CITATION.cff`](CITATION.cff).
+
+---
+
+## References
+
+1. **Belgrave, M., et al. / Harries, M. (1999).** *Splice-2 Comparative Evaluation: Electricity Pricing (`ELEC2`).* Technical Report UNSW-CSE-TR-9905, University of New South Wales.
+2. **Blundell, C., Uria, B., Pritzel, A., Li, Y., Ruderman, A., Leibo, J. Z., Rae, J., Wierstra, D., & Hassabis, D. (2016).** *Model-Free Episodic Control (`MFEC`).* arXiv:1606.04460.
+3. **Cho, K., van Merriënboer, B., Gulcehre, C., Bahdanau, D., Bougares, F., Schwenk, H., & Bengio, Y. (2014).** *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation (`GRU`).* In *Proceedings of EMNLP 2014*, pp. 1724–1734.
+4. **Hulten, G., Spencer, L., & Domingos, P. (2001).** *Mining Time-Changing Data Streams (`Rotating Hyperplane`).* In *Proceedings of ACM SIGKDD 2001*, pp. 97–106.
+5. **Kingma, D. P., & Ba, J. (2014).** *Adam: A Method for Stochastic Optimization.* arXiv:1412.6980 (ICLR 2015).
+6. **Lemmel, J., & Grosu, R. (2025).** *Real-Time Recurrent Reinforcement Learning (`RTRRL-LRU`).* In *Proceedings of the AAAI Conference on Artificial Intelligence (AAAI 2025)*; arXiv:2311.04830.
+7. **Mnih, V., Badia, A. P., Mirza, M., Graves, A., Lillicrap, T., Harley, T., Silver, D., & Kavukcuoglu, K. (2016).** *Asynchronous Methods for Deep Reinforcement Learning (`A2C`).* In *Proceedings of ICML 2016*, pp. 1928–1937.
+8. **Morad, S., Kortvelesy, R., Bettini, M., Liwicki, S., & Prorok, A. (2023).** *POPGym: Benchmarking Partially Observable Reinforcement Learning (`RepeatPrevious`, `Position-Only CartPole`).* In *Proceedings of ICLR 2023*.
+9. **Orvieto, A., Smith, S. L., Gu, A., Fernando, A., Gulcehre, C., Pascanu, R., & De, S. (2023).** *Resurrecting Recurrent Neural Networks for Long Sequences (`LRU`).* In *Proceedings of ICML 2023*, PMLR 202, pp. 26670–26698.
+10. **Page, E. S. (1954).** *Continuous Inspection Schemes (`Page–Hinkley` CUSUM detector).* *Biometrika*, 41(1/2), 100–115.
+11. **Schlimmer, J. C., & Granger, R. H. (1986).** *Incremental Learning from Noisy Data (`STAGGER Concepts`).* *Machine Learning*, 1(3), 317–354.
+12. **Street, W. N., & Kim, Y. (2001).** *A Streaming Ensemble Algorithm (`SEA Concepts`) for Large-Scale Classification.* In *Proceedings of ACM SIGKDD 2001*, pp. 377–382.
+13. **Tsallis, C. (1988).** *Possible Generalization of Boltzmann–Gibbs Statistics.* *Journal of Statistical Physics*, 52(1–2), 479–487.
+14. **Williams, R. J., & Zipser, D. (1989).** *A Learning Algorithm for Continually Running Fully Recurrent Neural Networks (`RTRL`).* *Neural Computation*, 1(2), 270–280.
+15. **Zliobaite, I., Bifet, A., Read, J., Pfahringer, B., & Holmes, G. (2015).** *Evaluation Methods and Decision Theory for Classification of Streaming Data with Temporal Dependence (`Temporal Kappa` $\kappa_T$).* *Machine Learning*, 98(3), 455–482.

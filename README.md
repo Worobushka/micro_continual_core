@@ -74,7 +74,7 @@ micro_continual_core_v030/
 ├── crates/
 │   └── axiom_zero/                    # Vendored #[axiom_zero] macro + totality runtime
 ├── licenses/
-│   └── LICENSE-AGPL-3.0-only.txt      # Optional OSI copyleft license text
+│   └── LICENSE-AGPL-3.0-only.txt      # Archived for reference only (not active)
 ├── proofs/
 │   └── MicroContinualCoreProofs.lean  # Clean 0-axiom Lean 4 formalization (Steps 1–114)
 └── src/
@@ -224,5 +224,5 @@ lean proofs\MicroContinualCoreProofs.lean
 
 ## 7. Licensing & Commercial Use
 
-- **Source-Available Noncommercial / Academic Research:** `MicroContinualCore` and `proofs/MicroContinualCoreProofs.lean` are licensed under **`PolyForm-Noncommercial-1.0.0`** ([`LICENSE`](LICENSE)). Optional **`GNU AGPL-3.0-only`** text is preserved in [`licenses/LICENSE-AGPL-3.0-only.txt`](licenses/LICENSE-AGPL-3.0-only.txt).
+- **Source-Available Noncommercial / Academic Research:** `MicroContinualCore` and `proofs/MicroContinualCoreProofs.lean` are licensed under **`PolyForm-Noncommercial-1.0.0`** ([`LICENSE`](LICENSE)). The file [`licenses/LICENSE-AGPL-3.0-only.txt`](licenses/LICENSE-AGPL-3.0-only.txt) is **archived for reference only and is not active** (this repository is not dual-licensed).
 - **Commercial Licensing:** Commercial integration, internal enterprise deployment, or proprietary licensing inquiries must obtain a separate Commercial License directly from Adrian Aleksandrovich İşmuhanov ([mrwerdin@gmail.com](mailto:mrwerdin@gmail.com), [ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)).
