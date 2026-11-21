@@ -7,9 +7,9 @@
 **Lean 4 Formalization (0 Axioms):** [`proofs/MicroContinualCoreProofs.lean`](proofs/MicroContinualCoreProofs.lean)  
 **License:** `PolyForm-Noncommercial-1.0.0` ([`LICENSE`](LICENSE))  
 
-A unified, cache-resident (`8–34 KB` in streaming/RTRL configurations; `< 500 KB` with full `KerrKernelBank` episodic memory), **Axiom-Zero** continual learning architecture in pure Rust (`crates/axiom_zero` vendored locally) with formal **Lean 4 (0-axiom)** algebraic foundations.
+A unified, cache-resident (`8–34 KB` in streaming/RTRL configurations; `< 500 KB` with full `KerrKernelBank` episodic memory) continual learning architecture in pure Rust (`crates/axiom_zero` vendored locally), backed by `#[axiom_zero]` compile-time totality checks and **44 machine-checked 0-axiom Lean 4 algebraic operator lemmas**.
 
-No external ML frameworks, zero heap allocation on the numeric Branch-A / supervised hot paths (and streaming text tokenization), **0 transcendental library calls** (`.sin`, `.cos`, `.tan`, `.exp`, `.ln`, `.log`, `.powf`, `.powi`, `.tanh`, `.atan2` count = `0` across core modules; only algebraic `.sqrt` where needed for $L_2$/RMS normalization and algebraic squash), and **44 `#[axiom_zero]`-enforced** blocks/functions across `{core, math, belief, memory, rtrl}.rs` guaranteeing bounded, NaN-free execution under simulated Single-Event Upsets (SEU).
+No external ML frameworks, zero heap allocation on the numeric Branch-A / supervised hot paths (and streaming text tokenization), **0 transcendental library calls** (`.sin`, `.cos`, `.tan`, `.exp`, `.ln`, `.log`, `.powf`, `.powi`, `.tanh`, `.atan2` count = `0` across core modules; only algebraic `.sqrt` where needed for $L_2$/RMS normalization and algebraic squash), and **44 `#[axiom_zero]`-enforced** blocks/functions across `{core, math, belief, memory, rtrl}.rs` guaranteeing bounded, NaN-free execution under simulated input corruption / fault-injection probes.
 
 ---
 
@@ -17,14 +17,14 @@ No external ML frameworks, zero heap allocation on the numeric Branch-A / superv
 
 `MicroContinualCore` (`src/core.rs`) unifies all working bands inside each `PageHinkleyDetector`-gated `RegimeBank`, enabling continual adaptation across abrupt concept drift, partial observability (POMDP), delayed credit assignment, and non-stationary multi-frequency streams:
 
-- **Band 0 — Frozen `SO(3)` Spinor Rotor + `KerrKernelBank` (`half_sectors > 0`)**
-  - Fixed orthogonal `SpinorEncoder` + `CayleyBeliefState` + `KerrKernelBank` associative memory + eligibility-traced linear / actor-critic readout.
+- **Band 0 — Frozen Non-Abelian `SO(3)` Rotor + `KerrKernelBank` (`half_sectors > 0`)**
+  - Fixed orthogonal spinor-inspired phase encoder (`SpinorEncoder`) + input-dependent non-commutative $\mathfrak{su}(2)$ Lie-bracket belief state (`CayleyBeliefState`, $b_{t-1} \times x_t$) + `KerrKernelBank` associative memory + eligibility-traced linear / actor-critic readout.
   - Zero-byte lazy allocation when `half_sectors == 0`.
 - **Band 1 — Plastic Fast/Mid 3D `Cayley-RTRL` (`rtrl_sectors > 0`)**
-  - Online $O(S)$ Real-Time Recurrent Learning (`PlasticCayleyParams`, `PlasticCayleyState` in `src/rtrl.rs`) updating decay $\alpha_s$, frequency $\omega_s$, and input weights $w_{s,j}$ on exact Cayley $SO(3)$ rotors with rational normalization $\mathrm{Norm}_\kappa(u)$ (`rtrl_kappa`) and algebraic gradient RMS.
+  - Online $O(S)$ Real-Time Recurrent Learning (`PlasticCayleyParams`, `PlasticCayleyState` in `src/rtrl.rs`) updating decay $\alpha_s$, frequency $\omega_s$, and input weights $w_{s,j}$ along fixed orthogonal axes $d_s \perp e_s$ (acting in `v0.3.0` as a rational, trigonometry-free 2D Cayley resonator bank embedded in $\mathbb{R}^3$) with rational normalization $\mathrm{Norm}_\kappa(u)$ (`rtrl_kappa`) and algebraic gradient RMS.
   - Supports coupled grids (`rtrl_grid_mode = 0`) and decoupled frequency $\times$ quality-factor $(Q \times \omega)$ filter grids (`rtrl_grid_mode = 1`).
 - **Band 2 — Hierarchical Slow Envelope `Cayley-RTRL` (`rtrl_slow_sectors > 0`) + Skip Channel (`rtrl_use_skip_x`)**
-  - Slow envelope $SO(3)$ oscillators receiving `[raw_x, pooled_fast(Band 1)]` via orthogonal 4-channel pooling (`rtrl_pool_w`), plus an optional direct skip channel `0.5 * raw_x` (`rtrl_use_skip_x = true`).
+  - Slow envelope Cayley oscillators receiving `[raw_x, pooled_fast(Band 1)]` via orthogonal 4-channel pooling (`rtrl_pool_w`), plus an optional direct skip channel `0.5 * raw_x` (`rtrl_use_skip_x = true`).
   - Both Band 1, Band 2, and skip actor/critic weights reside *inside* each `RegimeBank`, so `PageHinkleyDetector` preserves slow and fast skills across regime switches (`A -> B -> A`).
   - When disabled (`rtrl_slow_sectors == 0`), slow weights allocate `0` bytes (`test_unified_2l_microcore_architecture_ram_and_seu`).
 - **Unified Supervised & RL Paths**
@@ -33,9 +33,9 @@ No external ML frameworks, zero heap allocation on the numeric Branch-A / superv
 
 ---
 
-## 2. Lean 4 Formal Verification (0 Axioms)
+## 2. Machine-Checked 0-Axiom Lean 4 Operator Lemmas
 
-File: [`proofs/MicroContinualCoreProofs.lean`](proofs/MicroContinualCoreProofs.lean) (cleanly extracted constructive core, free of unrelated non-ML experiments).
+File: [`proofs/MicroContinualCoreProofs.lean`](proofs/MicroContinualCoreProofs.lean) (cleanly extracted constructive algebraic core, companion to the IEEE-754 `f32` Rust runtime).
 
 Checked cleanly with Lean 4 (no `Mathlib`, no `Real`):
 
@@ -178,7 +178,7 @@ Unit tests: **`cargo test --release` — 10 passed, 0 failed**.
 | `ELEC2` (`45,312` rows, no `y_{t-1}`) | `89.2 ± 0.3%` ($\kappa_T=+0.263$; **`[A4]: 90.0 ± 0.1%`**, $+0.322$) | **`89.3 ± 0.1%`** ($\kappa_T=+0.271$, `Online LRU-RTRL`) | `—` | `87.2%` `MLP+Adam`, `85.3%` `No-Change` |
 | `ELEC2` (`45,312` rows, `+y_{t-1}`) | `90.9 ± 0.1%` ($\kappa_T=+0.382$, Tail20 `92.6%`) | **`93.3 ± 0.0%`** ($\kappa_T=+0.544$, `Online LRU-RTRL`) | `—` | `91.0%` `MLP+Adam`, `85.3%` `No-Change` |
 
-> *Fairness & SEU notes:* `MicroCore / 2L Cayley` is **`SEU-Safe = YES`** on every suite; `RTRRL-LRU`, `Online LRU-RTRL`, `Online GRU + A2C`, and `Online MLP + Adam` are `NO (NaN)` under `NaN`/`±1e30` input probes. `RTRRL-LRU` uses decoupled Orvieto ring initialization and matched state dimensionality (`48` complex units = `96D` on `RepeatPrevious` / `CartPole`, `42` units = `84D` on `Wave-Superposition`, `32` units on `ELEC2`); `Online GRU + A2C` updates once per episode via BPTT while `RTRRL-LRU` and `Cayley-RTRL` update online per step; and `MicroContinualCore` additionally uses multi-bank `PageHinkley` switching (plus Cloze/UCB/curiosity on `HardPOMDP v2`).
+> *Fairness, Config & SEU notes:* `MicroCore / 2L Cayley` is **`SEU-Safe = YES`** on every suite under adversarial `NaN`/`±1e30` input probes (`v0.3.0` tests input-corruption and state-bound clamping, whereas baselines lack explicit input clamps — register-level bit-flip injection and clamped baseline controls are introduced in `v0.4.0`). `RTRRL-LRU` uses decoupled Orvieto ring initialization and matched state dimensionality (`48` complex units = `96D` on `RepeatPrevious` / `CartPole`, `42` units = `84D` on `Wave-Superposition`, `32` units on `ELEC2`); `Online GRU + A2C` updates once per episode via BPTT while `RTRRL-LRU` and `Cayley-RTRL` update online per step; `RepeatPrevious K=4` reports `83.8 ± 5.0%` (`18.3 KB`) for unified `[A4]` inside 2-bank `MicroContinualCore` (`bench_unified_ablation`) vs. `85.7 ± 4.1%` (`13.2 KB`) for bare single-bank `Hier2L` (`bench_step3_pomdp_rl`); and `MicroContinualCore` additionally uses multi-bank `PageHinkley` switching (plus Cloze/UCB/curiosity on `HardPOMDP v2`).
 
 Full methodology and consolidated tables (including all synthetic streams) are in [`PAPER.md`](PAPER.md) (Section 5.2). Highlights:
 - **`bench_step2_streams`:** `SEA 82.6 ± 0.3%` (`κ_T +0.627`), `STAGGER 96.1 ± 0.4%` (`κ_T +0.893`), `Hyperplane 10D 77.3 ± 0.9%` (`κ_T +0.548`), `RBF 4-cls 92.8 ± 0.8%` (`κ_T +0.905`), `ELEC2`: `MicroCore+2L-RTRL(Temp) 89.2 ± 0.3%` (`κ_T +0.263`), `Online LRU-RTRL (Temp) 89.3 ± 0.1%` (`κ_T +0.271`), `MicroCore+RTRL (+y_{t-1}) 90.9 ± 0.1%` (`κ_T +0.382`, `Tail20% 92.6%`), `Online LRU-RTRL (+y_{t-1}) 93.3 ± 0.0%` (`κ_T +0.544`).
