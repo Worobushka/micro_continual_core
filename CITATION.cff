@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software or formal Lean 4 proofs, please cite them using this metadata."
+title: "MicroContinualCore: Unified Axiom-Zero Continual Learning & Cayley-RTRL Wave-Rotor Architecture"
+version: "0.3.0"
+date-released: 2026-11-21
+license: PolyForm-Noncommercial-1.0.0
+authors:
+  - family-names: "İşmuhanov"
+    given-names: "Adrian Aleksandrovich"
+    email: "mrwerdin@gmail.com"
+    orcid: "https://orcid.org/0009-0002-4761-1952"
+  - family-names: "Sidorenko"
+    given-names: "Sofia"
+    alias: "serjliasereev-KasaneTeto"
+    orcid: "https://orcid.org/0009-0006-5368-062X"
+    website: "https://github.com/serjliasereev-KasaneTeto"
+repository-code: "https://github.com/Worobushka/micro_continual_core"
+keywords:
+  - continual-learning
+  - pomdp
+  - rtrl
+  - cayley-transform
+  - so3-rotors
+  - lean4
+  - zero-axioms
+  - neuromorphic-computing

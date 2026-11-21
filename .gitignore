@@ -1,0 +1,10 @@
+target/
+**/*.rs.bk
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+electricity-normalized.arff
+elecNormNew.csv
+electricity.csv
+*.arff
