@@ -2,6 +2,7 @@
 
 **Authors:** Adrian Aleksandrovich İşmuhanov ([ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)), Sofia Sidorenko ([ORCID `0009-0006-5368-062X`](https://orcid.org/0009-0006-5368-062X), [GitHub `@serjliasereev-KasaneTeto`](https://github.com/serjliasereev-KasaneTeto))  
 **Repository:** [https://github.com/Worobushka/micro_continual_core](https://github.com/Worobushka/micro_continual_core)  
+**DOI (Zenodo v0.3.0):** [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24424983.svg)](https://doi.org/10.5281/zenodo.24424983) (Concept DOI: [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982))  
 **Full Paper:** [`PAPER.md`](PAPER.md)  
 **Lean 4 Formalization (0 Axioms):** [`proofs/MicroContinualCoreProofs.lean`](proofs/MicroContinualCoreProofs.lean)  
 **License:** `PolyForm-Noncommercial-1.0.0` ([`LICENSE`](LICENSE))  
@@ -213,11 +214,11 @@ lean proofs\MicroContinualCoreProofs.lean
 
 ---
 
-## 6. Release & Zenodo DOI Workflow
+## 6. Release & Zenodo Archive
 
-1. [`LICENSE`](LICENSE) contains the full verbatim `PolyForm-Noncommercial-1.0.0` license text and Required Notice; [`CITATION.cff`](CITATION.cff) carries both authors (`Adrian Aleksandrovich İşmuhanov`, ORCID `0009-0002-4761-1952`; `Sofia Sidorenko`, ORCID `0009-0006-5368-062X`), and repository URL (`https://github.com/Worobushka/micro_continual_core`).
-2. Push this standalone directory to `https://github.com/Worobushka/micro_continual_core` (commit cleanly; **no `git push` has been performed automatically**).
-3. Link `Worobushka/micro_continual_core` in your Zenodo account (`https://zenodo.org`), publish release tag `v0.3.0` on GitHub, and add `doi: "10.5281/zenodo.<id>"` to [`CITATION.cff`](CITATION.cff) in a follow-up commit once Zenodo mints the DOI (and optionally upload a PDF export of [`PAPER.md`](PAPER.md) to the Zenodo record).
+1. [`LICENSE`](LICENSE) contains the full verbatim `PolyForm-Noncommercial-1.0.0` license text and Required Notice; [`CITATION.cff`](CITATION.cff) carries both authors (`Adrian Aleksandrovich İşmuhanov`, ORCID `0009-0002-4761-1952`; `Sofia Sidorenko`, ORCID `0009-0006-5368-062X`), repository URL (`https://github.com/Worobushka/micro_continual_core`), and Zenodo DOIs.
+2. Release `v0.3.0` is published on GitHub at [`Worobushka/micro_continual_core`](https://github.com/Worobushka/micro_continual_core) and archived on Zenodo under version DOI [`10.5281/zenodo.24424983`](https://doi.org/10.5281/zenodo.24424983) (Concept DOI for all versions: [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982)).
+3. Both DOIs are recorded in [`CITATION.cff`](CITATION.cff) for GitHub's *Cite this repository* metadata (and [`PAPER.md`](PAPER.md) serves as the archival companion manuscript).
 
 ---
 

@@ -3,6 +3,7 @@
 **Authors:** Adrian Aleksandrovich İşmuhanov ([ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)), Sofia Sidorenko ([ORCID `0009-0006-5368-062X`](https://orcid.org/0009-0006-5368-062X), [GitHub `@serjliasereev-KasaneTeto`](https://github.com/serjliasereev-KasaneTeto))  
 **Repository:** [https://github.com/Worobushka/micro_continual_core](https://github.com/Worobushka/micro_continual_core)  
 **Version:** 0.3.0 (`2026-11-21`)  
+**DOI (Zenodo v0.3.0):** [`10.5281/zenodo.24424983`](https://doi.org/10.5281/zenodo.24424983) (Concept DOI: [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982))  
 **License:** PolyForm Noncommercial License 1.0.0 ([`LICENSE`](LICENSE))  
 
 ---
