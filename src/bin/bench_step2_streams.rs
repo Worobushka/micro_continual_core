@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Adrian Aleksandrovich İşmuhanov
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Бенчмарк Шага 2 (v0.3.0): Мировые стандарты Concept Drift (MOA / River / IJCAI / SIGKDD)
+//! Бенчмарк Шага 2 (v0.4.0): Мировые стандарты Concept Drift (MOA / River / IJCAI / SIGKDD)
 //! 1-проходный Prequential (Test-then-Train), 10 сидов, таблица с Kappa_temp (Bifet et al. 2013):
 //! 1. SEA Concepts (Recurrent Abrupt Drift: theta = 8 -> 9 -> 7 -> 9.5 -> 8, +10% шум)
 //! 2. STAGGER (Recurrent Abrupt Drift: A -> B -> C -> A -> B)
@@ -16,6 +16,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use micro_continual_core::math::{rand_signed_f32, rand_unit_f32, splitmix64};
+use micro_continual_core::rtrl::AlgebraicSelectiveCayley;
 use micro_continual_core::stream_baselines::{
     NoChangePersistent, OnlineGaussianNaiveBayes, OnlineLruStream, OnlineMlpAdam, TabularBinnedPH,
 };
@@ -364,12 +365,13 @@ fn eval_micro(
     )
 }
 
-fn eval_micro_rtrl(
+fn eval_micro_rtrl_ph(
     data: &[(Vec<f32>, usize)],
     num_classes: usize,
     drifts: &[usize],
     ret_range: (usize, usize),
     rec_target: f64,
+    ph_threshold: f32,
     seed: u64,
 ) -> StreamMetrics {
     let in_dim = data.first().map(|d| d.0.len()).unwrap_or(4).min(12);
@@ -388,6 +390,7 @@ fn eval_micro_rtrl(
     cfg.rtrl_grid_mode = 1;
     cfg.rtrl_use_skip_x = true;
     cfg.rtrl_kappa = 0.65;
+    cfg.ph_threshold = ph_threshold;
 
     let mut core = MicroContinualCore::new(cfg);
     core.encoder.freeze_to_i8();
@@ -418,6 +421,61 @@ fn eval_micro_rtrl(
         elapsed_us,
         seu_safe,
     )
+}
+
+fn eval_alg_cayley_stream(
+    data: &[(Vec<f32>, usize)],
+    num_classes: usize,
+    drifts: &[usize],
+    ret_range: (usize, usize),
+    rec_target: f64,
+    selective: bool,
+    seed: u64,
+) -> StreamMetrics {
+    let in_dim = data.first().map(|d| d.0.len()).unwrap_or(1);
+    let mut m = AlgebraicSelectiveCayley::new(in_dim, 32, num_classes, selective, seed)
+        .with_standardize(true);
+    let mut hits = Vec::with_capacity(data.len());
+    let t0 = Instant::now();
+    for (x, y) in data {
+        let pred = m.step_and_learn_supervised(x, Some(*y), 0.015, 0.005);
+        hits.push(pred == *y);
+    }
+    let elapsed_us = t0.elapsed().as_nanos() as f64 / 1000.0;
+
+    let mut probe = AlgebraicSelectiveCayley::new(in_dim, 32, num_classes, selective, seed)
+        .with_standardize(true);
+    let mut bad_x = vec![0.0_f32; in_dim];
+    if !bad_x.is_empty() { bad_x[0] = f32::NAN; }
+    if bad_x.len() > 1 { bad_x[1] = 1e28; }
+    probe.inject_register_bit_flip(0, 30);
+    probe.inject_weight_bit_flip(0, 30);
+    let _ = probe.step_and_learn_supervised(&bad_x, None, 0.0, 0.0);
+    let seu_safe = probe.h_re.iter().all(|v| v.is_finite())
+        && probe.h_im.iter().all(|v| v.is_finite())
+        && probe.out_w.iter().all(|v| v.is_finite())
+        && probe.total_seu_faults() >= 2;
+
+    finalize_metrics(
+        &hits,
+        drifts,
+        ret_range,
+        rec_target,
+        m.memory_footprint_bytes() as f64 / 1024.0,
+        elapsed_us,
+        seu_safe,
+    )
+}
+
+fn eval_micro_rtrl(
+    data: &[(Vec<f32>, usize)],
+    num_classes: usize,
+    drifts: &[usize],
+    ret_range: (usize, usize),
+    rec_target: f64,
+    seed: u64,
+) -> StreamMetrics {
+    eval_micro_rtrl_ph(data, num_classes, drifts, ret_range, rec_target, 3.6, seed)
 }
 
 fn eval_mlp(
@@ -680,9 +738,15 @@ fn main() {
             let r_mic: Vec<_> = (1..=3).map(|s| eval_micro(&data, 2, &[], tail, 0.75, false, s)).collect();
             let r_mic_t: Vec<_> = (1..=3).map(|s| eval_micro(&data, 2, &[], tail, 0.75, true, s)).collect();
             let r_mic_rtrl: Vec<_> = (1..=3).map(|s| eval_micro_rtrl(&data, 2, &[], tail, 0.75, s)).collect();
+            let r_mic_rtrl_ph8: Vec<_> = (1..=3).map(|s| eval_micro_rtrl_ph(&data, 2, &[], tail, 0.75, 8.0, s)).collect();
+            let r_c2d: Vec<_> = (1..=3).map(|s| eval_alg_cayley_stream(&data, 2, &[], tail, 0.75, false, s)).collect();
+            let r_asc: Vec<_> = (1..=3).map(|s| eval_alg_cayley_stream(&data, 2, &[], tail, 0.75, true, s)).collect();
             let r_mic_y: Vec<_> = (1..=3).map(|s| eval_micro(&data_yprev, 2, &[], tail, 0.75, false, s)).collect();
             let r_mic_ty: Vec<_> = (1..=3).map(|s| eval_micro(&data_yprev, 2, &[], tail, 0.75, true, s)).collect();
             let r_mic_rtrl_y: Vec<_> = (1..=3).map(|s| eval_micro_rtrl(&data_yprev, 2, &[], tail, 0.75, s)).collect();
+            let r_mic_rtrl_y_ph8: Vec<_> = (1..=3).map(|s| eval_micro_rtrl_ph(&data_yprev, 2, &[], tail, 0.75, 8.0, s)).collect();
+            let r_c2d_y: Vec<_> = (1..=3).map(|s| eval_alg_cayley_stream(&data_yprev, 2, &[], tail, 0.75, false, s)).collect();
+            let r_asc_y: Vec<_> = (1..=3).map(|s| eval_alg_cayley_stream(&data_yprev, 2, &[], tail, 0.75, true, s)).collect();
             let r_mlp: Vec<_> = (1..=3).map(|s| eval_mlp(&data, 2, &[], tail, 0.75, s)).collect();
             let r_mlp_y: Vec<_> = (1..=3).map(|s| eval_mlp(&data_yprev, 2, &[], tail, 0.75, s)).collect();
             let r_lru: Vec<_> = (1..=3).map(|s| eval_lru_stream(&data, 2, &[], tail, 0.75, s)).collect();
@@ -692,9 +756,15 @@ fn main() {
             print_row("MicroCore (i.i.d.)", &r_mic, persist_acc);
             print_row("MicroCore (Temporal)", &r_mic_t, persist_acc);
             print_row("MicroCore+2L-RTRL(Temp)", &r_mic_rtrl, persist_acc);
+            print_row("MicroCore+2L-RTRL(PH=8)", &r_mic_rtrl_ph8, persist_acc);
+            print_row("2D Rat. Cayley (0% exp)", &r_c2d, persist_acc);
+            print_row("Alg.Sel.Cayley (0% exp)", &r_asc, persist_acc);
             print_row("MicroCore (+y_{t-1})", &r_mic_y, persist_acc);
             print_row("MicroCore (Temp+y_{t-1})", &r_mic_ty, persist_acc);
             print_row("MicroCore+RTRL (+y_{t-1})", &r_mic_rtrl_y, persist_acc);
+            print_row("MicroCore+RTRL(PH8,+y-1)", &r_mic_rtrl_y_ph8, persist_acc);
+            print_row("2D Rat.Cayley (+y_{t-1})", &r_c2d_y, persist_acc);
+            print_row("Alg.Sel.Cayley(+y_{t-1})", &r_asc_y, persist_acc);
             print_row("Online LRU-RTRL (Temp)", &r_lru, persist_acc);
             print_row("Online LRU-RTRL (+y_{t-1})", &r_lru_y, persist_acc);
             print_row("Online MLP (H=32)+Adam", &r_mlp, persist_acc);

@@ -1,12 +1,11 @@
 // Copyright (c) 2026 Adrian Aleksandrovich İşmuhanov
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Бенчмарк Шага 1 (v1.1):
-//! Прогоняет 4 честных среза на 10 сидах:
-//! 1. LEGACY (old crutches, glitch=15%)
-//! 2. STRICT HONEST — Dense (скрытая subsystem + неразличимый глитч 15% + шумный Cloze)
-//! 3. STRICT HONEST — Sparse Delayed (все 4 фикса, награда только в конце, glitch=15%)
-//! 4. STRICT HONEST — Sparse Delayed (glitch=25%)
+//! Бенчмарк Шага 1 (v0.4.0):
+//! Прогоняет 3 строгих честных среза на 10 сидах (legacy-костыли и утечка словаря удалены):
+//! 1. STRICT HONEST — Dense (скрытая subsystem + неразличимый глитч 15% + чистый шумный Cloze без holdout)
+//! 2. STRICT HONEST — Sparse Delayed (награда только в конце, glitch=15%)
+//! 3. STRICT HONEST — Sparse Delayed (награда только в конце, glitch=25%)
 
 use std::time::Instant;
 
@@ -52,7 +51,7 @@ struct SeedMetrics {
     recovery_steps: f64,
     ram_kb: f64,
     us_per_step: f64,
-    seu_safe: bool,
+    seu_safe: Option<bool>,
 }
 
 fn mean_sd(vals: &[f64]) -> (f64, f64) {
@@ -76,13 +75,15 @@ fn compute_recovery_eps(solved_window: &[bool]) -> f64 {
     solved_window.len() as f64
 }
 
-fn run_protocol_micro(seed: u64, mode: SuiteMode, glitch_pct: u8) -> SeedMetrics {
+fn run_protocol_micro(seed: u64, mode: SuiteMode, glitch_pct: u8, use_cloze: bool) -> SeedMetrics {
     let mut cfg = MicroCoreConfig::default();
     cfg.seed = seed;
     let mut agent = MicroContinualCore::new(cfg);
 
-    let logs = unlabeled_domain_cloze_logs_noisy();
-    agent.unlabeled_cloze_adapt(&logs, 35);
+    if use_cloze {
+        let logs = unlabeled_domain_cloze_logs_noisy();
+        agent.unlabeled_cloze_adapt(&logs, 35);
+    }
 
     let ep_n = mode.eps_per_regime();
     let mut total_steps = 0u64;
@@ -155,7 +156,7 @@ fn run_protocol_micro(seed: u64, mode: SuiteMode, glitch_pct: u8) -> SeedMetrics
         recovery_steps: (compute_recovery_eps(&s_b) + compute_recovery_eps(&s_g)) * 0.5,
         ram_kb: (agent.memory_footprint_bytes() as f64) / 1024.0,
         us_per_step: elapsed_us / (total_steps.max(1) as f64),
-        seu_safe: ok_seu,
+        seu_safe: Some(ok_seu),
     }
 }
 
@@ -212,7 +213,7 @@ fn run_protocol_tabular(seed: u64, mode: SuiteMode, glitch_pct: u8) -> SeedMetri
         recovery_steps: (compute_recovery_eps(&s_b) + compute_recovery_eps(&s_g)) * 0.5,
         ram_kb: (agent.memory_footprint_bytes() as f64) / 1024.0,
         us_per_step: elapsed_us / (total_steps.max(1) as f64),
-        seu_safe: true,
+        seu_safe: None,
     }
 }
 
@@ -272,12 +273,17 @@ fn run_protocol_gru(seed: u64, mode: SuiteMode, glitch_pct: u8) -> SeedMetrics {
         recovery_steps: (compute_recovery_eps(&s_b) + compute_recovery_eps(&s_g)) * 0.5,
         ram_kb: (agent.memory_footprint_bytes() as f64) / 1024.0,
         us_per_step: elapsed_us / (total_steps.max(1) as f64),
-        seu_safe: !seu_probe.had_nan,
+        seu_safe: Some(!seu_probe.had_nan),
     }
 }
 
-fn run_protocol_mfec(seed: u64, mode: SuiteMode, glitch_pct: u8) -> SeedMetrics {
+fn run_protocol_mfec(seed: u64, mode: SuiteMode, glitch_pct: u8, fair_ema: bool) -> SeedMetrics {
     let mut agent = MfecPHBaseline::new(64, NUM_ENV_ACTIONS, 112, 6, seed);
+    if fair_ema {
+        // Справедливый MFEC: тот же порог склейки cos=0.78 и простая EMA-память без роторов Кэли
+        agent.coalesce_cos = 0.78;
+        agent.use_belief_ema = true;
+    }
     let ep_n = mode.eps_per_regime();
     let mut total_steps = 0u64;
     let t0 = Instant::now();
@@ -335,7 +341,7 @@ fn run_protocol_mfec(seed: u64, mode: SuiteMode, glitch_pct: u8) -> SeedMetrics 
         recovery_steps: (compute_recovery_eps(&s_b) + compute_recovery_eps(&s_g)) * 0.5,
         ram_kb: (agent.memory_footprint_bytes() as f64) / 1024.0,
         us_per_step: elapsed_us / (total_steps.max(1) as f64),
-        seu_safe: true,
+        seu_safe: None,
     }
 }
 
@@ -372,7 +378,7 @@ fn run_protocol_oracle_or_random(seed: u64, mode: SuiteMode, glitch_pct: u8, is_
         recovery_steps: if is_oracle { 0.0 } else { mode.eps_per_regime() as f64 },
         ram_kb: 0.0,
         us_per_step: 0.1,
-        seu_safe: true,
+        seu_safe: None,
     }
 }
 
@@ -383,7 +389,13 @@ fn print_row(name: &str, ms: &[SeedMetrics]) {
     let rec: Vec<f64> = ms.iter().map(|m| m.recovery_steps).collect();
     let ram: Vec<f64> = ms.iter().map(|m| m.ram_kb).collect();
     let lat: Vec<f64> = ms.iter().map(|m| m.us_per_step).collect();
-    let seu = ms.iter().all(|m| m.seu_safe);
+    let seu_str = if ms.iter().all(|m| m.seu_safe.is_none()) {
+        "N/A (str)"
+    } else if ms.iter().all(|m| m.seu_safe == Some(true)) {
+        "YES"
+    } else {
+        "NO (NaN)"
+    };
 
     let (sm, ss) = mean_sd(&sc);
     let (rm, _) = mean_sd(&ret);
@@ -393,7 +405,7 @@ fn print_row(name: &str, ms: &[SeedMetrics]) {
     let (lat_m, _) = mean_sd(&lat);
 
     println!(
-        "{:<22} | {:5.1}±{:4.1}% (H:{:4.1}%) | {:6.1}% | {:8.1} ep | {:7.1} KB | {:7.2} µs | {}",
+        "{:<26} | {:5.1}±{:4.1}% (H:{:4.1}%) | {:6.1}% | {:8.1} ep | {:7.1} KB | {:7.2} µs | {}",
         name,
         sm,
         ss,
@@ -402,28 +414,32 @@ fn print_row(name: &str, ms: &[SeedMetrics]) {
         rcm,
         ram_m,
         lat_m,
-        if seu { "YES" } else { "NO (NaN)" }
+        seu_str
     );
 }
 
 fn run_suite(title: &str, mode: SuiteMode, glitch_pct: u8) {
     println!("\n=== {} (glitch={}%, {} ep/regime, 10 seeds) ===", title, glitch_pct, mode.eps_per_regime());
     println!(
-        "{:<22} | {:<22} | {:<7} | {:<11} | {:<10} | {:<10} | {}",
+        "{:<26} | {:<22} | {:<7} | {:<11} | {:<10} | {:<10} | {}",
         "Model", "Score (mean±sd, Hold)", "Retent.", "Recovery", "RAM (KB)", "Latency", "SEU-Safe"
     );
-    println!("{}", "-".repeat(106));
+    println!("{}", "-".repeat(110));
 
     let seeds: Vec<u64> = (1..=10).collect();
-    let r_micro: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_micro(s, mode, glitch_pct)).collect();
-    let r_mfec: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_mfec(s, mode, glitch_pct)).collect();
+    let r_micro: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_micro(s, mode, glitch_pct, false)).collect();
+    let r_cloze: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_micro(s, mode, glitch_pct, true)).collect();
+    let r_mfec: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_mfec(s, mode, glitch_pct, false)).collect();
+    let r_mfec_fair: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_mfec(s, mode, glitch_pct, true)).collect();
     let r_tab: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_tabular(s, mode, glitch_pct)).collect();
     let r_gru: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_gru(s, mode, glitch_pct)).collect();
     let r_ora: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_oracle_or_random(s, mode, glitch_pct, true)).collect();
     let r_rnd: Vec<SeedMetrics> = seeds.iter().map(|&s| run_protocol_oracle_or_random(s, mode, glitch_pct, false)).collect();
 
     print_row("MicroContinualCore", &r_micro);
-    print_row("MFEC + Page-Hinkley", &r_mfec);
+    print_row("MicroCore (+Can. Cloze)", &r_cloze);
+    print_row("MFEC + PH (orig 0.94)", &r_mfec);
+    print_row("MFEC + PH (fair 0.78+EMA)", &r_mfec_fair);
     print_row("Tabular + PH", &r_tab);
     print_row("Online GRU + A2C", &r_gru);
     print_row("Oracle (ceiling)", &r_ora);

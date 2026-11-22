@@ -11,7 +11,9 @@ use std::time::Instant;
 
 use micro_continual_core::baselines::{OnlineGruBaseline, RtrrlLruBaseline};
 use micro_continual_core::math::{rand_signed_f32, splitmix64};
-use micro_continual_core::{HierarchicalCayleyRtrl, MicroContinualCore, MicroCoreConfig};
+use micro_continual_core::{
+    AlgebraicSelectiveCayley, HierarchicalCayleyRtrl, MicroContinualCore, MicroCoreConfig,
+};
 
 #[derive(Default, Clone)]
 struct RlMetrics {
@@ -58,7 +60,7 @@ fn print_rl_row(name: &str, unit: &str, ms: &[RlMetrics]) {
     let (ltm, _) = mean_sd(&lt);
 
     println!(
-        "{:<22} | {:6.1}±{:4.1}{:<2} | {:6.1}{:<2} | {:8.1} ep | {:7.1} KB | {:7.2} µs | {}",
+        "{:<28} | {:6.1}±{:4.1}{:<2} | {:6.1}{:<2} | {:8.1} ep | {:7.1} KB | {:7.2} µs | {}",
         name,
         sm,
         ss,
@@ -76,13 +78,14 @@ fn print_rl_row(name: &str, unit: &str, ms: &[RlMetrics]) {
 // 1. Non-Stationary T-Maze (Bakker / BSuite Memory Length + дрейф A -> B -> A)
 // =============================================================================
 
-fn run_tmaze_micro(corridor_len: usize, seed: u64) -> RlMetrics {
+fn run_tmaze_micro(corridor_len: usize, novelty_gate: f32, seed: u64) -> RlMetrics {
     let noise_amp = if corridor_len >= 10 { 0.35_f32 } else { 0.06_f32 };
     let mut cfg = MicroCoreConfig::numeric_stream(2, seed);
     cfg.belief_lambda = 0.94;
     cfg.belief_gamma = 0.65;
     cfg.rotor_norm = 0.12;
-    cfg.novelty_gate = 0.28; // пустой/шумный коридор не затирает cue с шага 0!
+    cfg.novelty_gate = novelty_gate;
+    cfg.trace_capacity = 64;
     cfg.linear_lr = 0.20;
     cfg.linear_mix = 0.55;
     cfg.bank_capacity = 48;
@@ -274,6 +277,69 @@ fn run_tmaze_lru(corridor_len: usize, seed: u64) -> RlMetrics {
         ram_kb: lru.memory_footprint_bytes() as f64 / 1024.0,
         us_per_step: elapsed_us / (steps.max(1) as f64),
         seu_safe: !probe.had_nan,
+    }
+}
+
+fn run_tmaze_alg_sel_cayley(corridor_len: usize, seed: u64) -> RlMetrics {
+    let mut m = AlgebraicSelectiveCayley::new(3, 16, 2, true, seed);
+    m.enable_rl_mode();
+    let mut rng = splitmix64(seed ^ 0x7A1E_0001);
+    let noise_amp = if corridor_len >= 10 { 0.35_f32 } else { 0.06_f32 };
+    let mut steps = 0u64;
+    let t0 = Instant::now();
+
+    let mut run_regime = |ag: &mut AlgebraicSelectiveCayley, flipped: bool, n_eps: usize| -> Vec<f64> {
+        let mut res = Vec::with_capacity(n_eps);
+        for _ in 0..n_eps {
+            rng = splitmix64(rng);
+            let cue = (rng & 1) as usize;
+            let expected = if flipped { 1 - cue } else { cue };
+            ag.reset();
+
+            let cue_val = if cue == 0 { -1.0_f32 } else { 1.0_f32 };
+            let _ = ag.decide_rl(&[cue_val, 0.0, 0.0], true);
+            ag.observe_step_reward_rl(0.0);
+            steps += 1;
+
+            for _ in 0..corridor_len {
+                let nz = rand_signed_f32(&mut rng) * noise_amp;
+                let _ = ag.decide_rl(&[0.0, 0.0, nz], true);
+                ag.observe_step_reward_rl(0.0);
+                steps += 1;
+            }
+
+            let act = ag.decide_rl(&[0.0, 1.0, 0.0], true);
+            steps += 1;
+            let ok = act == expected;
+            let r = if ok { 1.0_f32 } else { -1.0_f32 };
+            ag.end_episode_rl(r, true);
+            res.push(if ok { 1.0 } else { 0.0 });
+        }
+        res
+    };
+
+    let ra = run_regime(&mut m, false, 120);
+    let rb = run_regime(&mut m, true, 120);
+    let rret = run_regime(&mut m, false, 80);
+    let elapsed_us = t0.elapsed().as_nanos() as f64 / 1000.0;
+
+    let mut probe = AlgebraicSelectiveCayley::new(3, 16, 2, true, seed);
+    probe.enable_rl_mode();
+    probe.inject_register_bit_flip(0, 30);
+    probe.inject_weight_bit_flip(0, 30);
+    let _ = probe.decide_rl(&[f32::NAN, 1e28, -1e28], false);
+    let seu_safe = probe.h_re.iter().all(|v| v.is_finite())
+        && probe.h_im.iter().all(|v| v.is_finite())
+        && probe.out_w.iter().all(|v| v.is_finite());
+
+    let tail = |v: &[f64]| v[v.len() - 40..].iter().sum::<f64>() * 100.0 / 40.0;
+    RlMetrics {
+        score: (tail(&ra) + tail(&rb)) * 0.5,
+        retention: tail(&rret),
+        recovery_eps: recovery_window(&rb, 0.75, 16),
+        ram_kb: m.memory_footprint_bytes() as f64 / 1024.0,
+        us_per_step: elapsed_us / (steps.max(1) as f64),
+        seu_safe,
     }
 }
 
@@ -872,7 +938,7 @@ fn run_cartpole_gru(seed: u64, use_delta: bool) -> RlMetrics {
                     break;
                 }
             }
-            g.end_episode(ep_r, true);
+            g.end_episode_truncated(ep_r, env.steps >= 200, true);
             surv.push(env.steps as f64);
         }
         surv
@@ -988,10 +1054,10 @@ fn run_cartpole_random(seed: u64) -> RlMetrics {
 fn print_header(title: &str) {
     println!("\n=== {} (10 seeds) ===", title);
     println!(
-        "{:<22} | {:<15} | {:<8} | {:<11} | {:<10} | {:<10} | {}",
+        "{:<28} | {:<15} | {:<8} | {:<11} | {:<10} | {:<10} | {}",
         "Model", "Score(mean±sd)", "Retent.", "Recovery", "RAM (KB)", "Latency", "SEU-Safe"
     );
-    println!("{}", "-".repeat(100));
+    println!("{}", "-".repeat(106));
 }
 
 fn main() {
@@ -1004,7 +1070,9 @@ fn main() {
             "Non-Stationary T-Maze (L={}, noise=±{:.2}, Drift A->B->A, sparse)",
             l, noise_amp
         ));
-        let r_mic: Vec<_> = seeds.iter().map(|&s| run_tmaze_micro(l, s)).collect();
+        let r_mic: Vec<_> = seeds.iter().map(|&s| run_tmaze_micro(l, 0.0, s)).collect();
+        let r_asc: Vec<_> = seeds.iter().map(|&s| run_tmaze_alg_sel_cayley(l, s)).collect();
+        let r_mic_gate: Vec<_> = seeds.iter().map(|&s| run_tmaze_micro(l, 0.28, s)).collect();
         let r_lru: Vec<_> = seeds.iter().map(|&s| run_tmaze_lru(l, s)).collect();
         let r_gru: Vec<_> = seeds.iter().map(|&s| run_tmaze_gru(l, s)).collect();
         let r_rnd = vec![RlMetrics {
@@ -1015,7 +1083,9 @@ fn main() {
             us_per_step: 0.05,
             seu_safe: true,
         }];
-        print_rl_row("MicroContinualCore", "%", &r_mic);
+        print_rl_row("MicroContinualCore (ng=0.0)", "%", &r_mic);
+        print_rl_row("Alg.Sel.Cayley (RL, ng=0.0)", "%", &r_asc);
+        print_rl_row("MicroCore (+gate=0.28 Abl.)", "%", &r_mic_gate);
         print_rl_row("RTRRL-LRU (AAAI'25)", "%", &r_lru);
         print_rl_row("Online GRU + A2C", "%", &r_gru);
         print_rl_row("Random (floor)", "%", &r_rnd);

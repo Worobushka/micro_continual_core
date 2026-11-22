@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::visit::{self, Visit};
@@ -164,6 +166,36 @@ impl<'ast> Visit<'ast> for AxiomZeroVisitor {
                         .to_string(),
                 );
             }
+            "exp"
+            | "exp2"
+            | "exp_m1"
+            | "ln"
+            | "ln_1p"
+            | "log"
+            | "log2"
+            | "log10"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "sin_cos"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "atan2"
+            | "asinh"
+            | "acosh"
+            | "atanh"
+            | "powf" => {
+                self.violations.push(format!(
+                    "[E012] AxiomZero Violation: Transcendental method `.{}()` is forbidden in \
+                     `#[axiom_zero]` core modules. Use exact rational/algebraic operators \
+                     (Cayley rotors, Kerr competition, rational softmax).",
+                    method_name
+                ));
+            }
             _ => {}
         }
         visit::visit_expr_method_call(self, node);
@@ -230,11 +262,12 @@ impl<'ast> Visit<'ast> for AxiomZeroVisitor {
 }
 
 /// Compile-time enforcement attribute implementing Axiom-Zero Constructive Totality rules:
-/// `[E001]`–`[E011]`.
+/// `[E001]`–`[E012]`.
 ///
 /// Rejects panics, assertions, `todo!`/`unimplemented!`/`unreachable!`, `.unwrap*()`/`.expect*()`,
 /// direct `None` (`Option::None`) references, terminating calls (`exit`/`abort`),
-/// unchecked indexing (`arr[i]`), and unchecked division/modulo (`/` and `%`).
+/// unchecked indexing (`arr[i]`), unchecked division/modulo (`/` and `%`),
+/// and transcendental float methods (`exp`/`ln`/`log`/`sin`/`cos`/`tan`/`tanh`/`powf`/etc.).
 /// Test functions (`#[test]`) and test modules (`#[cfg(test)]`) are exempted.
 #[proc_macro_attribute]
 pub fn axiom_zero(_attr: TokenStream, item: TokenStream) -> TokenStream {

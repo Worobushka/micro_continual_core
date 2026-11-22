@@ -129,6 +129,11 @@ impl CayleyBeliefState {
         if d == 0 || obs_vec.is_empty() {
             return 0.0;
         }
+        // Санитизируем регистр состояния на входе, включая защиту при раннем выходе по novelty_gate.
+        let state_bad = self.state.iter().any(|&v| !v.is_finite() || v.abs() > 8.0);
+        if state_bad {
+            sanitize_and_normalize_unit(&mut self.state, 8.0);
+        }
         let novelty = self.measure_and_update_novelty(obs_vec);
 
         if !self.initialized {
@@ -366,7 +371,7 @@ impl PageHinkleyDetector {
             mu_bank: 0.0,
             cusum: 0.0,
             delta: sanitize_f32(delta).clamp(0.02, 0.45),
-            threshold: sanitize_f32(threshold).clamp(0.4, 8.0),
+            threshold: sanitize_f32(threshold).clamp(0.4, 1000.0),
             min_warmup: min_warmup.max(6),
             episodes_seen: 0,
             ema_alpha: 0.06,

@@ -1,349 +1,421 @@
-# MicroContinualCore: A Unified Cache-Resident Axiom-Zero Architecture with Multi-Timescale SO(3) Cayley-RTRL Rotors and 0-Axiom Lean 4 Foundations
+# MicroContinualCore v0.4.0: Zero-Transcendental Algebraic Online Continual RL & Streaming Architecture with Constructive Lean 4 Proofs
 
-**Authors:** Adrian Aleksandrovich İşmuhanov ([ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)), Sofia Sidorenko ([ORCID `0009-0006-5368-062X`](https://orcid.org/0009-0006-5368-062X), [GitHub `@serjliasereev-KasaneTeto`](https://github.com/serjliasereev-KasaneTeto))  
-**Repository:** [https://github.com/Worobushka/micro_continual_core](https://github.com/Worobushka/micro_continual_core)  
-**Version:** 0.3.0 (`2026-11-21`)  
-**DOI (Zenodo v0.3.0):** [`10.5281/zenodo.24424983`](https://doi.org/10.5281/zenodo.24424983) (Concept DOI: [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982))  
-**License:** PolyForm Noncommercial License 1.0.0 ([`LICENSE`](LICENSE))  
+**Authors:** Adrian Aleksandrovich İşmuhanov & Sofia Sidorenko  
+**Version:** `v0.4.0` (Forensic Audit + Phase-2 Algebraic Engineering Verified Release)
 
 ---
 
 ## Abstract
 
-We introduce **MicroContinualCore (`v0.3.0`)**, a unified, cache-resident continual learning and control architecture in pure Rust (`8–34 KB` RAM in streaming/RTRL configurations; `< 500 KB` with associative episodic kernel memory) accompanied by **44 machine-checked 0-axiom algebraic operator lemmas in Lean 4** (without `Mathlib` or axiomatic real numbers $\mathbb{R}$) and compile-time totality enforcement via `#[axiom_zero]`. Continual learning on edge, aerospace, and embedded hardware simultaneously demands resilience against abrupt regime shifts (`A -> B -> A`), tolerance to corrupted/spike sensor inputs and numerical faults (`NaN`/`±Inf`), zero heap allocation in hot loops, and expressive multi-timescale temporal credit assignment without Backpropagation Through Time (BPTT). Standard recurrent neural networks (`GRU+A2C`) and complex linear recurrent units (`RTRRL-LRU`) rely on transcendental primitives (`exp`, `tanh`, `sin`, `cos`) that propagate `NaN` without explicit input sanitization and struggle on deep delays or continual regime reversals.
+We present **MicroContinualCore v0.4.0**, a lightweight (`4.9–738 KB` RAM depending on configuration; `4.9–454 KB` with frozen `i8` encoder), single-pass online continual learning and reinforcement learning architecture implemented in Rust under a strict compile-time total-arithmetic contract (`#[axiom_zero]`). Every core module (`core.rs`, `rtrl.rs`, `math.rs`, `belief.rs`, `memory.rs`, `env_hard_pomdp.rs`) operates with **0% transcendental functions** (compile-time enforced via `[E012]` in `axiom_zero_macros`: `exp, exp2, ln, log, sin, cos, tan, sinh, cosh, tanh, asin, acos, atan, powf` are rejected by the procedural macro), **0 heap allocations on the numeric hot step path** (`decide_vec`, `observe_step_reward`, `end_supervised_step`), and **total division/indexing**.
 
-MicroContinualCore resolves these bottlenecks by uniting three complementary algebraic processing bands inside each `PageHinkleyDetector`-gated `RegimeBank`:
-1. **Band 0 (Frozen Non-Abelian Structural Memory):** orthogonal `SO(3)` spinor-inspired phase encoding (`SpinorEncoder`), input-dependent non-commutative Lie-bracket belief updates (`CayleyBeliefState`, $\mathfrak{su}(2)$ cross product $b_{t-1} \times x_t$), and quantized `i8` kernel memory (`KerrKernelBank`) with algebraic W1-Kerr competition (`p = 4`).
-2. **Band 1 (Plastic Fast/Mid `Cayley-RTRL`):** exact $O(S)$ online Real-Time Recurrent Learning over rational 3D Cayley $SO(3)$ rotors with learnable decays $\alpha_s$, angular frequencies $\omega_s$, and input couplings $w_{s,j}$ along fixed orthogonal axes $d_s \perp e_s$ (acting in `v0.3.0` as a trigonometry-free rational 2D Cayley resonator bank embedded in $\mathbb{R}^3$), supporting decoupled $(Q \times \omega)$ filter grids (`rtrl_grid_mode = 1`) and rational normalization $\mathrm{Norm}_\kappa(u)$.
-3. **Band 2 (Hierarchical Slow Envelope `Cayley-RTRL` & Skip Channel):** slow high-$Q$ rational Cayley oscillators driven by raw inputs and orthogonal 4-channel pooled Band-1 features, plus an optional skip channel, stored **inside** each regime bank.
+The core combines:
+1. **3D Rational Cayley Orthogonal Rotors** on $\mathrm{SO}(3)^S$:
+   $$R(g) = (I_3 - [g]_\times)^{-1}(I_3 + [g]_\times) = \frac{(1 - \|g\|^2) I_3 + 2 [g]_\times + 2 g g^\top}{1 + \|g\|^2}, \qquad R(g)^\top R(g) = I_3, \quad \det R(g) = +1$$
+   together with its double-angle rational composition $R_2(g) = R(g)^2$ and task-agnostic **Proto-Metric $\mathrm{SO}(3)$ readout** (`enable_so3_proto_metric`) for zero-oracle non-Abelian group state tracking up to $L = 500$.
+2. **2D Rational Cayley & Algebraic Selective Cayley (`AlgebraicSelectiveCayley`)**: 100% zero-transcendental complex-plane rational rotors $(c, s) = \left(\frac{1-w^2}{1+w^2}, \frac{2w}{1+w^2}\right)$ with exact $O(U \cdot d_{\text{in}})$ RTRL, learned rational input-selective step $\Delta_t(x_t) = \frac{1}{2}\left(z + \sqrt{z^2 + 4}\right)$ (strictly BIBO-contractive without `exp`), and causal online Welford standardization.
+3. **Two-Level Fast-Slow 3D Cayley-RTRL (`MicroContinualCore`)** coupled by an orthonormalized 4-row projection matrix (`rtrl_pool_w`, $\|W W^\top - I_4\|_{\max} < 10^{-5}$), optional Band-0 frozen rotor, $W_1$ Kerr kernel memory ($p = 4$), and **causal 6-step parallel read-only bank scoring (`parallel_bank_probe`)** for multi-regime continual learning ($R \in 2..32$).
+4. **Shift-Invariant Rational Policies (`p=2` & `p=4`), Tsallis-2 Entropy, and Hardware IEEE-754 Bit-30 SEU Scrubbing** with explicit fault telemetry.
+5. **Constructive Lean 4 Formalization** (`proofs/MicroContinualCoreProofs.lean`, **48** verified `#print axioms` checks, **0 axioms** — not even `propext` or `Quot.sound`, including $\det R(g) = +1$, quartic rational softmax positivity, and selective Cayley BIBO contraction + dual derivatives).
 
-We replace all `exp`/`softmax`/`tanh`/`sin`/`cos`/`ln` calls in core modules with strictly algebraic rational equivalents (`0` transcendental calls across all 5 core modules; `44` compile-time `#[axiom_zero]`-validated blocks/functions). In Lean 4 (`proofs/MicroContinualCoreProofs.lean`), `44` exported algebraic lemmas—covering 4-point and 3-phase algebraic DFT, rational Cayley circles, $\mathfrak{su}(2)$ Lie identities, exact 3D Cayley orthogonality and non-commutativity, strict RTRL decay factor bounds ($199 < 200(1+\alpha^2)$), rational quadratic softmax positivity, non-vanishing Kerr denominators, and exact dual-number RTRL derivatives—pass with `does not depend on any axioms`. Empirically across progressive ablations (`[A0]..[A4]`) and 5 benchmark suites (`--release`), the unified architecture reaches **`83.8 ± 5.0%`** on POPGym `RepeatPrevious (K=4)` (`85.7 ± 4.1%` in bare `Hier2L` at `13.2 KB`) and **`74.7 ± 5.0%`** at `K=6`, **`101.3 ± 12.6`** steps on pure-2D Position-Only CartPole `A -> B -> A` (`184.1 ± 7.1` with `+dx`), **`88.3 ± 0.3%`** (`66.9%` immediate 12-ep retention) on Continual Wave Flip, **`90.0 ± 0.1%`** ($\kappa_T = +0.322$) on 45,312-row `ELEC2 Temporal` without `y_{t-1}` leakage (`89.2 ± 0.3%`, $\kappa_T = +0.263$ in `bench_step2_streams`, matching recurrent `Online LRU-RTRL` at `89.3%`), and **`63.3 ± 7.7%`** on `HardPOMDP v2 Strict Honest`.
+Following a two-stage forensic audit (including external `river==0.27.0` and `PyTorch 2.14.0` verification, global Label-Shuffle leakage tests, and group-theoretic falsification controls) and a strictly zero-oracle Phase-2 algebraic investigation targeting every diagnosed failure mode, **v0.4.0 formally retracts all methodologically flawed, leaky, and artificially inflated benchmark results published in `v0.3.0` (`10.5281/zenodo.24424983`)** and replaces them with fully audited, reproducible results alongside every remaining negative and mixed outcome (e.g., $A_5$ seed variance, `T-Maze L=15` / `Majority Corridor` without hardcoded `novelty_gate`, `ELEC2 +y_{t-1}` gap to Adam `LRU`, `CP+dx` equivalence with `Spinor`-matched LRU, `Dyck-2`, `UnseenHoldout`, and $S_5 \not\le \mathrm{SO}(3)^M$).
 
----
-
-## Аннотация (Russian Summary)
-
-Представлена единая кэш-резидентная архитектура непрерывного обучения **MicroContinualCore (`v0.3.0`)** (`8–34 КБ` RAM в потоковых и RTRL-конфигурациях, `< 500 КБ` с полной эпизодической памятью) на чистом Rust, опирающаяся на **44 машинно проверенные 0-аксиомные алгебраические леммы на Lean 4** (без `Mathlib` и без вещественных чисел $\mathbb{R}$) и compile-time валидатор тотальности `#[axiom_zero]`. Внутри каждого банка режимов `RegimeBank`, переключаемого детектором `PageHinkleyDetector`, объединены три алгебраические полосы: некоммутативный ротор Полосы 0 с коммутатором Ли $\mathfrak{su}(2)$ и кернел-памятью Керра (`Полоса 0`), пластичный быстрый/средний `O(S)` онлайн-RTRL на рациональных роторах Кэли $SO(3)$ с развязанной частотно-добротной сеткой `(Q × ω)` (`Полоса 1`, действующая в `v0.3.0` как банк рациональных 2D-резонаторов Кэли без тригонометрии) и медленная иерархическая огибающая Кэли поверх 4-канального пулинга Полосы 1 (`Полоса 2`) + skip-канал. Ядро полностью свободно от трансцендентных вызовов (`exp`/`ln`/`sin`/`cos`/`tanh` = `0`), защищено `44` проверками `#[axiom_zero]`, устойчиво к инъекциям `NaN`/`±1e30` на входе и сопровождается `44` проверками `#print axioms` в Lean 4 с нулём внешних аксиом.
-
----
-
-## 1. Introduction & Motivation
-
-Continual learning agents deployed on resource-constrained microcontrollers, aerospace flight computers, or embedded controllers face four coupled constraints that standard deep sequence models struggle to satisfy simultaneously:
-
-1. **Compact On-Chip Memory Budgets:** Embedded SRAM banks cannot afford multi-megabyte replay buffers, quadratic attention matrices, or large trajectory caches.
-2. **Non-Stationarity Without Catastrophic Forgetting:** Under cyclical regime switches ($A \to B \to C \to A$), single-bank online gradient descent overwrites prior dynamical attractors unless slow and fast recurrent parameters are encapsulated per regime and gated against spurious drift.
-3. **Input/State Numerical Fault Resilience:** Standard floating-point `GRU` and exponential recurrent units amplify sensor glitches or `NaN`/`±Inf` spikes through unguarded divisions, exponential gates, or panicking indexers.
-4. **Temporal Delays and Partially Observable Structure:** Memoryless classifiers and tabular `Page-Hinkley` detectors fail whenever observations require retaining hidden sub-identities across long corridors (`HardPOMDP v2`, `T-Maze L=30, 50`) or separating multi-frequency harmonics (`Wave-Superposition Zero-Shot`, `ELEC2 Temporal`).
-
-MicroContinualCore addresses these constraints by combining rational Cayley operators on $SO(3)$, trigonometry-free similarity weighting and policy heads that avoid `exp`/`ln` and division by zero by construction, compile-time totality enforcement via `#[axiom_zero]`, and machine-checked 0-axiom algebraic operator lemmas in Lean 4.
-
-### 1.1 Related Work
-
-- **Orthogonal and Cayley Recurrent Networks:** Orthogonal RNNs parameterized via the Cayley transform $R(A) = (I - A)(I + A)^{-1}$ were introduced for offline BPTT by Helfrich et al. (2018) and Maduranga et al. (2019) to stabilize gradient norms. MicroContinualCore adapts 3D rational Cayley rotors to $O(S)$ online RTRL without matrix inversion or BPTT.
-- **State-Space Models (SSMs) and Linear Recurrent Units (`LRU`):** Diagonal complex state-space models such as S4 (Gu et al., 2022) and LRU (Orvieto et al., 2023) achieve strong long-range sequence memory via complex exponential parameterizations. Lemmel & Grosu (2025) combined diagonal complex LRU with online RTRL for reinforcement learning (`RTRRL-LRU`), which serves as our primary recurrent RL baseline.
-- **Non-Abelian State Tracking and $\mathrm{NC}^1$ Expressivity:** Merrill et al. (2024) and Sarrof et al. (2024) established that diagonal/commutative linear RNNs and SSMs cannot solve non-solvable group word problems (such as the alternating group $A_5 \subset SO(3)$), requiring input-dependent non-commutative state transitions. In `v0.3.0`, input-dependent non-commutativity resides in Band 0 ($\mathfrak{su}(2)$ cross product $b_{t-1} \times x_t$), while Bands 1–2 implement fixed-axis rational Cayley resonators (extended to input-dependent 3D rotors in `v0.4.0`).
-- **Online RTRL and Approximations:** Classical RTRL (Williams & Zipser, 1989) scales as $O(N^4)$ for dense RNNs, motivating stochastic or sparse approximations such as UORO (Tallec & Ollivier, 2018) and SnAp (Menick et al., 2021). Partitioning state into $S$ decoupled 3D Cayley sectors keeps exact per-sector RTRL at $O(S \cdot d_{\text{in}})$ without gradient bias.
-- **Concept Drift Detection and Streaming Ensembles:** Classical streaming drift adaptation pairs CUSUM / Page–Hinkley tests (Page, 1954) with incremental trees and ensembles such as Hoeffding Adaptive Trees (Bifet & Gavaldà, 2009) and Adaptive Random Forests (Gomes et al., 2017). MicroContinualCore embeds Page–Hinkley regime-bank switching directly around multi-timescale recurrent rotors.
+> [!CAUTION]
+> **Scientific Integrity & Formal Retraction Notice for `v0.3.0` (`10.5281/zenodo.24424983`):**  
+> We explicitly acknowledge that during the publication of `v0.3.0` and pre-audit drafts, **benchmark results were published that were methodologically flawed, leaky, and artificially inflated due to unintended code defects, baseline asymmetries, and unvetted automated-coding shortcuts in pre-audit drafts** — including teacher-forced $A_5$ homomorphism/Voronoi shortcuts (`enable_so3_frame_homomorphism`), a synthetic $L=500$ drift loop, holdout vocabulary leakage into `UnseenHoldout` Cloze logs, horizon-dependent T-Maze trace buffers and undisclosed `novelty_gate = 0.28`, asymmetric SEU/baseline handicaps, uncredited `Band 0` `SpinorEncoder` feature lifting on CartPole, state-dimension mismatches on Lorenz-63 (`180D` vs `60D`) and CartPole (`144D` vs `96D`), and silent configuration clamps (`PageHinkleyDetector` cap at `8.0`, `critic_lr` override to `a_lr * 3.5`). **All benchmark results from `v0.3.0` are retracted and superseded by this `v0.4.0` release.** See [RELEASE_NOTES_v0.4.0.md](RELEASE_NOTES_v0.4.0.md) for the complete item-by-item accounting.
 
 ---
 
-## 2. Constructive 0-Axiom Foundations in Lean 4
+## 1. Summary of Forensic Audit Remediations & Phase-2 Algebraic Additions in v0.4.0
 
-Formal artifact: [`proofs/MicroContinualCoreProofs.lean`](proofs/MicroContinualCoreProofs.lean).
-
-### 2.1 Zero-Free Constructive Arithmetic Without `Mathlib` or `Real`
-
-Rather than importing classical set-theoretic axioms or axiomatic reals (`propext`, `Classical.choice`, `Quot.sound`), the proof suite builds a self-contained constructive tower over the equality/no-self-negation foundation:
-- **Positive Naturals (`PosNat`, Stages I–II):** generated purely by `one` and `succ` so zero is structurally absent from denominators.
-- **Equilibrium Integers (`Balance`, Stage V):** directed pairs `(fwd, bwd : PosNat)` with equivalence `BalanceEquiv x y : x.fwd + y.bwd = x.bwd + y.fwd`, where `bzero = ⟨one, one⟩` models dynamic equilibrium rather than emptiness.
-- **Complex (`GaussBalance` $\mathbb{Z}[i]$) & 3-Phase (`EisBalance` $\mathbb{Z}[\omega]$) Balances (Stage X & Block I):** Gaussian pairs verifying `step41_i_squared_is_neg_one` ($i^2 \sim -1$) and Eisenstein triples/pairs modeling $1 + \omega + \omega^2 \sim 0$ (`step42_triphase_neutrality`, `step43_triphase_pair_not_neutral`).
-- **Dual Balances (`DualBalance`, Stage XVI):** algebraic infinitesimals `a + b * ε` with $\varepsilon \not\sim 0$ and $\varepsilon^2 \sim 0$ (`step62_dual_eps_ne_zero`, `step62_dual_eps_squared_is_zero`) enabling limit-free exact differentiation (`step63_dual_exact_derivative`).
-- **0-Axiom Polynomial Reflection Solver (`BExpr`):** a verified multivariate ring normalizer over `Balance` allowing arbitrary-variable polynomial identities (`bal_poly_eq`) to be discharged by kernel reduction (`rfl`) with zero external axioms.
-
-### 2.2 Formal Theorem Map (Steps 103–114 & Prerequisites)
-
-Executing `lean proofs\MicroContinualCoreProofs.lean` checks **44 `#print axioms` statements** and exits with code `0` (`NonZeroAxiom: 0`). Table 1 maps the 12 core continual-learning & signal-processing theorem blocks (`step103`–`step114`) directly to Rust runtime components:
-
-| Lean Block / Step | Theorem Name(s) | Exact Algebraic Property Proven (0 Axioms) | Runtime Component |
-|---|---|---|---|
-| **Block I (DFT-4)** | `step103_dft4_orthogonality` | $\sum_{n=0}^3 i^{n(k-m)} \sim 4\,\delta_{km}$ over `GaussBalance` | Orthogonal phase banks |
-| **Block I (Inversion)** | `step104_dft4_inversion`, `step104b_dft3_inversion` | Exact 4-point $\mathrm{IDFT}_4(\mathrm{DFT}_4(x)) \sim 4x$ and 3-phase $\mathrm{IDFT}_3(\mathrm{DFT}_3(x)) \sim 3x$ without loss | Multi-frequency wave basis |
-| **Block I (Energy)** | `step105_dft4_parseval` | $\sum_k |X_k|^2 \sim 4\sum_n |x_n|^2$ (energy conservation) | Unitary spectral norms |
-| **Block I (Shift)** | `step106_dft4_shift_is_phase_rotation` | Cyclic shift $(x_3,x_0,x_1,x_2)$ equals $k$-th mode phase multiplication by $i^k$ | Delay-line `RepeatPrevious` |
-| **Block I (Circle)** | `step107_rational_circle_cayley` | $\mathrm{BalGtZero}(1 + \omega^2)$ and $(1-\omega^2)^2 + (2\omega)^2 \sim (1+\omega^2)^2$ | `rational_circle_wave` (`src/math.rs`) |
-| **Block II (Lie $\mathfrak{su}(2)$)** | `step108_su2_lie_laws` | $a \times a \sim 0$, $a \times b \sim -(b \times a)$, and Jacobi identity over `Vec3` | `su2_lie_bracket` (`src/math.rs`) |
-| **Block II (3D Cayley)** | `step109_cayley3d_exact_orthogonality`, `step109b_cayley_rot3_equiv` | Strict positivity of $1 + \|g\|^2$, exact norm preservation $\|w\|^2 \sim (1+\|g\|^2)^2 \|v\|^2$, and equivalence to unit-axis `cayley_rot3` | `cayley_rot3` (`src/rtrl.rs`), `CayleyBeliefState` |
-| **Block II (Non-Comm.)** | `step110_so3_noncommutativity` | Counterexample $R_x(R_y(e_x)) \not\sim R_y(R_x(e_x))$ proving order sensitivity | Non-abelian temporal state (`T-Maze` / `HardPOMDP`) |
-| **Block II (BIBO)** | `step111_rtrl_decay_strict_contraction` | $\mathrm{BalGtZero}(1+\alpha^2)$ and strict decay inequality $199 < 200(1+\alpha^2)$ matching rational contraction factor $0.995 / (1+\alpha^2) < 1$ | `lambda = 0.995 / (1 + alpha^2)` (`src/rtrl.rs`) |
-| **Block III (Softmax)** | `step112_rational_softmax_positive` | Strictly positive numerators & denominators in rational quadratic policy weights | `rational_probs_and_psi_into` (`src/math.rs`) |
-| **Block III (Kerr $W_1$)** | `step113_kerr_w1_total_denom` | Total strictly positive denominator $\varepsilon + \sum_i g_i^2 \ge \varepsilon > 0$ (extended to quartic $\varepsilon + \sum_i g_i^4$ in `KerrKernelBank`) | `kerr_competition_into`, `KerrKernelBank` |
-| **Block III (Dual RTRL)** | `step114_rtrl_exact_derivatives_dual` | Exact rational derivatives of Cayley rotation and contraction factors in `DualBalance` | Exact $O(S)$ RTRL sensitivities (`src/rtrl.rs`) |
+1. **Compile-Time Transcendental Ban (`[E012]`) & Complete $\mathrm{SO}(3)$ + Selective Cayley Lean 4 Proofs:**
+   - Added `[E012]` to `crates/axiom_zero/axiom_zero_macros/src/lib.rs`, rejecting all transcendental math methods at compile time inside `#[axiom_zero]` modules.
+   - Added `step109c_cayley3d_det_one` ($\det R(g) = +1$), `step112b_rational_softmax_p4_positive` (quartic rational softmax positivity + dual derivative), and `step115_selective_cayley_contraction_and_deriv` (strict BIBO selective contraction + rational cosine dual derivative) to `proofs/MicroContinualCoreProofs.lean`; all **48** theorems verify with **0 axioms**.
+   - Removed the conflicting AGPL license file from `licenses/` and synchronized `Cargo.toml` RAM metadata (`4.9-454 KB`).
+2. **Honest End-to-End $\mathrm{SO}(3)$ Frame Learning, Proto-Metric Readout & Live IEEE-754 Drift (`src/rtrl.rs`, `bench_step5_v040.rs`, `bench_step6_scaling.rs`):**
+   - Removed teacher-forced homomorphism shortcuts (`enable_so3_frame_homomorphism`, `ident_class`, inverse $R_2(-g)$, Voronoi snapping).
+   - Replaced with task-agnostic end-to-end training via 1-step cross-entropy and exact RTRL sensitivities `p_wg`, adding a purely algebraic **Proto-Metric $\mathrm{SO}(3)$** readout (`enable_so3_proto_metric`) that reuses `out_w` as $(S^2)^S$ prototypes with `rational_probs_p4_into` (0% `exp`), task-agnostic intra-class center-pull, and symmetric Bit-30 SEU scrubbing — zero group relations, zero `ident_class`, zero evaluation snapping.
+   - Removed per-step vector renormalization during normal finite execution of `frame_coupled` frames; live unnormalized `f32` drift at $L = 500$ is $\max |\|u_{500}\|_2 - 1| = 4.50 \times 10^{-5}$ and $\max \|Q_{500}^\top Q_{500} - I_3\|_F = 1.43 \times 10^{-4}$.
+3. **2D Rational Cayley & Algebraic Selective Cayley (`AlgebraicSelectiveCayley`, `src/rtrl.rs`, `src/math.rs`):**
+   - Added a 100% `#[axiom_zero]` 2D rational oscillator engine supporting both LTI (`selective = false`) and input-selective (`selective = true`) modes via rational positive step $\Delta_t(x_t) = \frac{1}{2}(z + \sqrt{z^2 + 4})$, exact $O(U \cdot d_{\text{in}})$ RTRL, causal online Welford standardization, Bit-30 State/Weight SEU scrubbing, supervised classification, and online TD($\lambda$) RL.
+4. **Causal 6-Step Parallel Bank Probing (`parallel_bank_probe`, `src/core.rs`) & Config Integrity (`src/belief.rs`, `src/core.rs`):**
+   - Added zero-allocation causal read-only parallel scoring across up to 32 archived banks on Page-Hinkley drift detection (`CoreScratch::parallel_bank_hits` / `parallel_bank_margins`), delegating directly to bank switching when $\le 1$ mature candidate exists and causally predicting with the running leader on steps 2..6 before committing, eliminating $O(R)$ sequential probe waste.
+   - Removed silent `PageHinkleyDetector::new` upper threshold clamp at `8.0` (now `1000.0`, so `ph_threshold = 99.0` genuinely disables PH) and removed silent `critic_lr` override (`a_lr * 3.5`) when `cfg.critic_lr > 0.0` in `MicroContinualCore::apply_online_rtrl_td`.
+5. **Symmetric Physical SRAM Weight-SEU & 2-Layer State-SEU (`src/core.rs`, `src/rtrl.rs`, `src/baselines.rs`, `bench_step5_v040.rs`):**
+   - Replaced asymmetric modular weight targeting with uniform physical SRAM Knuth-hashed indexing (`flip_weight_in_slices`) across all live learnable weight arrays in both `MicroContinualCore` (14 slices) and all baselines.
+   - Extended `MicroContinualCore::inject_register_bit_flip`, `HierarchicalCayleyRtrl::inject_register_bit_flip`, and `bench_step5_v040` Suite 2 preconditioning/checks to hit both Band 1 (`rtrl_state.u`) and Band 2 (`rtrl_slow_state.u`) symmetrically with `DeepRtrrlLruBank`.
+   - Fixed runtime Welford normalization freeze in `MicroContinualCore::decide_vec` to detect raw non-finite/spike inputs (`!input_corrupted`) instead of checking benchmark test flags.
+6. **Elimination of All Baseline Bugs, Dead RAM, and Per-Step Allocations (`src/baselines.rs`, `src/stream_baselines.rs`, `src/math.rs`):**
+   - Added `fast_dot_raw` (AVX2+FMA without NaN sanitization) so baselines achieve full SIMD throughput while faithfully propagating `NaN`/`Inf` when SEU guards are disabled (fixing the `use_simd = true` bug in supervised `GruPerStepBank`).
+   - Fixed a loop-carried gradient clobber (`dh_prev[i] = ...` instead of `+=`, plus missing `dh_prev_buf.fill(0.0)`) in **all three** GRU BPTT implementations (`OnlineGruBaseline::end_episode`, `GruPerStepBank::step_and_learn_supervised`, `GruPerStepBank::decide_vec`), verified to `< 2e-3` by finite-difference unit test `test_gru_per_step_bptt_exact_gradients`.
+   - Added `OnlineGruBaseline::end_episode_truncated` (bootstrapping $V(s_T)$ on time-limit truncation instead of treating survival as death) and zero-allocation online truncated BPTT(1, 4) + safe `set_bptt_len` to RL `GruPerStepBank`.
+   - Eliminated dead RL-head RAM (~25%) and dead-weight SEU hits in `DeepRtrrlLruBank` via `RtrrlLruBaseline::new_backbone`; fixed `DeepRtrrlLruBank::scrub_state_and_weights()` fault double-counting; fixed `DeepRtrrlLruPhBaseline::set_state_weight_guard` and `had_nan`; preserved `retired_had_nan` and `retired_seu_faults` on bank resets across all `*PhBaseline` wrappers.
+   - Converted `OnlineMlpAdam`, `OnlineLruStream`, `RtrrlLruBaseline`, `SelectiveSsmBank`, `DeepRtrrlLruBank`, `CayleyBlockSupervised`, `DeepCayleyStack`, and `DeepNonAbelianStack` to **0 heap allocations per step**.
+7. **Strict State-Dimension Parity, Apples-to-Apples CartPole Audit & Fair `HardPOMDP v2` Ablation (`bench_step1.rs`, `bench_step5_v040.rs`):**
+   - Fixed hidden 3× state-dimension mismatch in Suite 3B Lorenz-63 (`MicroCore` matched to exact **60D**: `half_sectors=0, rtrl_sectors=10, rtrl_slow_sectors=10`) and 1.5× mismatch in Suite 3C CartPole (`MicroCore` matched to exact **96D**), adding explicit raw-input `MicroCore PURE 2L+Skip (B0=0, 96D)`, `SpinorEncoder`-matched `1L/Deep 2L LRU (+Spinor 48D)`, frozen deterministic evaluation (`train_mode = false`), physics sanity ceilings, and an independent `PyTorch 2.14.0` `GRU+A2C+GAE+PH` verification control.
+   - Added a fair `MFEC + PH (fair 0.78+EMA)` control row and honest `N/A (str)` SEU labels in `bench_step1.rs`, and verified zero holdout leakage in `unlabeled_domain_cloze_logs_noisy()`.
 
 ---
 
-## 3. Unified 3-Band Architecture (`src/core.rs`, `src/rtrl.rs`)
+## 2. Constructive Lean 4 Formalization (48 Checks, 0 Axioms)
 
-`MicroContinualCore` (configured by `MicroCoreConfig`) eliminates fragmented specialized binaries by hosting all three bands inside each `RegimeBank`, gated by `PageHinkleyDetector`. Every unused band allocates **0 bytes**.
+All **48** `#print axioms` checks in `proofs/MicroContinualCoreProofs.lean` compile under Lean 4 (`lean proofs/MicroContinualCoreProofs.lean`, exit code 0) with **0 axioms** (`does not depend on any axioms` for every theorem):
 
-```text
-x_t (text or f32 slice) ──► [Standardize / Delta x_t] ──► SEU Sanitization (sanitize_bounded_f32)
-   │
-   ├──► [Band 0: half_sectors > 0] SpinorEncoder ─► CayleyBeliefState ─► KerrKernelBank + Linear/AC
-   │
-   ├──► [Band 1: rtrl_sectors > 0] PlasticCayleyState (Fast/Mid SO(3)^S, O(S) RTRL sensitivities)
-   │          │
-   │          └─► 4-ch Orthogonal Pooling rtrl_pool_w ──┐
-   │                                                    ▼
-   └──► [Band 2: rtrl_slow_sectors > 0] PlasticCayleyState (Slow Envelope SO(3)^S2 on [x_t, pool])
-   │
-   └──► [Skip: rtrl_use_skip_x] 0.5 * x_t ──────────► Joint Per-Bank Readout + PageHinkleyDetector
-```
+| Theorem ID | Formal Statement & Scope | Axioms |
+| :--- | :--- | :---: |
+| `step01`..`step25` | Constructive Peano arithmetic (`PosNat`) and signed `Balance` ring foundations | 0 |
+| `step41`..`step43` | Complex / triphase algebraic neutrality identities | 0 |
+| `step62`..`step63` | Dual numbers ($\varepsilon^2 = 0$) and constructive algebraic differentiation | 0 |
+| `step103`..`step106` | Exact 4-point and 3-point DFT orthogonality, inversion, Parseval, and shift theorems | 0 |
+| `step107_rational_circle_cayley` | Rational Cayley circle identity $s_2^2 + c_2^2 = 1$ | 0 |
+| `step108_su2_lie_laws` | $\mathfrak{su}(2)$ commutator bilinearity, skew-symmetry, and Jacobi identity | 0 |
+| `step109_cayley3d_exact_orthogonality` | Exact 3D Cayley rotor orthogonality $R(g)^\top R(g) = I_3$ over exact rationals | 0 |
+| `step109b_cayley_rot3_equiv` | Equivalence of vector cross-product form `cayley_rot3_vec` and matrix $R(g)u$ | 0 |
+| `step109c_cayley3d_det_one` | Exact determinant $\det(R_{\text{num}}(g)) = (1 + \|g\|^2)^3 \implies \det R(g) = +1$ (strictly $\mathrm{SO}(3)$) | 0 |
+| `step110_so3_noncommutativity` | Explicit non-commutativity $R(e_1)R(e_2) \neq R(e_2)R(e_1)$ in $\mathrm{SO}(3)$ | 0 |
+| `step111_rtrl_decay_strict_contraction` | Strict contraction $0 < \lambda(\alpha) = \frac{199}{200(1+\alpha^2)} < 1$ | 0 |
+| `step112_rational_softmax_positive` | Positivity of shift-invariant rational policy weights $1 - z + \frac{1}{2}z^2 = \frac{1}{2}(1 + (z-1)^2) \ge \frac{1}{2} > 0$ | 0 |
+| `step112b_rational_softmax_p4_positive` | Quartic rational softmax positivity $(8 - 4z + z^2)^4 = (4 + (z-2)^2)^4 > 0$ & exact dual derivative $2z - 4$ (`rational_probs_p4_into`) | 0 |
+| `step113_kerr_w1_total_denom` | Quadratic ($p = 2$) Kerr denominator totality $\varepsilon + \sum g_i^2 \ge \varepsilon > 0$ and $g_k^2 < \text{den}$ | 0 |
+| `step113b_kerr_w1_p4_total_denom` | Quartic ($p = 4$, `KerrKernelBank`) denominator totality $\varepsilon + \sum g_i^4 \ge \varepsilon > 0$ and $g_k^4 < \text{den}$ | 0 |
+| `step114_rtrl_exact_derivatives_dual` | Exact dual-number derivatives of $c_1(\omega) = \frac{2\omega}{1+\omega^2}$, $c_2(\omega) = \frac{2\omega^2}{1+\omega^2}$, and $\lambda(\alpha)$ (`src/rtrl.rs`) | 0 |
+| `step115_selective_cayley_contraction_and_deriv` | Strict BIBO selective contraction $0 < 998 < 1000(1 + \Delta\alpha^2)$ for any $\Delta > 0$ & exact dual derivative of $c(w) = \frac{1-w^2}{1+w^2}$ (`AlgebraicSelectiveCayley`) | 0 |
 
-### 3.1 Band 0: Frozen Spinor Rotor & `KerrKernelBank` (`src/math.rs`, `src/belief.rs`, `src/memory.rs`)
-
-For textual and symbolic POMDPs, `SpinorEncoder` maps hashed subword trigrams and parsed numeric tokens onto rational circular phases `(s2, c2)` generated via `rational_circle_wave` (double Cayley map with $s_2^2 + c_2^2 = 1$). Unlabeled noisy domain logs (`unlabeled_cloze_adapt`) can optionally align holdout synonyms offline via normalized Hebbian projection before freezing integer-quantized `i8` tables (`freeze_to_i8()`).
-
-Given normalized observation encoding $x_t$, `CayleyBeliefState::update` measures cosine familiarity against an EMA prototype `obs_ema`, updates $u_{\text{rot}} = R(g_{\text{gauge}})\,b_{t-1}$ via `cayley_rotate_sectors`, and computes the $\mathfrak{su}(2)$ Lie bracket $c_t = \widehat{b_{t-1} \times x_t}$ (`su2_lie_bracket`):
-$$b_t = \mathrm{Norm}_1\!\Big(\lambda\, R(g_{\text{gauge}})\,b_{t-1} + w_x\, x_t + \gamma\,\nu_t\,\widehat{b_{t-1} \times x_t}\Big)$$
-where $\nu_t \in [0, 1]$ is observation novelty (gated by `novelty_gate` so distractor glitches with $\nu_t < \nu_{\text{gate}}$ do not overwrite memory) and $\lambda^2 + w_x^2 = 1$ when gating is off. Associative `KerrKernelBank` stores `i8`-quantized episodic keys alongside both running values `q_vals` and optimistic maxima `q_max` (detecting perceptual aliasing), weighting neighbors through the quartic W1 Kerr law `kerr_competition_into` with `p = 4`:
-$$w_k = \frac{\max(0, s_k - \tau)^4}{\varepsilon + \sum_j \max(0, s_j - \tau)^4}.$$
-
-### 3.2 Band 1: Exact $O(S)$ Plastic `Cayley-RTRL` (`src/rtrl.rs`)
-
-Each sector $s \in \{0, \dots, S-1\}$ maintains a 3D recurrent state $u_{t,s} \in \mathbb{R}^3$, a unit rotation axis $e_s$, an orthogonal input axis $d_s \perp e_s$ (ensuring input injections are actively rotated by $e_s$), learnable damping parameter $\alpha_s \in [0.08, 3.0]$, frequency $\omega_s \in [-3.5, 3.5]$, and input weights $w_{s,j} \in [-3.0, 3.0]$:
-$$\lambda_s = \frac{0.995}{1 + \alpha_s^2} \in (0, 0.995], \qquad R(\omega_s e_s) v = v + \frac{2\omega_s}{1+\omega_s^2}(e_s \times v) + \frac{2\omega_s^2}{1+\omega_s^2}\big(e_s \times (e_s \times v)\big).$$
-Letting $\mathrm{drive}_{t,s} = \sum_j w_{s,j}\, x_{t,j}$, the recurrent transition and rational readout normalization $\mathrm{Norm}_\kappa$ (`kappa = rtrl_kappa`) are:
-$$u_{t,s} = \lambda_s R(\omega_s e_s) u_{t-1,s} + \mathrm{drive}_{t,s}\, d_s, \qquad b_{t,s} = \frac{u_{t,s}}{\rho_{t,s}}, \qquad \rho_{t,s} = \sqrt{\|u_{t,s}\|^2 + \kappa^2}.$$
-Because $e_s$ and $d_s \perp e_s$ are fixed in `v0.3.0` and $u_{0,s} = 0$, the component along $e_s$ remains zero ($u_{t,s} \cdot e_s = 0$). Each Band 1/2 sector therefore operates in `v0.3.0` as a rational, trigonometry-free 2D Cayley resonator embedded in $\mathbb{R}^3$ with complex-equivalent eigenvalue $\lambda_s (1 + i\omega_s) / (1 - i\omega_s)$, whereas input-dependent non-abelian rotation lives in Band 0 (`CayleyBeliefState`, $b_{t-1} \times x_t$) and is extended to Band 1/2 in `v0.4.0`.
-Using the dual-number calculus verified in `step114_rtrl_exact_derivatives_dual`, forward sensitivities $p_{\alpha,s} = \partial u_{t,s}/\partial \alpha_s$, $p_{\omega,s} = \partial u_{t,s}/\partial \omega_s$, and $p_{w,s,j} = \partial u_{t,s}/\partial w_{s,j}$ evolve online in exact $O(S \cdot d_{\text{in}})$ time per step (zero BPTT truncation):
-$$p_{\alpha,s}^{(t)} = \lambda_s R(\omega_s e_s) p_{\alpha,s}^{(t-1)} + \frac{-1.99\,\alpha_s}{(1+\alpha_s^2)^2} R(\omega_s e_s) u_{t-1,s},$$
-$$p_{\omega,s}^{(t)} = \lambda_s \Big(R(\omega_s e_s) p_{\omega,s}^{(t-1)} + \frac{2(1-\omega_s^2)}{(1+\omega_s^2)^2}(e_s \times u_{t-1,s}) + \frac{4\omega_s}{(1+\omega_s^2)^2}\big(e_s \times (e_s \times u_{t-1,s})\big)\Big),$$
-$$p_{w,s,j}^{(t)} = \lambda_s R(\omega_s e_s) p_{w,s,j}^{(t-1)} + x_{t,j}\, d_s.$$
-At readout, the exact rank-1 Jacobian projection of $\mathrm{Norm}_\kappa(u_{t,s})$ turns upstream readout gradient $g_s$ into tangent force $f_{b,s} = \big(g_s - (g_s \cdot b_{t,s}) b_{t,s}\big) / \rho_{t,s}$, accumulating eligibility traces `(e_alpha, e_omega, e_w)` and applying bounded algebraic gradient-RMS updates (`v <- 0.98 * v + 0.02 * g^2`, step $\propto g / \sqrt{v + 0.0025}$).
-
-Crucially, `PlasticCayleyParams::new_with_grid` supports:
-- **`band_mode = 0` (Coupled):** monotonic quadratic damping coupled to frequency, useful when fast differentiation is tied to low-$Q$ response.
-- **`band_mode = 1` (Decoupled $Q \times \omega$):** 3 orthogonal quality bands `q_band = s mod 3` crossed with linear frequencies, allowing high-$Q$ slow oscillators and damped fast oscillators across the spectrum.
-
-### 3.3 Band 2: Hierarchical Slow Envelope & Unified `RegimeBank` Switching (`src/core.rs`)
-
-When `rtrl_slow_sectors > 0`, a second `PlasticCayleyParams` bank (`band_mode = 2`, slower frequencies $\omega_0 \in [0.03, 0.65]$ and higher $Q$) operates on `[raw_x, pooled_fast(Band 1)]`, where 4 pooled summary channels come from matrix multiplication by an orthonormalized/scaled random projection `rtrl_pool_w` over `rtrl_state.b` (Section `970..989` of `src/core.rs`). An optional skip branch `rtrl_use_skip_x` appends `0.5 * raw_x`. All fast, slow, and skip actor/critic weights plus `rtrl_params` and `rtrl_slow_params` live **inside each `RegimeBank`** alongside `PageHinkleyDetector` (CUSUM over normalized episodic return $R_e \in [0, 1]$). When a concept drift triggers CUSUM threshold exceedance, `MicroContinualCore` switches or allocates another `RegimeBank`, protecting Band 1/2 parameters of previously solved regimes from catastrophic interference.
-
-Online training unifies both paradigms:
-- **RL / POMDP (`end_episode`):** uses rational shift-invariant policy `rational_probs_and_psi_into` with `psi_a = (1 + |z_a|) / (1 + |z_a| + 0.5 * z_a^2)`, Tsallis entropy regularization, TD/return advantage normalization, and eligibility trace updates across Band 0/1/2.
-- **1-Pass Supervised Streams (`end_supervised_step`):** updates linear and split-band logits directly toward `±1` targets, backpropagating exact logit residuals into `rtrl_fb_buf` / `rtrl_slow_fb_buf` to drive 1-step online RTRL adaptation—skipping weight writes automatically when `cusum > 0.55 * threshold` to avoid polluting a learned bank right as regime drift begins.
+*Scope Note:* Theorems in `MicroContinualCoreProofs.lean` prove exact algebraic identities over constructive integers/rationals (`Balance`). In `f32` hardware execution, orthogonal matrices experience standard IEEE-754 rounding drift ($\sim 1.43 \times 10^{-4}$ Frobenius error after 500 unnormalized steps).
 
 ---
 
-## 4. Compile-Time Totality (`#[axiom_zero]`), SEU Safety & Memory Footprint
+## 3. Empirical Benchmark Results (All 8 Release Suites + Independent External Audit)
 
-`MicroContinualCore` depends on a single internal crate, `crates/axiom_zero`, whose procedural macro `#[axiom_zero]` enforces rules `[E001]`–`[E011]` on annotated modules/functions at compile time: forbidding `panic!`, `.unwrap()`, `.expect()`, `None`, `assert!`, terminating calls, raw slice indexing (`arr[i]`), and raw division/modulo (`/`, `%`). All array indexing passes through `total_get_copy`/`total_set` and all divisions use `total_div_f32` or `total_div_unit_shifted_f32` ($n / (1 + d)$, never zero when $d \ge 0$).
+All benchmarks were executed sequentially on a single machine in `--release` mode (`cargo run --release --bin ...`), with **26/26** unit & finite-difference gradient tests passing (`cargo test --release --lib`).
 
-Verified static and runtime checks across core modules (`src/{core,math,belief,memory,rtrl}.rs`):
-- **Transcendental library calls (`.sin`, `.cos`, `.tan`, `.exp`, `.ln`, `.log`, `.powf`, `.powi`, `.tanh`, `.atan2`):** **`0`**.
-- **Functions / `impl` blocks compiled under `#[axiom_zero]`:** **`44`**.
-- **Zero-byte disabled bands & zero-heap-alloc hot paths:** disabling Band 0 (`half_sectors == 0` in `SpinorEncoder`, `dim == 0` in `CayleyBeliefState` / `KerrKernelBank`) allocates strictly **`0` bytes**. Streaming text tokenization (`encode_text_into` via stack buffer `[0u8; 64]`, `parse_numeric_bytes`, `token_slot_and_mass_bytes`, `encode_token_bytes_into`), `KerrKernelBank::query_obs_gated_into`, `RegimeBank::clear_all` (`reset_with_grid`), and `end_episode_inner` operate without heap allocations in the numeric Branch-A / supervised hot paths.
-- **SEU input-injection resilience:** unit tests and every benchmark (`test_ram_under_500kb_and_seu_safety`, `test_hierarchical_cayley_rtrl_ram_and_seu`, `test_unified_2l_microcore_architecture_ram_and_seu`, including AVX2+FMA / AVX2 `saxpy`/`scale` NaN/Inf parity) inject adversarial corrupted inputs (`f32::NAN`, `1e30`, `-1e30`) into `decide_vec`/`decide_text` and verify finite outputs and finite internal state, whereas `Online GRU + A2C`, `RTRRL-LRU`, `Online LRU-RTRL`, `Online MLP + Adam`, and `Online Gaussian NB` propagate `NaN` (`SEU-Safe = NO (NaN)`). (Hardware TMR against silent weight-RAM bit-flips remains complementary.)
-- **Exact memory footprint:** lazy allocation guarantees `0` bytes for disabled bands (`8.2–33.7 KB` across learned wave/stream/RTRL configurations, `6.1 KB` for Band-0 rotor alone; `51.2–99.1 KB` on T-Maze; `454.0 KB` when full `SpinorEncoder` + `KerrKernelBank` episodic capacity is enabled for `HardPOMDP v2`).
+### 3.1 Step 1: HardPOMDP v2 Textual Continual RL (`bench_step1`)
 
----
+3 sequential regimes (`Alpha -> Beta -> Gamma -> Alpha Retent.`), 10 seeds, with holdout vocabulary removed from `unlabeled_domain_cloze_logs_noisy()` and an explicit fair-threshold EMA MFEC control (`cos=0.78 + EMA`):
 
-## 5. Empirical Evaluation & Progressive Ablations
+| Suite / Glitch | Model | Score (mean±sd, Holdout) | Retent. | Recovery | RAM (KB) | Latency | SEU-Safe |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Strict Dense (15% glitch, 240 ep/reg)** | `MicroContinualCore` (no Cloze) | **53.3±10.5%** (H: 0.3%) | 47.6% | **112.5 ep** | 738.0 KB | 29.17 µs | YES |
+| | `MicroCore (+Can. Cloze)` | **58.7± 7.5%** (H: 0.0%) | **57.6%** | 126.5 ep | 454.0 KB | 16.82 µs | YES |
+| | `MFEC + PH (orig 0.94)` | 0.6± 0.5% (H: 0.0%) | 1.0% | 240.0 ep | 40.7 KB | 8.82 µs | N/A (str) |
+| | `MFEC + PH (fair 0.78+EMA)` | 2.7± 2.3% (H: 0.0%) | 3.2% | 240.0 ep | 18.9 KB | 4.49 µs | N/A (str) |
+| | `Tabular + PH` | 0.0± 0.1% (H: 0.0%) | 0.2% | 240.0 ep | 70.2 KB | 0.22 µs | N/A (str) |
+| | `Online GRU + A2C` | 0.0± 0.1% (H: 0.0%) | 0.0% | 240.0 ep | 114.2 KB | 16.96 µs | NO (NaN) |
+| **Strict Sparse (15% glitch, 400 ep/reg)** | `MicroContinualCore` (no Cloze) | **47.2±10.0%** (H: 0.0%) | 25.2% | 235.4 ep | 738.0 KB | 30.81 µs | YES |
+| | `MicroCore (+Can. Cloze)` | **54.9±12.0%** (H: 0.0%) | **40.6%** | **197.9 ep** | 454.0 KB | 16.59 µs | YES |
+| | `MFEC + PH (orig 0.94)` | 1.0± 1.1% (H: 0.0%) | 0.4% | 400.0 ep | 40.7 KB | 9.02 µs | N/A (str) |
+| | `MFEC + PH (fair 0.78+EMA)` | 1.5± 1.3% (H: 0.0%) | 3.0% | 400.0 ep | 17.1 KB | 3.99 µs | N/A (str) |
+| | `Online GRU + A2C` | 0.5± 1.0% (H: 0.0%) | 1.0% | 400.0 ep | 114.2 KB | 17.11 µs | NO (NaN) |
+| **Strict Sparse (25% glitch, 400 ep/reg)** | `MicroContinualCore` (no Cloze) | **44.7± 8.7%** (H: 0.0%) | **24.4%** | **215.2 ep** | 738.0 KB | 31.84 µs | YES |
+| | `MicroCore (+Can. Cloze)` | **48.5±10.4%** (H: 0.0%) | 17.2% | 252.5 ep | 454.0 KB | 17.16 µs | YES |
+| | `MFEC + PH (fair 0.78+EMA)` | 1.4± 0.9% (H: 0.3%) | 0.9% | 400.0 ep | 16.7 KB | 3.91 µs | N/A (str) |
 
-All Rust binaries were compiled and executed with `--release`. Unit tests pass **`10 / 10`** (`cargo test --release`).
-
-### 5.1 Unified Progressive Ablation (`bench_unified_ablation`)
-
-We evaluate five strict ablation stages inside the same `MicroContinualCore` codebase:
-- **`[A0]` Frozen Rotor Only (no RTRL):** Band 0 only (`rtrl_sectors = 0`).
-- **`[A1]` +1L RTRL Frozen (`rtrl_lr = 0`):** adds untrainable Band 1 Cayley reservoirs.
-- **`[A2]` +1L RTRL Trained (coupled):** enables online Band 1 `Cayley-RTRL` (`rtrl_grid_mode = 0`).
-- **`[A3]` +1L RTRL Trained (`dec Qxw`):** switches Band 1 to decoupled `(Q × ω)` grid (`rtrl_grid_mode = 1`).
-- **`[A4]` Unified 2L Fast-Slow + PH:** adds Band 2 Slow Envelope + orthogonal pooling (and skip channel where beneficial) inside `PageHinkleyDetector` regime banks.
-
-#### Ablation 1: POPGym `RepeatPrevious` (`4 symbols`, pure RL `+1/-1`, 10 seeds)
-
-| Stage / Architecture | `K=4` Score | `K=6` Score | RAM (`K=4`/`K=6`) | Latency (`K=4`/`K=6`) | SEU |
-|---|---:|---:|---:|---:|---|
-| `[A0]` Frozen Rotor Only (no RTRL) | `58.0 ± 3.9%` | `50.1 ± 7.9%` | `13.3 KB` | `1.56 / 1.66 µs` | YES |
-| `[A1]` +1L RTRL Frozen (`rtrl_lr=0`) | `55.4 ± 10.4%` | `49.0 ± 11.1%` | `21.0 KB` | `3.28 / 3.26 µs` | YES |
-| `[A2]` +1L RTRL Trained (coupled) | `55.8 ± 8.9%` | `50.8 ± 9.5%` | `21.0 KB` | `3.61 / 3.68 µs` | YES |
-| `[A3]` +1L RTRL Trained (`dec Qxw`) | `70.4 ± 10.3%` | `63.5 ± 11.4%` | `21.0 KB` | `3.58 / 3.75 µs` | YES |
-| **`[A4]` Unified 2L Fast-Slow + PH** | **`83.8 ± 5.0%`** | **`74.7 ± 5.0%`** | **`18.3 KB`** | `5.49 / 5.70 µs` | **YES** |
-
-#### Ablation 2: Position-Only CartPole `A -> B -> A` Actuator Flip (`steps / 200`, 10 seeds)
-
-| Stage / Architecture | Pure 2D (`Score` / `Retent.` / `Rec.`) | `+dx` (`Score` / `Retent.` / `Rec.`) | RAM (`2D` / `+dx`) | Latency (`2D` / `+dx`) | SEU |
-|---|---|---|---|---|---|
-| `[A0]` Frozen Rotor Only | `27.4 ± 4.9` / `30.1` / `140.0 ep` | `162.4 ± 18.7` / `148.6` / `25.1 ep` | `74.4 / 74.4 KB` | `1.28 / 3.56 µs` | YES |
-| `[A1]` +1L RTRL Frozen | `59.7 ± 10.2` / `65.9` / `77.9 ep` | `173.7 ± 5.1` / `176.4` / `21.1 ep` | `16.8 / 18.3 KB` | `2.82 / 3.28 µs` | YES |
-| `[A2]` +1L RTRL Trained (cpl) | `62.9 ± 12.0` / `88.1` / `84.9 ep` | `182.6 ± 3.8` / `183.6` / `21.7 ep` | `16.8 / 18.3 KB` | `3.08 / 3.69 µs` | YES |
-| `[A3]` +1L RTRL Trained (`Qxw`) | `51.9 ± 7.1` / `71.0` / `92.0 ep` | `181.5 ± 4.4` / `185.5` / `22.5 ep` | `16.8 / 18.3 KB` | `3.14 / 3.70 µs` | YES |
-| **`[A4]` Unified 2L Fast-Slow + PH** | **`101.3 ± 12.6` / `119.8` / `62.6 ep`** | **`184.1 ± 7.1` / `184.2` / `21.5 ep`** | **`18.4 / 19.9 KB`** | `3.75 / 4.54 µs` | **YES** |
-
-#### Ablation 3: Wave-Superposition Zero-Shot Transfer (`Train A+B+C -> Frozen Eval`, 10 seeds)
-
-| Stage / Architecture | `A+B+C` | `ZS:A` | `ZS:B` | `ZS:C` | `ZS:A+B` | Mean ZS | RAM | Lat | SEU |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| `[A0]` Frozen Rotor Only | `73.1%` | `81.8%` | `52.7%` | `41.6%` | `79.2%` | `63.8 ± 6.1%` | `6.1 KB` | `1.22 µs` | YES |
-| `[A1]` +1L RTRL Frozen | `77.9%` | `95.2%` | `46.2%` | `26.7%` | `94.6%` | `65.7 ± 1.9%` | `9.6 KB` | `2.45 µs` | YES |
-| `[A2]` +1L RTRL Trained (cpl) | `78.2%` | `95.2%` | `50.8%` | `17.4%` | `95.0%` | `64.6 ± 1.4%` | `9.6 KB` | `2.80 µs` | YES |
-| **`[A3]` +1L RTRL Trained (`dec Qxw`)** | `90.6%` | `94.7%` | `90.3%` | `86.4%` | `85.4%` | **`89.2 ± 2.3%`** | **`9.6 KB`** | `2.76 µs` | **YES** |
-| `[A4]` Unified 2L Fast-Slow + PH | **`92.9%`** | `89.1%` | `79.3%` | `85.9%` | `82.6%` | `84.2 ± 3.6%` | `11.3 KB` | `3.95 µs` | YES |
-
-#### Ablation 4: Continual Wave Flip (`Normal -> Inverted -> Immediate 12-ep Return`, 10 seeds)
-
-| Architecture | Score | `Ret12ep` | Recovery | RAM | Latency | SEU |
-|---|---:|---:|---:|---:|---:|---|
-| **Unified 2L MicroCore + PH Banks** | **`88.3 ± 0.3%`** | **`66.9%`** | **`22.7 ep`** | **`16.9 KB`** | `3.97 µs` | **YES** |
-| Unified 2L (no PH, single bank) | `88.2 ± 0.3%` | `21.7%` | `32.8 ep` | `11.3 KB` | `3.82 µs` | YES |
-| Online GRU + A2C | `67.0 ± 1.9%` | `44.1%` | `180.0 ep` | `39.4 KB` | `8.03 µs` | NO (`NaN`) |
-
-#### Ablation 5: Electricity `ELEC2` Real Stream Temporal (`45,312` rows, 1-pass Test-then-Train, without `y_{t-1}`, 3 seeds)
-
-| Stage | Acc (`mean±sd`) | `KappaT` ($\kappa_T$) | RAM | Latency | SEU |
-|---|---:|---:|---:|---:|---|
-| `[A0]` Frozen Rotor Only (no RTRL) | `86.2 ± 0.0%` | `+0.059` | `9.5 KB` | `1.17 µs` | YES |
-| `[A1]` +1L RTRL Frozen (`rtrl_lr=0`) | `85.3 ± 0.2%` | `-0.003` | `16.3 KB` | `2.80 µs` | YES |
-| `[A2]` +1L RTRL Trained (coupled) | `88.1 ± 0.5%` | `+0.189` | `16.3 KB` | `3.62 µs` | YES |
-| `[A3]` +1L RTRL Trained (`dec Qxw`) | `88.3 ± 0.6%` | `+0.204` | `16.3 KB` | `3.56 µs` | YES |
-| **`[A4]` Unified 2L Fast-Slow + PH** | **`90.0 ± 0.1%`** | **`+0.322`** | **`27.0 KB`** | `6.20 µs` | **YES** |
-
-**Mechanistic Findings from `[A0]..[A4]`:**
-1. *Why `(Q × ω)` + Band 2 matter on delayed/wave tasks:* On `RepeatPrevious K=4,6` and `Wave Zero-Shot`, coupled RTRL (`[A2]`) improves minimally over frozen reservoirs (`55.8%` vs `55.4%`, `64.6%` ZS vs `65.7%`), because high-frequency modes are over-damped. Decoupling frequency and damping (`[A3]`) lifts `RepeatPrevious K=4` to `70.4%` and `Wave Zero-Shot` to `89.2%`. Adding Band 2 Slow Envelope (`[A4]`) pushes `RepeatPrevious K=4` to `83.8%` (`K=6`: `74.7%`, `18.3 KB` RAM) and raises `ELEC2 Temporal` without `y_{t-1}` from `86.2%` (`κ_T=+0.059`) to **`90.0%` (`κ_T=+0.322`)** while keeping `27.0 KB` RAM (`[A4]` unified config; `89.2%`, `κ_T=+0.263` in `bench_step2_streams`).
-2. *Why combined Band 0 + Band 1/2 helps pure-2D CartPole:* Retaining Band 0 (`half_sectors = 16`) alongside trained 2L RTRL (`[A4]`) lifts pure-2D CartPole `A->B->A` from `27.4` (`[A0]`) and `62.9` (`[A2]`) to **`101.3 ± 12.6` steps** (`119.8` retention, `62.6 ep` recovery), while matching `+dx` saturating performance at **`184.1 ± 7.1` steps** (`21.5 ep` recovery).
-3. *Why `PageHinkleyDetector` encapsulation is essential:* Without per-bank switching (`Ablation 4`), immediate 12-episode retention after returning from Inverted to Normal drops from **`66.9%`** down to `21.7%`.
-
-### 5.2 Non-Stationary POMDP, Deep Delay & Real-Stream Benchmarks
-
-#### A. Non-Stationary Streams (`bench_step2_streams`, 1-pass Test-then-Train)
-
-| Benchmark | Model | Score (`m±sd`) | $\kappa_T$ | Retent. / Tail20% | Recovery | RAM | Latency | SEU |
-|---|---|---|---|---|---|---|---|---|
-| `SEA Concepts` (10s) | `MicroContinualCore` | `82.6 ± 0.3%` | `+0.627` | `82.8%` | `54.1 st` | `27.3 KB` | `6.16 µs` | YES |
-| `SEA Concepts` (10s) | `Online MLP (H=32)+Adam` | `85.9 ± 0.3%` | `+0.699` | `86.4%` | `52.3 st` | `2.3 KB` | `1.10 µs` | NO (`NaN`) |
-| `SEA Concepts` (10s) | `Online Gaussian NB` | `84.4 ± 0.3%` | `+0.666` | `86.1%` | `55.3 st` | `0.1 KB` | `0.05 µs` | NO (`NaN`) |
-| `SEA Concepts` (10s) | `Tabular Binned + PH` | `62.4 ± 0.7%` | `+0.193` | `64.5%` | `443.6 st` | `112.1 KB` | `0.15 µs` | YES |
-| `SEA Concepts` (10s) | `No-Change (Persist)` | `53.4 ± 0.5%` | `+0.000` | `53.4%` | `560.5 st` | `0.0 KB` | `0.00 µs` | YES |
-| `STAGGER` (10s) | `MicroContinualCore` | `96.1 ± 0.4%` | `+0.893` | `96.7%` | `60.5 st` | `27.3 KB` | `5.97 µs` | YES |
-| `STAGGER` (10s) | `Online MLP (H=32)+Adam` | `97.2 ± 0.3%` | `+0.923` | `96.6%` | `66.5 st` | `4.6 KB` | `1.29 µs` | NO (`NaN`) |
-| `STAGGER` (10s) | `Online Gaussian NB` | `84.0 ± 0.6%` | `+0.559` | `80.4%` | `230.8 st` | `0.1 KB` | `0.10 µs` | NO (`NaN`) |
-| `STAGGER` (10s) | `Tabular Binned + PH` | `97.6 ± 0.0%` | `+0.935` | `97.8%` | `66.9 st` | `3.4 KB` | `0.11 µs` | YES |
-| `STAGGER` (10s) | `No-Change (Persist)` | `63.7 ± 0.9%` | `+0.000` | `65.6%` | `471.3 st` | `0.0 KB` | `0.00 µs` | YES |
-| `Rotating Hyperplane 10D` | `MicroContinualCore` | `77.3 ± 0.9%` | `+0.548` | `79.8%` | `53.5 st` | `27.3 KB` | `6.56 µs` | YES |
-| `Rotating Hyperplane 10D` | `Online MLP (H=32)+Adam` | `82.0 ± 0.8%` | `+0.641` | `83.8%` | `52.3 st` | `5.0 KB` | `1.44 µs` | NO (`NaN`) |
-| `Rotating Hyperplane 10D` | `Online Gaussian NB` | `77.8 ± 1.1%` | `+0.558` | `81.5%` | `55.2 st` | `0.2 KB` | `0.10 µs` | NO (`NaN`) |
-| `Rotating Hyperplane 10D` | `Tabular Binned + PH` | `49.9 ± 0.5%` | `+0.003` | `49.8%` | `600.0 st` | `114.8 KB` | `0.23 µs` | YES |
-| `Rotating Hyperplane 10D` | `No-Change (Persist)` | `49.8 ± 0.7%` | `+0.000` | `49.1%` | `600.0 st` | `0.0 KB` | `0.00 µs` | YES |
-| `Uncorrelated RBF 10D 4-cls` | **`MicroContinualCore`** | **`92.8 ± 0.8%`** | **`+0.905`** | `92.8%` | `58.5 st` | `33.7 KB` | `6.58 µs` | **YES** |
-| `Uncorrelated RBF 10D 4-cls` | `Online MLP (H=32)+Adam` | `92.6 ± 0.6%` | `+0.902` | `92.5%` | `56.1 st` | `5.8 KB` | `1.53 µs` | NO (`NaN`) |
-| `Uncorrelated RBF 10D 4-cls` | `Online Gaussian NB` | `90.7 ± 0.6%` | `+0.876` | `90.3%` | `123.0 st` | `0.3 KB` | `0.18 µs` | NO (`NaN`) |
-| `Uncorrelated RBF 10D 4-cls` | `Tabular Binned + PH` | `25.1 ± 0.4%` | `+0.003` | `25.2%` | `600.0 st` | `249.0 KB` | `0.21 µs` | YES |
-| `Uncorrelated RBF 10D 4-cls` | `No-Change (Persist)` | `24.9 ± 0.4%` | `+0.000` | `25.0%` | `600.0 st` | `0.0 KB` | `0.00 µs` | YES |
-| `ELEC2` (`45,312` rows, no `y_{t-1}`) | `MicroCore (i.i.d.)` | `85.0 ± 0.0%` | `-0.022` | `87.1%` (Tail20) | `0.0 st` | `27.3 KB` | `5.64 µs` | YES |
-| `ELEC2` (`45,312` rows, no `y_{t-1}`) | `MicroCore (Temporal)` | `83.1 ± 0.1%` | `-0.154` | `84.7%` (Tail20) | `0.0 st` | `27.3 KB` | `5.95 µs` | YES |
-| `ELEC2` (`45,312` rows, no `y_{t-1}`) | **`MicroCore+2L-RTRL(Temp)`** | **`89.2 ± 0.3%`** | **`+0.263`** | **`91.2%`** (Tail20) | `0.0 st` | `27.0 KB` | `6.34 µs` | **YES** |
-| `ELEC2` (`45,312` rows, no `y_{t-1}`) | `Online LRU-RTRL (Temp)` | `89.3 ± 0.1%` | `+0.271` | `90.5%` (Tail20) | `0.0 st` | `9.4 KB` | `4.27 µs` | NO (`NaN`) |
-| `ELEC2` (`45,312` rows, no `y_{t-1}`) | `Online MLP (H=32)+Adam` | `87.2 ± 0.3%` | `+0.130` | `88.8%` (Tail20) | `0.0 st` | `4.2 KB` | `1.64 µs` | NO (`NaN`) |
-| `ELEC2` (`45,312` rows, `+y_{t-1}`) | `MicroCore (+y_{t-1})` | `87.2 ± 0.0%` | `+0.129` | `87.2%` (Tail20) | `0.0 st` | `27.3 KB` | `6.09 µs` | YES |
-| `ELEC2` (`45,312` rows, `+y_{t-1}`) | `MicroCore (Temp+y_{t-1})` | `85.8 ± 0.1%` | `+0.033` | `86.1%` (Tail20) | `0.0 st` | `27.3 KB` | `6.65 µs` | YES |
-| `ELEC2` (`45,312` rows, `+y_{t-1}`) | **`MicroCore+RTRL (+y_{t-1})`** | **`90.9 ± 0.1%`** | **`+0.382`** | **`92.6%`** (Tail20) | `0.0 st` | `28.1 KB` | `6.78 µs` | **YES** |
-| `ELEC2` (`45,312` rows, `+y_{t-1}`) | `Online LRU-RTRL (+y_{t-1})` | `93.3 ± 0.0%` | `+0.544` | `94.3%` (Tail20) | `0.0 st` | `10.2 KB` | `4.45 µs` | NO (`NaN`) |
-| `ELEC2` (`45,312` rows, `+y_{t-1}`) | `Online MLP (+y_{t-1})` | `91.0 ± 0.1%` | `+0.387` | `91.6%` (Tail20) | `0.0 st` | `4.6 KB` | `1.55 µs` | NO (`NaN`) |
-| `ELEC2` (`45,312` rows, no `y_{t-1}`) | `Online Gaussian NB` | `71.8 ± 0.0%` | `-0.923` | `71.1%` (Tail20) | `0.0 st` | `0.1 KB` | `0.10 µs` | NO (`NaN`) |
-| `ELEC2` (`45,312` rows, no `y_{t-1}`) | `Tabular Binned + PH` | `71.3 ± 0.0%` | `-0.957` | `69.5%` (Tail20) | `0.0 st` | `40.4 KB` | `0.10 µs` | YES |
-| `ELEC2` (`45,312` rows) | `No-Change (Persist)` | `85.3 ± 0.0%` | `+0.000` | `84.8%` (Tail20) | `0.0 st` | `0.0 KB` | `0.00 µs` | YES |
-
-On real `ELEC2` without autoregressive label leakage (`y_{t-1}`), non-recurrent `MicroCore (i.i.d.)` performs below `No-Change` (`κ_T = -0.022`), whereas unified online `Cayley-RTRL` learns genuine temporal structure to reach **`89.2%`** (`κ_T = +0.263`, `Tail20% 91.2%`; **`90.0%`, `κ_T = +0.322`** in `[A4]`), outperforming `Online MLP (H=32)+Adam` (`87.2%`) and matching recurrent `Online LRU-RTRL (Temp)` (`89.3%`, `κ_T = +0.271`, `NO (NaN)`) while remaining 100% `#[axiom_zero]` SEU-safe. When lagged label `y_{t-1}` is supplied, `MicroCore+RTRL (+y_{t-1})` (`90.9%`, `Tail20% 92.6%`) matches `Online MLP (+y_{t-1})` (`91.0%`, `Tail20% 91.6%`), while unconstrained complex `Online LRU-RTRL (+y_{t-1})` hits `93.3%` (`κ_T = +0.544`, `NO (NaN)`).
-
-#### B. Partial Observability & Continual RL (`bench_step3_pomdp_rl`, `bench_step4_waves`, `bench_step1`, 10 seeds)
-
-| Suite / Task | MicroCore / 2L Cayley | `RTRRL-LRU` (AAAI'25) | `Online GRU + A2C` | Random / Oracle |
-|---|---|---|---|---|
-| `T-Maze L=5` (glitch ±0.06) | **`100.0 ± 0.0%`** (`51.2 KB`, `2.58 µs`) | `56.6 ± 6.4%` (`4.9 KB`) | `74.2 ± 7.8%` (`41.7 KB`) | `50.0%` floor |
-| `T-Maze L=15` (glitch ±0.35) | **`98.8 ± 1.2%`** (`51.2 KB`, `2.91 µs`) | `51.1 ± 5.8%` (`4.9 KB`) | `47.8 ± 4.3%` (`41.7 KB`) | `50.0%` floor |
-| `T-Maze L=30` (glitch ±0.35) | **`79.1 ± 6.6%`** (`79.9 KB`, `6.56 µs`) | `48.9 ± 5.6%` (`4.9 KB`) | `52.1 ± 3.7%` (`41.7 KB`) | `50.0%` floor |
-| `T-Maze L=50` (glitch ±0.35) | **`58.4 ± 10.7%`** (`99.1 KB`, `7.72 µs`) | `48.6 ± 4.0%` (`4.9 KB`) | `50.5 ± 7.5%` (`41.7 KB`) | `50.0%` floor |
-| `RepeatPrevious K=2` | **`99.5 ± 0.3%`** (`13.2 KB`, `5.06 µs`) | `90.8 ± 8.0%` (`12.8 KB`) | `51.6 ± 7.7%` (`43.6 KB`) | `25.0%` floor |
-| `RepeatPrevious K=4` | **`85.7 ± 4.1%`** (`13.2 KB`, `5.14 µs`) | `63.4 ± 6.0%` (`12.8 KB`) | `32.4 ± 4.5%` (`43.6 KB`) | `25.0%` floor |
-| `RepeatPrevious K=6` | **`74.3 ± 4.8%`** (`13.2 KB`, `5.35 µs`) | `59.3 ± 6.0%` (`12.8 KB`) | `29.6 ± 3.4%` (`43.6 KB`) | `25.0%` floor |
-| `RepeatPrevious K=8` | **`62.7 ± 4.0%`** (`13.2 KB`, `5.17 µs`) | `44.6 ± 3.6%` (`12.8 KB`) | `25.5 ± 2.3%` (`43.6 KB`) | `25.0%` floor |
-| `CartPole (pure 2D, A->B->A)` | **`101.3 ± 12.6 st`** (`[A4]`, `18.4 KB`) / `62.9 ± 12.0 st` (`1L`) | `32.7 ± 2.6 st` (`8.2 KB`) | `54.7 ± 14.0 st` (`40.5 KB`) | `22.8 st` floor |
-| `CartPole (+dx, A->B->A)` | **`184.1 ± 7.1 st`** (`[A4]`, `19.9 KB`) / **`182.6 ± 3.8 st`** (`1L`) | `84.7 ± 16.1 st` (`11.2 KB`) | `95.6 ± 9.1 st` (`42.8 KB`) | `22.8 st` floor |
-| `Wave-Superposition ZS` | **`93.0% / 85.0 ± 2.3% ZS`** (`8.2 KB`, `3.57 µs`) | `92.0% / 83.2 ± 2.7% ZS` (`5.8 KB`) | `78.7% / 63.4 ± 2.6% ZS` (`39.4 KB`) | `Sign(x_t) 75.0% ZS` |
-| `HardPOMDP v2 Strict (dense, 15%)` | **`63.3 ± 7.7%`** (`H:15.3%`, `454.0 KB`) | — | `0.0 ± 0.1%` (`114.2 KB`) | `99.2%` ceil / `0.2%` floor |
-| `HardPOMDP v2 Strict (sparse, 15%)` | **`62.0 ± 5.3%`** (`H:12.7%`, `454.0 KB`) | — | `0.9 ± 1.1%` (`114.2 KB`) | `99.2%` ceil / `0.2%` floor |
-| `HardPOMDP v2 Strict (sparse, 25%)` | **`49.6 ± 7.8%`** (`H:10.2%`, `454.0 KB`) | — | `0.1 ± 0.2%` (`114.2 KB`) | `96.1%` ceil / `0.1%` floor |
-
-*(Note: on `HardPOMDP v2 Strict Honest`, `MFEC + Page-Hinkley` achieves `0.6%` / `1.0%` / `0.3%` and `Tabular + PH` achieves `0.0%` / `0.2%` / `0.1%` across the three configurations respectively, because hidden sub-identity aliasing and 1/1728 sparse random odds defeat non-spinor memoryless/tabular policies.)*
-
-**Benchmark Protocol & Task Definitions:**
-- *Non-Stationary `T-Maze` (`bench_step3_pomdp_rl`, `bench_step4_waves`):* Agent receives a step-0 binary directional cue followed by corridor length $L \in \{5, 15, 30, 50\}$ filled with uniform distractor noise (`±0.06` at $L=5$; `±0.35` at $L \ge 15$) and must select the cue-matching junction action under sparse end-of-episode reward across an `A -> B -> A` goal reversal.
-- *`Wave-Superposition Zero-Shot` (`bench_step4_waves`):* Predict $\mathrm{sign}(y_{t+1})$ one step ahead on $x_t = w_a A(t) + w_b \cos(2\pi t / 8 + \phi_b) + w_c \cos(2\pi t / 3 + \phi_c) + \epsilon_t$, where $A(t) \in \{\pm 1\}$ flips mid-episode, $\phi_b, \phi_c$ are randomized, and $\epsilon_t \in [-0.06, 0.06]$; models train exclusively on `A+B+C` and are evaluated frozen on unseen `A`, `B`, `C`, and `A+B`.
-- *`HardPOMDP v2 Strict Honest` (`src/env_hard_pomdp.rs`, `bench_step1`):* 6-step, 12-action textual POMDP across regimes `Alpha -> Beta -> Gamma -> Alpha` (`15%/25%` action glitch probability returning indistinguishable failure text `"action_failed no_state_change"`, hidden subsystem tag after step 0, sparse terminal reward, and `CanonicalTrain` vs. `UnseenHoldout` splits).
-- *Config distinction on `RepeatPrevious K=4`:* Both `Ablation 1 [A4]` (`83.8 ± 5.0%`, `18.3 KB`) and `bench_step3_pomdp_rl Hier2L` (`85.7 ± 4.1%`, `13.2 KB`) use `160` episodes of length `24` with `16+16` Cayley sectors and `half_sectors = 0`; `[A4]` runs inside two `PageHinkley`-gated `RegimeBank` containers (`MicroContinualCore`), whereas `Hier2L` evaluates the bare single-bank `HierarchicalCayleyRtrl` module directly.
-
-**Methodological & Fairness Notes:**
-1. *Single-Bank Baselines vs. `PageHinkley` Banks:* On continual regime-flip tasks (`T-Maze A->B->A`, `CartPole A->B->A`), `MicroContinualCore` maintains multi-regime banks switched via `PageHinkley` (`Ablation 4` isolates this directly: multi-bank `PH` lifts `Ret12ep` from `21.7%` to `66.9%`), whereas `RTRRL-LRU` and `Online GRU + A2C` maintain a single parameter bank in `v0.3.0`.
-2. *Per-Step Eligibility vs. Episodic BPTT:* Both `Cayley-RTRL` and `RTRRL-LRU` compute online per-step TD($\lambda$) eligibility updates with truncation-aware `end_episode_truncated` handling, whereas `Online GRU + A2C` caches the trajectory and executes episodic A2C + BPTT at episode end.
-3. *Input Sanitization vs. Register Bit-Flips:* In `v0.3.0`, SEU safety measures adversarial `NaN`/`±1e30` input probes (`decide_vec` with `sanitize_bounded_f32`), while baselines do not apply input clamping; IEEE-754 register bit-flip injection and input-clamped baseline controls are introduced in `v0.4.0`.
-4. *`HardPOMDP v2` Unlabeled Cloze Pre-Adaptation:* Prior to the `HardPOMDP v2` RL regimes (`bench_step1`), `MicroContinualCore` runs `unlabeled_cloze_adapt(&logs, 35)` on unlabeled domain logs to prime Band-0 spinor token geometry, whereas `MFEC + PH`, `Tabular + PH`, and `Online GRU + A2C` start strictly from scratch on the RL episodes.
+*Methodology Note:* Adding fair numeric downweighting, `cos=0.78` coalescing, and EMA belief memory raises `MFEC + PH` from `0.6%` to `2.7%` (dense). The remaining gap to `53.3%` is driven primarily by `MicroCore`'s structured exploration stack (`explore_ucb = 0.48`, `intra_ep_fatigue`, `intrinsic_curiosity = 0.18`, and `KerrKernelBank` aliasing gate) on a 12-action lethal-trap 3-step chain (random chance $1/12^3 \approx 0.058\%$) rather than by Cayley rotors alone. Without Cloze exposure to holdout words, `UnseenHoldout` is `0.0–0.3%`.
 
 ---
 
-## 6. Limitations & Future Directions
+### 3.2 Step 2: Concept-Drift Data Streams, ELEC2 & External `river` Verification (`bench_step2_streams`)
 
-1. **Exact Integer vs. `f32` Realization:** Lean 4 theorems verify algebraic invariants over `PosNat`/`Balance`/`GaussBalance`/`EisBalance`/`DualBalance`, whereas the Rust runtime operates in bounded IEEE-754 `f32` guarded by `sanitize_f32` and `#[axiom_zero]`. Extending proofs to fixed-point (`Q16.16`/`i32`) arithmetic is an immediate next step for bare-metal targets lacking FPUs.
-2. **Continuous Spatial Drift without Discrete Switch Signals:** On smooth gradual drift in high-dimensional linear/MLP spaces (`Rotating Hyperplane 10D`: `77.3%` vs `Online MLP+Adam 82.0%`), dense neural layers remain faster per step (`1.44 µs` vs `6.56 µs`) when SEU guarantees are not required.
-3. **Holdout Symbolic Generalization Under Sparse Delayed RL:** While Band 0 Cloze adaptation enables strong canonical transfer (`63.3%` on Strict Dense, `62.0%` on Strict Sparse), zero-shot unseen holdout generalization (`H:15.3%` / `H:12.7%`) remains open for future symbolic-relational consolidation work.
+1-pass Test-then-Train evaluation (10 seeds on synthetic streams; 3 seeds × 45,312 rows on real Electricity `ELEC2`), including Phase-2 zero-transcendental models (`MicroCore+2L-RTRL (PH=8)`, `2D Rat. Cayley`, `Alg.Sel.Cayley`) and an independent benchmark against untouched third-party `river==0.27.0` (University of Waikato):
+
+| Benchmark | `MicroContinualCore` | `MicroCore+2L-RTRL` | `Online MLP (H=32)+Adam` | `Online Gaussian NB` | `No-Change` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **SEA Concepts (5k, 10% noise)** | 82.6±0.3% ($\kappa_T +0.627$) | — | **85.9±0.3%** ($\kappa_T +0.699$) | 84.4±0.3% | 53.4% |
+| **STAGGER (3k, A->B->C->A->B)** | 96.1±0.4% ($\kappa_T +0.893$) | — | **97.2±0.3%** ($\kappa_T +0.923$) | 84.0±0.6% | 63.7% |
+| **Rotating Hyperplane 10D (5k)** | 77.3±0.9% ($\kappa_T +0.548$) | — | **82.0±0.8%** ($\kappa_T +0.641$) | 77.8±1.1% | 49.8% |
+| **Uncorrelated 4-Class RBF (8k)** | **92.8±0.8%** ($\kappa_T +0.905$) | — | 92.6±0.6% ($\kappa_T +0.902$) | 90.7±0.6% | 24.9% |
+
+**Electricity `ELEC2` Real Stream (45,312 rows, 1-pass Test-then-Train, 3 seeds):**
+
+| Model | Raw Acc ($\kappa_T$) | Raw Tail20% | $+y_{t-1}$ Acc ($\kappa_T$) | $+y_{t-1}$ Tail20% | RAM (raw / $+y$) | Lat. (raw / $+y$) | SEU-Safe |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `MicroCore+2L-RTRL (PH=8)` (0% exp) | **91.5±0.3%** (**$+0.422$**) | **92.5%** | 91.7±0.1% ($+0.431$) | 92.9% | 27.0 / 28.1 KB | 7.78 / 7.15 µs | **YES** |
+| `Alg.Sel.Cayley` (0% exp) | 90.5±0.2% ($+0.355$) | 92.3% | **92.0±0.1%** ($+0.457$) | **93.2%** | 16.0 / 17.5 KB | 11.17 / 12.17 µs | **YES** |
+| `2D Rat. Cayley` (0% exp) | 89.4±0.1% ($+0.276$) | 90.4% | 91.0±0.0% ($+0.387$) | 91.5% | 11.5 / 12.5 KB | 8.11 / 8.65 µs | **YES** |
+| `MicroCore+2L-RTRL (PH=3.6, orig)` | 89.5±0.3% ($+0.283$) | 91.0% | 90.7±0.2% ($+0.367$) | 92.3% | 27.0 / 28.1 KB | 7.42 / 7.03 µs | **YES** |
+| `Online LRU-RTRL` (Adam + `exp`) | 89.3±0.1% ($+0.274$) | 90.5% | **93.4±0.1%** (**$+0.547$**) | **94.6%** | 10.5 / 11.3 KB | 4.04 / 4.20 µs | NO (NaN) |
+| `Online MLP (H=32) + Adam` | 87.3±0.1% ($+0.136$) | 88.9% | 91.0±0.0% ($+0.389$) | 91.6% | 5.9 / 6.4 KB | 1.45 / 1.47 µs | NO (NaN) |
+| `No-Change (Persist)` | 85.3±0.0% ($+0.000$) | 84.8% | 85.3±0.0% ($+0.000$) | 84.8% | 0.0 KB | 0.00 µs | YES |
+
+**Independent Third-Party `river==0.27.0` Benchmark on Identical `electricity-normalized.arff` (45,312 rows, 1-pass Test-then-Train):**
+- `River ARFClassifier (n=10, default)`: **`88.26%`** ($\kappa_T = +0.200$, `75.0 µs/step`) | With $+y_{t-1}$: **`88.65%`** ($\kappa_T = +0.226$, `74.1 µs/step`) | Shuffled $y$: **`54.19%`**
+- `River HoeffdingAdaptiveTreeClassifier`: **`83.19%`** ($\kappa_T = -0.146$, `88.2 µs/step`) | With $+y_{t-1}$: **`87.15%`** ($\kappa_T = +0.124$, `82.3 µs/step`)
+- `River StandardScaler + LogisticRegression`: **`83.73%`** ($\kappa_T = -0.109$, `10.9 µs/step`)
+- Raising Page-Hinkley threshold to suppress volatility false alarms (`PH=8`) brings zero-transcendental `MicroCore+2L-RTRL` to **`91.5%`** raw (**+2.2 pp** over `Online LRU-RTRL` `89.3%`, **+3.2 pp** over `river ARFClassifier` `88.26%` at **10× lower latency**), while zero-transcendental `Alg.Sel.Cayley` reaches **`92.0%`** on $+y_{t-1}$ (still `-1.4 pp` behind transcendental Adam `Online LRU-RTRL` `93.4%`, which lacks SEU safety).
 
 ---
 
-## 7. Reproducibility, Licensing & Citation
+### 3.3 Steps 3 & 4: Partially Observable Continual RL & Wave Superposition (`bench_step3_pomdp_rl`, `bench_step4_waves`)
 
-Every result in Section 5 can be reproduced locally from [`Cargo.toml`](Cargo.toml) (`axiom_zero` vendored at [`crates/axiom_zero`](crates/axiom_zero)) and [`proofs/MicroContinualCoreProofs.lean`](proofs/MicroContinualCoreProofs.lean):
+#### A. Non-Stationary Corridor T-Maze ($L \in \{5, 15, 30, 50\}$, Drift $A \to B \to A$, Fixed `trace_capacity = 64`, 10 seeds)
 
-```powershell
-# Download Electricity (ELEC2) dataset from OpenML (needed once for ELEC2 tables):
-Invoke-WebRequest -Uri "https://www.openml.org/data/download/2419/electricity-normalized.arff" -OutFile "electricity-normalized.arff"
+| Horizon / Noise | `MicroCore (ng=0.0)` | `Alg.Sel.Cayley (RL, ng=0.0)` | `MicroCore (+gate=0.28 Abl.)` | `RTRRL-LRU (AAAI'25)` | `Online GRU + A2C` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **$L = 5$ ($\pm 0.06$)** | 49.0±4.5% (Ret 49.5%) | **65.1±9.8%** (Ret **66.8%**, `5.6 KB`, `3.23 µs`, SEU=YES) | **99.6±0.8%** (Ret 99.5%) | 56.6±6.4% (Ret 61.2%) | 76.8±10.5% (Ret 45.8%) |
+| **$L = 15$ ($\pm 0.35$)** | 49.8±2.7% (Ret 51.0%) | **53.8±5.5%** (Ret **56.2%**, `5.6 KB`, `3.20 µs`, SEU=YES) | **93.1±3.6%** (Ret 94.8%) | 51.1±5.8% (Ret 51.0%) | 47.5±4.1% (Ret 47.0%) |
+| **$L = 30$ ($\pm 0.35$)** | 54.2±6.9% (Ret 55.8%) | — | **79.1±6.6%** (Ret 80.2%) | 48.9±5.6% (Ret 55.0%) | 52.2±3.8% (Ret 48.5%) |
+| **$L = 50$ ($\pm 0.35$)** | 48.6±5.0% (Ret 48.5%) | — | **58.4±10.7%** (Ret 59.0%) | 48.6±4.0% (Ret 53.2%) | 50.5±7.5% (Ret 50.2%) |
 
-cargo test --release
-cargo run --release --bin bench_unified_ablation
-cargo run --release --bin bench_step1
-cargo run --release --bin bench_step2_streams
-cargo run --release --bin bench_step3_pomdp_rl
-cargo run --release --bin bench_step4_waves
-lean proofs\MicroContinualCoreProofs.lean
-```
+*Honest Assessment:* Without any hardcoded `novelty_gate`, `Alg.Sel.Cayley (RL, ng=0.0)` delivers a genuine **+16.1 pp** gain over `MicroCore (ng=0.0)` at $L=5$ (`65.1%` vs `49.0%`, beating `RTRRL-LRU` by `+8.5 pp` and outperforming `GRU+A2C` on continual retention by `+21.0 pp`), and posts the highest `ng=0.0` score at $L=15$ (`53.8%`, Ret `56.2%`), **but does not solve high-noise $L=15$ sparse-reward T-Maze** (nor `Majority Corridor L=20` in Suite 3A: `48.9±3.9%`). Solving noisy sparse corridors $L \ge 15$ without domain-tuned gating remains an open problem for all pure-RL online models tested.
 
-Licensed under **`PolyForm-Noncommercial-1.0.0`** ([`LICENSE`](LICENSE); [`licenses/LICENSE-AGPL-3.0-only.txt`](licenses/LICENSE-AGPL-3.0-only.txt) is archived for reference only and is **not active** — this repository is not dual-licensed). Commercial integration or closed corporate deployment inquiries require a separate commercial license from Adrian Aleksandrovich İşmuhanov ([mrwerdin@gmail.com](mailto:mrwerdin@gmail.com), [ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)). Citation metadata is provided in [`CITATION.cff`](CITATION.cff).
+#### B. POPGym RepeatPrevious ($K \in \{2, 4, 6, 8\}$, 4 Symbols, Pure Bandit/RL $+1/-1$, `novelty_gate = 0.0`)
+
+| Delay $K$ | `Hierarchical 2L Cayley` | `Split-Band 1L Cayley` | `MicroContinualCore (Band-0)` | `RTRRL-LRU (AAAI'25)` | `Online GRU + A2C` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **$K = 2$** | **99.5±0.3%** (13.2 KB) | 83.6±3.3% (29.6 KB) | 67.2±3.1% (13.3 KB) | 90.8±8.0% (13.6 KB) | 52.6±11.1% (43.6 KB) |
+| **$K = 4$** | **85.7±4.1%** (13.2 KB) | 64.7±8.8% (29.6 KB) | 53.3±7.6% (13.3 KB) | 63.4±6.0% (13.6 KB) | 29.6±4.3% (43.6 KB) |
+| **$K = 6$** | **74.3±4.8%** (13.2 KB) | — | 54.0±2.8% (15.7 KB) | 59.3±6.0% (13.6 KB) | 29.0±3.1% (43.6 KB) |
+| **$K = 8$** | **62.7±4.0%** (13.2 KB) | — | 47.3±6.9% (15.7 KB) | 44.6±3.6% (13.6 KB) | 27.4±2.5% (43.6 KB) |
+
+#### C. POPGym Position-Only CartPole ($A \to B \to A$ Actuator Inversion) & Wave-Superposition Zero-Shot Transfer
+
+- **Position-Only CartPole (`bench_step3_pomdp_rl`):**
+  - Pure 2D $(x, \theta)$: `Cayley-RTRL (pure 2D)` reaches **77.5±11.8 steps** (Retent 109.7 st) vs `Online GRU` 57.3±15.6 st and `RTRRL-LRU` 32.7±2.6 st.
+  - With first-difference velocity proxy $(+\Delta x)$: `Cayley-RTRL (+dx)` reaches **183.4±6.0 steps** (Retent 183.1 st, 4.58 µs) vs `MicroCore (Branch B)` 140.9±17.7 st, `Online GRU (+dx)` 93.4±8.2 st (Retent 174.8 st), and `RTRRL-LRU (+dx)` 91.0±20.3 st.
+- **Wave-Superposition Zero-Shot Transfer (`bench_step4_waves`):**
+  - `Hierarchical 2L Cayley`: **93.0%** on $A+B+C$ and **85.0±2.3%** mean zero-shot sub-wave transfer (`8.2 KB`, `3.85 µs`), outperforming `RTRRL-LRU` (`83.2±2.9%`), `Sign(x_t)` heuristic (`75.0±0.1%`), `1L Cayley-RTRL` (`64.7±0.7%`), and `Online GRU + A2C` (`63.7±2.8%`).
 
 ---
 
-## References
+### 3.4 Unified 7-Stage Internal Ablation (`bench_unified_ablation`)
 
-1. **Bifet, A., & Gavaldà, R. (2009).** *Adaptive Learning from Evolving Data Streams (`Hoeffding Adaptive Tree`).* In *Proceedings of IDA 2009*, LNCS 5772, pp. 249–260.
-2. **Blundell, C., Uria, B., Pritzel, A., Li, Y., Ruderman, A., Leibo, J. Z., Rae, J., Wierstra, D., & Hassabis, D. (2016).** *Model-Free Episodic Control (`MFEC`).* arXiv:1606.04460.
-3. **Cho, K., van Merriënboer, B., Gulcehre, C., Bahdanau, D., Bougares, F., Schwenk, H., & Bengio, Y. (2014).** *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation (`GRU`).* In *Proceedings of EMNLP 2014*, pp. 1724–1734.
-4. **Gomes, H. M., Bifet, A., Read, J., Barddal, J. P., Enembreck, F., Pfahringer, B., Holmes, G., & Abdessalem, T. (2017).** *Adaptive Random Forests for Evolving Data Stream Classification (`ARF`).* *Machine Learning*, 106(9), 1469–1495.
-5. **Gu, A., Goel, K., & Ré, C. (2022).** *Efficiently Modeling Long Sequences with Structured State Spaces (`S4`).* In *Proceedings of ICLR 2022*.
-6. **Harries, M. (1999).** *Splice-2 Comparative Evaluation: Electricity Pricing (`ELEC2`).* Technical Report UNSW-CSE-TR-9905, University of New South Wales.
-7. **Helfrich, K., Willmott, D., & Ye, Q. (2018).** *Orthogonal Recurrent Neural Networks with Scaled Cayley Transform (`scoRNN`).* In *Proceedings of ICML 2018*, PMLR 80, pp. 1969–1978.
-8. **Hulten, G., Spencer, L., & Domingos, P. (2001).** *Mining Time-Changing Data Streams (`Rotating Hyperplane`).* In *Proceedings of ACM SIGKDD 2001*, pp. 97–106.
-9. **Kingma, D. P., & Ba, J. (2014).** *Adam: A Method for Stochastic Optimization.* arXiv:1412.6980 (ICLR 2015).
-10. **Lemmel, J., & Grosu, R. (2025).** *Real-Time Recurrent Reinforcement Learning (`RTRRL-LRU`).* In *Proceedings of the AAAI Conference on Artificial Intelligence (AAAI 2025)*; arXiv:2311.04830.
-11. **Maduranga, K. D. G., Helfrich, K. E., & Ye, Q. (2019).** *Complex Unitary Recurrent Neural Networks Using Scaled Cayley Transform.* In *Proceedings of AAAI 2019*, pp. 4528–4535.
-12. **Menick, J., Elsen, E., Evci, U., Osindero, S., Simonyan, K., & Graves, A. (2021).** *Practical Real Time Recurrent Learning with a Sparse Approximation (`SnAp`).* In *Proceedings of ICLR 2021*.
-13. **Merrill, W., Petty, J., & Sabharwal, A. (2024).** *The Illusion of State in State-Space Models.* In *Proceedings of ICML 2024*; arXiv:2404.08819.
-14. **Mnih, V., Badia, A. P., Mirza, M., Graves, A., Lillicrap, T., Harley, T., Silver, D., & Kavukcuoglu, K. (2016).** *Asynchronous Methods for Deep Reinforcement Learning (`A2C`).* In *Proceedings of ICML 2016*, pp. 1928–1937.
-15. **Morad, S., Kortvelesy, R., Bettini, M., Liwicki, S., & Prorok, A. (2023).** *POPGym: Benchmarking Partially Observable Reinforcement Learning (`RepeatPrevious`, `Position-Only CartPole`).* In *Proceedings of ICLR 2023*.
-16. **Orvieto, A., Smith, S. L., Gu, A., Fernando, A., Gulcehre, C., Pascanu, R., & De, S. (2023).** *Resurrecting Recurrent Neural Networks for Long Sequences (`LRU`).* In *Proceedings of ICML 2023*, PMLR 202, pp. 26670–26698.
-17. **Page, E. S. (1954).** *Continuous Inspection Schemes (`Page–Hinkley` CUSUM detector).* *Biometrika*, 41(1/2), 100–115.
-18. **Sarrof, Y., Veitsman, Y., & Hahn, M. (2024).** *The Expressive Capacity of State Space Models: A Formal Language Perspective.* In *Proceedings of NeurIPS 2024*.
-19. **Schlimmer, J. C., & Granger, R. H. (1986).** *Incremental Learning from Noisy Data (`STAGGER Concepts`).* *Machine Learning*, 1(3), 317–354.
-20. **Street, W. N., & Kim, Y. (2001).** *A Streaming Ensemble Algorithm (`SEA Concepts`) for Large-Scale Classification.* In *Proceedings of ACM SIGKDD 2001*, pp. 377–382.
-21. **Tallec, C., & Ollivier, Y. (2018).** *Unbiased Online Recurrent Optimization (`UORO`).* In *Proceedings of ICLR 2018*.
-22. **Tsallis, C. (1988).** *Possible Generalization of Boltzmann–Gibbs Statistics.* *Journal of Statistical Physics*, 52(1–2), 479–487.
-23. **Williams, R. J., & Zipser, D. (1989).** *A Learning Algorithm for Continually Running Fully Recurrent Neural Networks (`RTRL`).* *Neural Computation*, 1(2), 270–280.
-24. **Zliobaite, I., Bifet, A., Read, J., Pfahringer, B., & Holmes, G. (2015).** *Evaluation Methods and Decision Theory for Classification of Streaming Data with Temporal Dependence (`Temporal Kappa` $\kappa_T$).* *Machine Learning*, 98(3), 455–482.
+All stages `[A0]..[A4]` run inside the single `MicroContinualCore` struct with constant `max_regimes` and explicit `[A3+Skip]` separation:
+
+| Stage / Architecture | RepeatPrev $K=4$ | RepeatPrev $K=6$ | CartPole 2D | CartPole $+\Delta x$ | Wave ZS Mean | ELEC2 Acc ($\kappa_T$) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `[A0] Frozen Rotor Only (no RTRL)` | 58.0±3.9% | 50.1±7.9% | 27.4±4.9 st | 162.4±18.7 st | 63.8±6.1% | 80.6±0.9% ($-0.321$) |
+| `[A1] +1L RTRL Frozen (rtrl_lr=0)` | 56.8±8.9% | 51.0±7.6% | 55.8±9.6 st | 172.4±6.4 st | 65.7±2.0% | 85.3±0.2% ($-0.003$) |
+| `[A2] +1L RTRL Trained (coupled)` | 58.7±9.1% | 51.6±7.8% | 77.5±11.8 st | 183.4±6.0 st | 64.7±1.0% | 88.1±0.5% ($+0.189$) |
+| `[A3-Frozen] +1L Frozen (dec Qxw)` | 71.2±14.7% | 62.8±14.9% | 35.2±7.7 st | 173.5±4.9 st | **91.0±1.1%** | 85.1±0.1% ($-0.014$) |
+| `[A3] +1L RTRL Trained (dec Qxw)` | 76.7±10.0% | 66.3±11.1% | 50.3±5.5 st | 180.9±5.5 st | 88.8±1.8% | 88.3±0.6% ($+0.204$) |
+| `[A3+Skip] +1L RTRL + SkipX` | 74.5±8.5% | 65.9±10.3% | 48.0±8.7 st | 180.8±4.2 st | 86.5±3.1% | 89.2±0.2% ($+0.261$) |
+| `[A4] Unified 2L Fast-Slow + PH` | **85.8±1.7%** | **77.5±3.4%** | **125.6±22.9 st** | **187.7±4.3 st** | 82.7±3.2% | **89.9±0.2%** (**$+0.314$**) |
+
+---
+
+### 3.5 Step 5: Critique-Response, Matched-Dimension Controls & Symmetric Hardware SEU (`bench_step5_v040`)
+
+#### Suite 1: Non-Abelian Group $A_5 \le \mathrm{SO}(3)$ Word Tracking (End-to-End Supervised, 0% `exp`, Zero Group Oracle)
+
+**Exact Formulation of Task-Agnostic Proto-Metric $\mathrm{SO}(3)$ (`enable_so3_proto_metric`, `src/rtrl.rs`):**
+- *Frame & Prototype Initialization ($W_c$):* The state consists of $M$ orthogonal 3D frames ($S = 3M$ coupled unit vectors $u_{t,s} \in S^2$ evolved by $u_{t,s} = R_2(g_{t,m}) u_{t-1,s}$ with $g_{t,m} = (W_g)_m x_t$ and initial generator scale $0.35 + 0.18 m$). Class prototypes $W_c = (w_{c,1}, \dots, w_{c,S}) \in (S^2)^S$ are stored in-place inside `out_w` (normalized onto $(S^2)^S$ at init). On the **first training encounter** of any label $y$ (`proto_seen[y] == 0`), $W_y$ is lazily initialized to the current normalized state $w_{y,s} \leftarrow u_{t,s}/\|u_{t,s}\|_2$ — using **no** hardcoded `ident_class`, **no** group multiplication table, and **no** inverse rotation $R_2(-g)$.
+- *Zero-Transcendental Readout & Evaluation:* Logits and quartic rational probabilities (`rational_probs_p4_into`, 0% `exp`, Lean 4 `step112b`) are:
+  $$\ell_c(u_t) = \frac{\tau}{S} \sum_{s=1}^{S} w_{c,s}^\top u_{t,s}, \qquad p_c = \frac{\phi_4(\ell_c - \ell_{\max})}{\sum_k \phi_4(\ell_k - \ell_{\max})}, \qquad \phi_4(z) = \left(1 - \frac{z}{2} + \frac{z^2}{8}\right)^{-4}$$
+  with shift-invariant rational derivative factor $\psi_c = \frac{4 - 2(\ell_c - \ell_{\max})}{8 - 4(\ell_c - \ell_{\max}) + (\ell_c - \ell_{\max})^2}$. Evaluation uses purely $\hat{y} = \arg\max_c \ell_c(u_t)$ with **zero Voronoi snapping** and **zero state projection/renormalization**.
+- *Composite Loss & Prototype / Generator Updates ($W_c, g_t$):* During training (`target = Some(y)`), combining rational cross-entropy with task-agnostic intra-class center-pull $\frac{\beta}{2}\|W_y - u_t\|_2^2$ gives per-class error $e_c = \mathrm{clip}_{[-3,3]}(\psi_c(\mathbf{1}_{c=y} - p_c))$ and state ascent gradient:
+  $$\delta_{u_t} = \frac{\tau}{S}\sum_{c=1}^{C} e_c W_c + \beta (W_y - u_t)$$
+  Prototypes update by gradient ascent + target-class EMA + $(S^2)^S$ re-projection (training only):
+  $$W_c \leftarrow W_c + \eta_{\text{ro}} \frac{\tau}{S} e_c u_t, \qquad W_y \leftarrow (1 - \alpha_{\text{ema}}) W_y + \alpha_{\text{ema}} u_t, \qquad w_{c,s} \leftarrow \frac{w_{c,s}}{\max(\|w_{c,s}\|_2, 10^{-6})}$$
+  Generator weights $(W_g)_{m,k,j}$ (determining $g_{t,m} = (W_g)_m x_t$) update via tangent-space projection $\tilde{\delta}_{u_{t,s}} = \delta_{u_{t,s}} - (\delta_{u_{t,s}}^\top u_{t,s}) u_{t,s}$ contracted with exact RTRL sensitivities $\frac{\partial u_{t,s}}{\partial (W_g)_{m,k,j}}$ across the 3 frame columns $a \in \{0,1,2\}$:
+  $$\Delta (W_g)_{m,k,j} = \sum_{a=0}^{2} \tilde{\delta}_{u_{t,3m+a}}^\top \frac{\partial u_{t,3m+a}}{\partial (W_g)_{m,k,j}}, \qquad m \leftarrow 0.85\, m + 0.15\,\Delta, \quad v \leftarrow 0.99\, v + 0.01\,\Delta^2$$
+  $$(W_g)_{m,k,j} \leftarrow \mathrm{clip}_{[-3.5, 3.5]}\!\left((W_g)_{m,k,j} + \eta_{\text{rtrl}} \,\mathrm{clip}_{[-2.5, 2.5]}\!\left(\frac{m}{\sqrt{v + 10^{-4}}}\right)\right)$$
+
+Trained strictly on word lengths $L \in 1..8$ (4,000 episodes, 10 seeds), evaluated on 60-class exact state / 5-point orbit $p_t(0) \in \{0..4\}$ without any group relations, identity anchor, or Voronoi snapping:
+
+| Model (9D–36D / H=32) | $L = 6$ (60 / 5) | $L = 12$ (60 / 5) | $L = 18$ (60 / 5) | $L = 30$ (60 / 5) | RAM | Latency | Bit-30 SEU |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `NonAbelian Cayley SO(3) Proto M=4` | **97.5% / 97.5%** | **88.6% / 89.3%** | **81.8% / 82.7%** | **74.3% / 75.8%** | 26.1 KB | 13.49 µs | **YES** |
+| `NonAbelian Cayley SO(3) Proto M=1` | 78.4% / 81.9% | 73.3% / 78.5% | 70.2% / 75.2% | 64.7% / 69.9% | **7.6 KB** | **4.80 µs** | **YES** |
+| `NonAbelian 3D Cayley (SO(3) Lin.)` | 27.4% / 38.9% | 8.1% / 24.1% | 5.0% / 22.0% | 3.0% / 18.8% | 25.3 KB | 19.64 µs | **YES** |
+| `Fixed-Axis Cayley-RTRL (v0.3.0)` | 5.5% / 21.4% | 2.5% / 18.1% | 1.9% / 20.0% | 1.6% / 18.3% | 20.5 KB | 9.72 µs | NO |
+| `Online Selective SSM (Mamba 36D)` | 39.2% / 50.2% | 6.9% / 23.0% | 2.0% / 18.6% | 2.8% / 20.1% | 35.2 KB | 13.86 µs | NO |
+| `Online LRU-RTRL (Diagonal 36D)` | 12.2% / 29.4% | 2.5% / 19.2% | 1.6% / 20.1% | 1.7% / 20.7% | 41.9 KB | 9.11 µs | NO |
+| `Online GRU + BPTT (H=32)` | 48.8% / 55.7% | 10.1% / 25.1% | 3.2% / 21.0% | 1.6% / 20.4% | 64.8 KB | 14.10 µs | NO |
+| `Random Floor (1/60 / 1/5)` | 1.7% / 20.0% | 1.7% / 20.0% | 1.7% / 20.0% | 1.7% / 20.0% | 0.0 KB | 0.01 µs | YES |
+
+*Variance & Purity Note:* At $L = 30$ (Exact-60), `Proto M=4` achieves **`74.3 ± 28.3%`** (`max = 100.0%`, `4/10` seeds $\ge 95\%$) and `Proto M=1` (`9D`, `7.6 KB`) achieves **`64.7 ± 41.4%`** (`max = 100.0%`, `4/10` seeds $\ge 95\%$), while every baseline (`Lin.`, `SSM`, `LRU`, `GRU+BPTT`) collapses to chance (`1.6–3.0%`). The high inter-seed standard deviation reflects genuine non-convex local-minima sensitivity of 1-step online optimization on $\mathrm{SO}(3)$ without a group oracle. See Section 4.1 for Label-Shuffle (`3.50%`) and $S_5 \not\le \mathrm{SO}(3)^M$ contrast verification.
+
+#### Suite 2A & 2B: Symmetric Physical-SRAM Bit-30 State & Weight SEU Injection (`+Clamp` vs `+FinGuard`)
+
+Bit 30 flipped every 25 steps across all live state registers (both Band 1 & Band 2) and uniformly across all live SRAM weights (exact `153.0/153.0` faults in 2A and `345.0/345.0` faults in 2B for every guarded model, 0 double-counting, 0 dead-weight hits):
+
+| Model | Suite 2A: Clean $K=4$ | 2A: State-SEU | 2A: Weight-SEU | Suite 2B: Clean(A,B,C) | 2B: State-SEU | 2B: Weight-SEU | 2B: Ret-C (Cl/St/Wt) | Finite Seeds (St/Wt) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `MicroContinualCore [A4]` | **84.6±4.2%** | **83.4±6.0%** | **79.7±5.8%** | **59.6±3.7%** | **60.8±2.4%** | **55.7±2.9%** | **61.1% / 64.3% / 53.1%** | **10/10 / 10/10** |
+| `Deep 2L RTRRL-LRU + PH (+Clamp)` | 71.3±2.2% | 33.6±3.6% | 24.9±1.4% | 52.8±2.4% | 33.9±2.3% | 25.9±1.1% | 40.0% / 36.5% / 25.9% | 0/10 / 0/10 |
+| `Deep 2L RTRRL-LRU + PH (+FinGuard)` | 71.3±2.2% | 72.2±4.2% | 69.2±5.0% | 52.8±2.4% | 51.7±1.4% | 50.2±1.4% | 40.0% / 38.7% / 35.3% | **10/10 / 10/10** |
+| `Online Selective SSM + PH (+Clamp)` | 34.1±5.6% | 25.5±1.6% | 24.9±1.4% | 35.9±1.9% | 25.9±1.0% | 25.9±1.1% | 40.6% / 25.9% / 25.9% | 0/10 / 0/10 |
+| `Online Selective SSM + PH (+FinGuard)` | 34.1±5.6% | 34.4±5.9% | 33.0±6.6% | 35.9±1.9% | 35.5±1.6% | 35.5±2.4% | 40.6% / 40.0% / 39.1% | **10/10 / 10/10** |
+| `Online Per-Step GRU + PH (+Clamp)` | 25.3±1.0% | 24.6±1.4% | 24.9±1.4% | 24.9±0.7% | 25.8±1.5% | 25.9±1.1% | 25.6% / 26.0% / 25.9% | 0/10 / 0/10 |
+| `Online Per-Step GRU + PH (+FinGuard)` | 25.3±1.0% | 25.9±2.1% | 26.0±1.5% | 24.9±0.7% | 25.2±1.2% | 25.3±1.0% | 25.6% / 25.7% / 25.1% | **10/10 / 10/10** |
+| `1L RTRRL-LRU Single (+Clamp)` | 62.1±8.1% | 31.7±3.6% | 24.9±1.9% | 52.5±1.7% | 30.9±1.1% | 24.5±0.8% | 56.8% / 34.2% / 24.2% | 0/10 / 0/10 |
+| `1L RTRRL-LRU Single (+FinGuard)` | 62.1±8.1% | 62.6±8.7% | 60.3±8.4% | 52.5±1.7% | 52.2±1.8% | 49.9±1.6% | 56.8% / 56.2% / 53.0% | **10/10 / 10/10** |
+
+#### Suite 3A, 3B, 3C: Hard Continual RL, Chaotic Lorenz-63 & Independently Audited Position-Only CartPole
+
+- **Suite 3A — Multi-Cue Balanced Majority Corridor $L = 20$ ($A \to B \to A$, noise $\pm 0.35$, matched `probe_accept_threshold = 0.45`):**
+  - `MicroCore (Cayley-RTRL, gate=0.0)`: `51.4±7.8%` (Ret `45.8±7.0%`, `27.2 KB`)
+  - `Alg. Sel. Cayley (0% exp, gate=0.0)`: `48.9±3.9%` (Ret `51.0±6.1%`, `5.6 KB`) — *honest negative: chance level (`50%`), confirming sparse terminal RL over 20 noisy steps remains unsolved without explicit gating*
+  - `MicroCore [Band-0 + gate=0.28 Abl.]`: **`62.2±8.4%`** (Ret **`73.0±8.2%`**, `75.7 KB`)
+  - `Online Selective SSM + PH + Clamp`: `53.2±4.4%` (Ret `50.5±7.5%`, `42.3 KB`)
+  - `Online Per-Step GRU + PH + Clamp`: `50.4±6.4%` (Ret `45.8±10.6%`, `291.2 KB`)
+  - `1L RTRRL-LRU + Matched PH + Clamp`: `49.0±2.9%` (Ret `51.2±7.5%`, `21.6 KB`)
+  - `Deep 2L RTRRL-LRU + PH + Clamp`: `48.5±4.8%` (Ret `48.8±3.8%`, `38.0 KB`)
+- **Suite 3B — Chaotic RK4 Lorenz-63 1D-Projection Stream ($\text{sign}(x_{t+8})$, $\Delta t = 0.06$, shared causal Welford std, `win_len = 1`, strictly matched 60D state across all models):**
+  - `MicroContinualCore (+PH, 60D)`: **`79.3±0.7%`** Stream Acc, **`79.4±1.7%`** Return Acc (**`12.4 KB`** RAM)
+  - `Deep 2L RTRRL-LRU + PH + Clamp (60D)`: `79.2±0.5%` Stream Acc, `78.8±1.8%` Return Acc (`28.3 KB` RAM)
+  - `Online Selective SSM + PH (60D)`: `78.7±0.6%` Stream Acc, `78.5±1.3%` Return Acc (`25.3 KB` RAM)
+  - `Online Per-Step GRU + PH (60D, BPTT4)`: `78.5±0.8%` Stream Acc, `78.6±2.2%` Return Acc (`729.8 KB` RAM)
+  - `Online LRU-RTRL Single-Bank (60D)`: `66.7±1.4%` Stream Acc, `61.0±3.9%` Return Acc (`4.7 KB` RAM)
+  *(Note: At strict 60D state parity — correcting an earlier 180D vs 60D asymmetry — `MicroContinualCore` and `Deep 2L RTRRL-LRU` are statistically tied at `79.3%` vs `79.2%`, while `MicroContinualCore` uses **2.3× less RAM** than `Deep 2L LRU` and **59× less RAM** than `Per-Step GRU`.)*
+- **Suite 3C — Position-Only CartPole $A \to B \to A$ (Matched 96D + Raw/Spinor Feature-Lifting Controls + Frozen Deterministic Eval + Independent PyTorch Verification, 10 seeds):**
+  - *Physics Sanity Ceilings (500 eps):* `Random = 22.3 st`, memoryless `sign(theta) = 42.5 st`, memoryless `PyTorch MLP (H=32, 2D Phase A) = 50.8±4.0 st`, Oracle 4D-PD (with hidden velocities) `= 200.0 st`.
+
+| Model | 2D Train Sc | 2D Train Ret | 2D Frozen Ev (S/R) | $+dx$ Train Sc | $+dx$ Train Ret | $+dx$ Frozen Ev (S/R) | RAM (4D) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `MicroCore (B0+2L, +PH, 96D)` | **117.6±25.9** | **135.0±37.8** | **168.7 / 198.7** | **187.4±3.2** | **190.0±5.4** | 196.2 / 194.5 | **15.9 KB** |
+| `MicroCore PURE 2L+Skip (B0=0, 96D)` | 73.4±7.3 | 81.6±16.9 | 149.7 / 151.4 | 127.1±15.0 | 103.7±35.0 | 178.6 / 171.8 | 23.9 KB |
+| `Deep 2L RTRRL-LRU + PH (96D)` | 63.3±10.4 | 77.3±14.5 | 137.4 / 159.0 | 138.1±9.6 | 137.8±11.4 | 193.7 / 194.2 | 63.7 KB |
+| `Deep 2L LRU + PH (+Spinor 48D)` | 64.8±6.5 | 110.8±12.2 | 94.5 / 169.6 | 184.4±5.4 | 187.7±4.3 | 196.6 / **200.0** | 333.9 KB |
+| `1L RTRRL-LRU + PH (96D)` | 50.8±4.4 | 67.4±10.9 | 61.4 / 105.5 | 139.4±5.8 | 146.0±9.0 | 192.2 / 193.9 | 48.3 KB |
+| `1L LRU + PH (+Spinor 48D)` | 49.0±3.3 | 60.7±5.1 | 45.3 / 57.6 | 182.9±4.3 | 183.0±6.8 | **200.0** / 198.9 | 317.8 KB |
+| `Online Selective SSM + PH (96D)` | 31.3±4.8 | 25.5±6.4 | 33.3 / 30.7 | 115.8±7.0 | 131.4±8.5 | 188.8 / 189.3 | 74.2 KB |
+| `Online Episodic GRU + A2C (32D)` | 54.9±16.1 | 108.8±51.6 | 87.4 / 115.9 | 92.8±8.7 | 161.8±52.1 | 109.4 / 171.4 | 42.8 KB |
+| `Online Per-Step GRU + PH (32D)` | 43.1±17.1 | 43.5±16.3 | 44.1 / 65.7 | 67.4±21.6 | 71.2±46.1 | 89.0 / 90.9 | 298.8 KB |
+| `1L RTRRL-LRU Single-Bank (96D)` | 36.6±3.8 | 37.4±13.6 | 36.2 / 51.9 | 81.0±12.1 | 107.5±59.6 | 122.1 / 161.7 | 12.0 KB |
+| *Ext. Control: PyTorch `GRU+A2C+GAE+PH` (H=32, 5 seeds)* | *74.8±26.5* | *76.4±64.2* | *130.7 / 98.9* | *168.6±14.6* | *179.2±18.1* | *174.2 / 194.7* | *PyTorch* |
+| *Ext. Control: PyTorch `GRU+A2C+GAE+PH` (H=96, 5 seeds)* | *44.1±16.8* | *44.6±19.8* | *77.0 / 80.5* | *158.5±10.4* | *182.2±13.2* | *184.1 / 187.8* | *PyTorch* |
+
+*Forensic Attribution of Suite 3C:*
+1. On **pure position-only `CP-2D`** (memoryless ceiling `42.5–50.8 st`), `MicroCore (B0+2L)` genuinely leads (`117.6` Train / `168.7 / 198.7` Frozen Eval in `15.9 KB`), driven by the synergy between Band-0 (`SpinorEncoder` + fast `CayleyBeliefState` $\lambda = 0.60$) and Band 1+2 Cayley-RTRL — outperforming `MicroCore PURE 2L+Skip` (`73.4` / Ev `149.7/151.4`), `Deep 2L LRU` (`63.3` / Ev `137.4/159.0`), `Deep 2L LRU (+Spinor 48D)` (`64.8` / Ev `94.5/169.6`, `333.9 KB`), and independent `PyTorch GRU+A2C+GAE+PH` (`74.8` / Ev `130.7/98.9`).
+2. On **`CP+dx`**, the apparent `+48 st` stochastic-training margin over raw `1L/Deep 2L LRU` (`187.4` vs `138.1–139.4`) is **attributable to `Band 0`'s `SpinorEncoder` + training exploration noise**: on Frozen Eval, raw `Deep 2L LRU` (`193.7/194.2`) and `1L LRU` (`192.2/193.9`) nearly match `MicroCore` (`196.2/194.5`), and `Spinor`-matched `1L/Deep 2L LRU` tie `MicroCore` on both Train (`182.9–184.4`) and Frozen Eval (`196.6–200.0`) — while `MicroCore` uses **20–21× less RAM** (`15.9 KB` vs `317.8–333.9 KB`). Without `Band 0`, `MicroCore PURE 2L+Skip` scores `127.1` Train / `178.6/171.8` Eval on `CP+dx`, slightly trailing raw `Deep 2L LRU`.
+
+---
+
+### 3.6 Step 6: 5-Axis Architectural & Systemic Scalability Suite (`bench_step6_scaling`)
+
+1. **Axis 1A — Width Compute & Memory Scaling ($S \in 4..256$, $D = 3S \in 12..768$, 0 heap allocs/step across all models):**
+   - At $D = 768$ ($S = 256$):
+     - `Cayley-RTRL`: **`100.1 KB`** RAM, **`51.83 µs`** step latency
+     - `Online LRU-RTRL`: `146.2 KB` RAM, `53.20 µs` step latency
+     - `Selective SSM`: `254.2 KB` RAM, `91.44 µs` step latency
+     - `Supervised GRU (BPTT1)`: `21,042.1 KB` (`20.5 MB`) RAM, `1,500.96 µs` step latency (**$210\times$ larger RAM, $29.0\times$ slower** than Cayley-RTRL).
+   - Empirical power-law exponents ($D = 12 \to 768$):
+     - RAM: `Cayley` $D^{0.99}$, `SSM` $D^{0.97}$, `LRU` $D^{0.94}$ vs `GRU` $D^{1.85}$.
+     - Latency: `Cayley` $D^{0.95}$, `SSM` $D^{0.96}$, `LRU` $D^{0.96}$ vs `GRU` $D^{1.53}$.
+2. **Axis 1B — Accuracy vs Width (5 seeds, Equal Step Budgets):**
+   - **1B-1 ($A_5 \le \mathrm{SO}(3)$ at $L = 30$, Train $L \le 8$, Linear vs Proto-$\mathrm{SO}(3)$):**
+     - `S=3 (M=1, 7.6 KB)`: `Lin 1.6±0.3%` $\to$ **`Proto 98.4±2.3%`**
+     - `S=6 (M=2, 13.8 KB)`: `Lin 1.5±1.2%` $\to$ `Proto 60.2±33.1%`
+     - `S=12 (M=4, 26.1 KB)`: `Lin 3.5±1.7%` $\to$ **`Proto 87.9±20.7%`**
+     - `S=24 (M=8, 50.7 KB)`: `Lin 2.8±1.3%` $\to$ `Proto 70.8±26.1%`
+     - `S=48 (M=16, 99.9 KB)`: `Lin 5.4±1.9%` $\to$ **`Proto 96.5±6.7%`**
+   - **1B-2 & 1B-3 ($S \in 4..64$):** `RepeatPrevious K=8` scales from `34.3±4.7%` ($S=4$) to **`50.6±4.7%`** ($S=64, 19.1\text{ KB}$); `Chaotic RK4 Lorenz-63 K=8` scales monotonically from `81.3±3.0%` ($S=4$) to **`90.0±1.3%`** ($S=64$).
+3. **Axis 2 — Depth Without BPTT (`1L..4L` Local RTRL):**
+   - On **Spatiotemporal Lorenz-96 ($N=16, F=8.0$)**, `1L..4L Local-RTRL` achieves **`91.1% -> 92.2%`** (`4.3–23.5 KB`, `2.44–13.71 µs`) vs fixed-BPTT `Online Per-Step GRU (H=48, BPTT4)` at `70.1±1.1%` (`134.8 KB`, `20.40 µs`).
+   - On **Hierarchical Dyck-2 Bracket Matching**, `Online Per-Step GRU (H=48, BPTT4)` achieves **`91.5±1.7%`** (`95.6%` at depth $\ge 3$), outperforming local-RTRL stacks (`72.2–72.9%`).
+4. **Axis 3A — $A_5 \le \mathrm{SO}(3)$ Ultra-Long Horizon Extrapolation (Train strictly $L \le 8 \to$ Eval $L = 6..500$, 5 seeds, 60-elem Exact %, 0% `exp`, 0 Oracle):**
+
+   | Model | $L=6$ | $L=12$ | $L=18$ | $L=30$ | $L=50$ | $L=100$ | $L=200$ | $L=500$ |
+   | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+   | `NonAbelian Cayley SO(3) Proto M=4` | **99.4%** | **96.8%** | **93.6%** | **94.8%** | **92.2%** | **85.2%** | **79.3%** | 46.0% |
+   | `NonAbelian Cayley SO(3) Proto M=8` | 97.6% | 90.0% | 86.2% | 85.2% | 81.6% | 74.2% | 69.0% | **51.7%** |
+   | `NonAbelian Cayley SO(3) Proto M=1` | 81.6% | 80.0% | 79.2% | 74.4% | 65.2% | 44.4% | 26.0% | 8.3% |
+   | `NonAbelian Cayley SO(3) (Lin.)` | 31.0% | 10.8% | 5.6% | 3.4% | 2.8% | 1.0% | 2.3% | 1.7% |
+   | `Online Selective SSM (36D)` | 37.4% | 5.4% | 2.8% | 0.6% | 2.6% | 1.8% | 3.0% | 1.7% |
+   | `Online GRU + BPTT (H=32)` | 55.6% | 9.6% | 4.2% | 1.8% | 2.2% | 1.6% | 2.3% | 2.3% |
+
+   *Live Unnormalized `f32` Drift at $L = 500$:* $\max |\|u_{500}\|_2 - 1| = 4.50 \times 10^{-5}$, $\max \|Q_{500}^\top Q_{500} - I_3\|_F = 1.43 \times 10^{-4}$.
+
+5. **Axis 3B — RepeatPrevious Deep Delay Horizon ($K \in 2..24$, 5 seeds, Strictly Matched 36D, 0% `exp` vs Transcendental):**
+
+   | Delay $K$ | `2D Rat. Cayley (36D, 0% exp)` | `Alg.Sel.Cayley (36D, 0% exp)` | `3D Cayley (b=1)` | `Selective SSM (36D, exp)` | `GRU (H=32, BPTT4)` | `2D` RAM |
+   | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+   | **$K = 2$** | **100.0±0.0%** | **100.0±0.0%** | 92.7±3.0% | **100.0±0.0%** | **100.0±0.0%** | 4.9 KB |
+   | **$K = 4$** | **99.7±0.2%** | 98.9±0.5% | 78.7±2.9% | 96.8±1.5% | 33.2±5.0% | 4.9 KB |
+   | **$K = 8$** | **85.1±2.7%** | 71.8±5.8% | 59.5±5.0% | 69.9±2.6% | 25.2±1.8% | 4.9 KB |
+   | **$K = 12$** | **66.2±1.6%** | 55.6±3.8% | 36.9±3.2% | 53.2±4.0% | 25.2±1.3% | 4.9 KB |
+   | **$K = 16$** | **53.1±4.4%** | 42.8±3.8% | 34.6±2.6% | 39.3±4.0% | 25.4±1.0% | 4.9 KB |
+   | **$K = 24$** | **36.6±2.5%** | 33.5±3.5% | 28.5±1.9% | 33.1±2.5% | 24.6±2.2% | 4.9 KB |
+
+   Both zero-transcendental 2D rational models (`2D Rat. Cayley` and `Alg.Sel.Cayley`, **`4.9 KB`** RAM) **outperform transcendental `Selective SSM (36D)` at every delay $K = 4..24$**, with `2D Rat. Cayley` leading by up to **+15.2 pp** ($K=8$).
+
+6. **Axis 4A — True $N = d_{\text{in}}$ Chaotic Lorenz-96 Input Dimensionality Scaling ($d_{\text{in}} \in 4..256$):**
+   - `Direct Cayley S=16`: accuracy increases to **`94.6–94.9%`** at $d_{\text{in}} = 128..256$ (`98.5 KB`, `57.6 µs` at $d=256$).
+   - `Count-Sketch Proj(d->8) Cayley S=16`: maintains **`90.4%`** at $d_{\text{in}} = 256$ in **`9.5 KB`** RAM and **`3.6 µs`** latency (**$16.0\times$ faster** than direct $d=256$).
+   - `Supervised GRU (H=32, BPTT4)`: `82.8%` at $d_{\text{in}} = 256$ (`442.8 KB`, `41.0 µs`).
+
+7. **Axis 4B — Continual Regime Count Scaling ($R \in 2..32$, Cyclical Regimes, 5 seeds — Sequential vs Causal Parallel `Par6` Probing):**
+
+   | Regimes $R$ | `Core(Seq) Stream` | `Core(Seq) Return` | `Core(Par6) Return` | `1-Bank Return` | Core RAM | Latency |
+   | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+   | **$R = 2$** | 91.6±5.8% | **86.0±3.3%** | **86.0±3.3%** | 83.8±5.7% | 17.7 KB | 5.34 µs |
+   | **$R = 4$** | 89.5±4.3% | 82.5±5.1% | 83.5±5.5% | **85.1±5.1%** | 27.6 KB | 5.21 µs |
+   | **$R = 8$** | 86.7±2.6% | 75.0±4.5% | 84.5±3.7% | **85.5±4.0%** | 47.4 KB | 5.13 µs |
+   | **$R = 16$** | 87.0±3.4% | 77.2±5.6% | 85.5±2.2% | **88.0±3.1%** | 86.9 KB | 5.16 µs |
+   | **$R = 32$** | 87.0±2.6% | 75.8±5.1% | 84.1±5.4% | **88.0±4.0%** | 166.0 KB | 5.21 µs |
+
+   Causal 6-step parallel read-only bank scoring (`Par6`) recovers **+8.3 to +9.5 pp** over sequential probing at $R \in \{8, 16, 32\}$ while preserving `O(1)` step latency (`5.13–5.34 µs`), beating a true 1-bank learner (with PH genuinely disabled) at $R = 2$ and narrowing the $R = 4..32$ gap to `-1.0..-3.9 pp`.
+
+8. **Axis 5 — Systemic Swarm Scaling ($N = 1..10,000$ Agents, $D = 48$) & 16-Thread Throughput (All 0-Alloc/Step):**
+   - At $N = 10,000$ simultaneous online agents: `Cayley-RTRL` uses **`61.80 MB`** (**`4.55 µs/agent`**, fitting inside a 96 MB L3 V-Cache), `Online LRU` uses `95.83 MB` (`4.22 µs/agent`), `Selective SSM` uses `161.44 MB` (`7.23 µs/agent`), and `Supervised GRU (H=48, BPTT1)` requires `978.85 MB` (`15.99 µs/agent`).
+   - 16-Thread Multi-Core Throughput ($N = 4,096$ agents): `Cayley-RTRL` reaches **`2.29 M steps/s`** (**`25.3 MB`**), `Online LRU` reaches `2.26 M steps/s` (`39.2 MB`, 1.55× higher RAM), `Selective SSM` reaches `1.39 M steps/s` (`66.1 MB`), and `Supervised GRU` reaches `0.18 M steps/s` (`400.9 MB`) — a **$12.7\times$ throughput advantage** for `Cayley-RTRL` over `Supervised GRU`.
+
+---
+
+### 3.7 Step 7: NASA C-MAPSS Aviation Fleet Prognostics, Flight-SEU & Digital Twin Swarm (`bench_step7_nasa_fleet`, `scripts/bench_nasa_external.py`)
+
+Official NASA C-MAPSS turbofan degradation datasets (`FD001–FD004`, piecewise-linear $\mathrm{RUL}_{\max}=125$, strictly causal train-only 6-regime farthest-point K-means normalization with zero test/RUL bits, strict **60D** state parity across all recurrent models, zero dead RL/critic weights, bias-symmetric regression without intercept weight decay, 5 seeds Rust / 3 seeds external PyTorch):
+
+#### Block 1: Streaming RUL (`3-pass`, Frozen Final-Cycle Evaluation) & Anti-Leakage Controls
+
+| Model (`State = 60D`) | `FD001` RMSE / S-Scr / Rec | `FD002` RMSE / S-Scr / Rec | `FD003` RMSE / S-Scr / Rec | `FD004` RMSE / S-Scr / Rec | `FD004` Raw 24D | `FD004` RUL-Shuf | RAM | Lat (µs) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `MicroCore PURE 2L+Skip (B0=0, 0% exp)` | **19.51±1.22** / 1,479 / 49.6% | **20.89±0.88** / 3,516 / 60.7% | 20.26±1.40 / 1,491 / 54.0% | 23.33±0.62 / 5,255 / 63.0% | 28.16±1.63 | 46.82 (`PASS`) | **14.6 KB** | 9.8–10.3 |
+| `Alg.Sel.Cayley (60D, 0% exp)` | 22.28±2.55 / 2,443 / 40.0% | 24.46±4.19 / 8,517 / 57.0% | 23.94±2.96 / 3,920 / 53.0% | 25.33±2.01 / 5,998 / 66.4% | 33.21±8.11 | 45.22 (`PASS`) | 33.0 KB | 24.6–27.1 |
+| `2D Rat. Cayley (60D, 0% exp)` | 23.96±2.66 / 3,123 / 45.6% | 25.32±5.42 / 16,724 / 61.6% | 23.03±2.57 / 2,631 / 56.0% | 25.18±1.81 / 6,248 / 60.8% | **27.91±1.55** | 46.40 (`PASS`) | 22.7 KB | 16.9–18.3 |
+| `Deep 2L RTRRL-LRU (60D)` | 20.72±3.81 / 2,686 / 52.0% | 22.58±3.30 / 5,868 / 59.0% | **19.85±0.62** / 1,327 / 62.0% | **23.27±0.69** / 4,115 / 70.2% | 28.03±2.10 | 46.87 (`PASS`) | 25.0 KB | **5.0–6.2** |
+| `Selective SSM (60D)` | 22.66±4.46 / 1,723 / 29.6% | 25.74±5.36 / 38,920 / 51.1% | 25.42±5.12 / 26,415 / 53.0% | 24.43±0.87 / 5,111 / 50.9% | 34.98±3.18 | 46.45 (`PASS`) | 40.3 KB | 11.5–13.1 |
+| `Online GRU BPTT4 (60D)` | 36.19±11.0 / 51,171 / 64.8% | 31.22±7.15 / 31,616 / 66.2% | 32.61±10.1 / 8,103 / 63.0% | 30.79±4.08 / 23,955 / 49.8% | 36.53±6.94 | 46.51 (`PASS`) | 238.1 KB | 32.6–34.2 |
+| `Online MLP H=32 + Adam` | 25.54±3.30 / 5,301 / 72.0% | 23.61±3.90 / 12,360 / 76.4% | 24.99±5.93 / 2,116 / 72.0% | 26.62±6.22 / 78,168 / 59.6% | 29.74±3.61 | 47.00 (`PASS`) | 12.0 KB | 2.0–2.3 |
+| *External `PyTorch 2.14.0 GRU-60` (full-seq BPTT)* | *17.29±1.74 / 565 / 90.7%* | *15.57±1.02 / 961 / 95.6%* | *18.98±1.56 / 918 / 76.7%* | *17.95±0.40 / 1,584 / 86.2%* | *25.86±1.14* | *44.94 (`PASS`)* | *Python* | *153* |
+| *External `river==0.27.0 ARFRegressor`* | *25.70 / 1,855 / 68.0%* | *28.66 / 45,022 / 11.5%* | *23.23 / 1,432 / 5.0%* | *33.39 / 9,414 / 37.7%* | — | — | *Python* | *915–1188* |
+| *External `river==0.27.0 HATR`* | *35.10 / 4,177 / 60.0%* | *30.33 / 5,493 / 91.8%* | *24.45 / 2,335 / 80.0%* | *28.40 / 6,559 / 81.1%* | — | — | *Python* | *332–390* |
+
+*Honest Attribution Note:* `MicroCore PURE 2L+Skip (14.6 KB, 0% exp)` ranks #1 in RMSE among all per-cycle online Rust models on `FD001` (`19.51`) and `FD002` (`20.89`), is statistically tied with `Deep 2L LRU` on `FD003` (`20.26` vs `19.85`) and `FD004` (`23.33` vs `23.27`; beats LRU in 1-pass `23.78` vs `24.02`) at **41% less RAM**, and beats external `river ARF/HATR` at 30–100× lower latency; however, all 1-step online streaming models trail offline-style full-trajectory `PyTorch GRU-60` (`15.57–18.98` RMSE at `153 µs/cyc`), which backpropagates through entire 200+ cycle flights per optimizer step.
+
+#### Block 2 (`Flight SEU`, `test_FD004`, 248 Engines, 3 Seeds) & Block 3 (`Fleet Swarm`, $N = 248 \to 4,096$, 16 Threads)
+- **Flight SEU (`Sensor-SEU T30=NaN/+1e30` / `State-SEU Bit-30 / 25 cyc` / `Weight-SEU SRAM / 25 cyc`):**
+  - `MicroCore PURE 2L+Skip (60D)`: `Clean 23.01 / Sens 22.99 / State 23.00 / Weight 22.98` RMSE, **`248/248`** finite (`1,692 / 1,692` faults = 1,683 injections + 9 real $>8\sigma$ sensor outliers). `Alg.Sel.Cayley (60D, 0% exp)`: `24.05 / 24.05 / 24.04 / 24.04` RMSE, **`248/248`** finite (`1,683 / 1,683` faults).
+  - Every `(+Clamp)` baseline crashes to **`0/248`** finite (`NaN`) under State-SEU & Weight-SEU (`Deep 2L LRU`, `Selective SSM`, `Online GRU BPTT4`; stateless `Online MLP` is `N/A` on State-SEU and `0/248` on Weight-SEU). Every `(+FinGuard)` baseline survives **`248/248`** (`1,683 / 1,683` exact faults; e.g., `Deep 2L LRU +FinGuard`: `22.82 / 22.81 / 22.79 / 22.85` RMSE).
+- **Fleet Digital Twin Swarm ($N = 4,096$ online-adapting personal twins, 16 threads, 0-alloc):**
+  - `MicroCore PURE 2L+Skip (60D)`: **`58.56 MB`** RAM (**16.3× smaller** than `Online GRU BPTT4`'s `952.36 MB`, **1.7× smaller** than `Deep 2L LRU`'s `99.89 MB`), **`0.85 M cycles/s`** (**3.70×** faster than GRU's `0.23 M/s`; slower in raw throughput than `Deep 2L LRU`'s `1.64 M/s` due to 3D vs 2D rotor FLOPs). See `assets/nasa_cmapss_4panel.png` and `assets/nasa_fleet_mission_control.gif`.
+
+---
+
+## 4. Independent Leakage Verification, Phase-2 Diagnostic Resolutions & Honest Remaining Limitations (`bench_forensic_audit`)
+
+### 4.1 Zero Future-Leakage & Group-Theory Contrast Verification
+
+Shuffling labels globally (preserving class proportions while destroying feature-label and temporal alignment) collapses every evaluated model — including every Phase-2 model — to chance / majority-class floor:
+
+| Dataset & Model | Original Acc | Shuffled-$y$ Acc | Expected Chance / Majority Floor |
+| :--- | :---: | :---: | :---: |
+| **ELEC2 (45,312 rows):** `MicroCore+2L-RTRL (raw)` | 89.16% | **52.65%** | 57.55% majority (DOWN) |
+| **ELEC2 ($+y_{t-1}$):** `MicroCore+2L-RTRL (+y_{t-1})` | 90.50% | **52.32%** | 57.55% majority |
+| **ELEC2 (raw):** `2D Rat. Cayley (0% exp)` | 89.45% | **53.22%** | 57.55% majority |
+| **ELEC2 (raw / $+y_{t-1}$):** `Alg.Sel.Cayley (0% exp)` | 90.37% / 91.93% | **53.21% / 53.12%** | 57.55% majority |
+| **ELEC2 (raw / $+y_{t-1}$):** `Online LRU-RTRL` | 89.31% / 93.29% | **55.09% / 54.64%** | 57.55% majority |
+| **ELEC2 (raw):** `River ARFClassifier (v0.27.0)` | 88.26% | **54.19%** | 57.55% majority |
+| **ELEC2:** `No-Change Persistent` | 85.33% | **51.17%** | 51.14% ($p^2 + (1-p)^2$) |
+| **Lorenz-63 (60D, 3-regime):** `MicroCore` / `Deep 2L LRU` | 79.98% / 79.97% | **50.05% / 50.20%** | 50.0% |
+| **Lorenz-96 ($N=16 / 256$):** `Cayley (S=16)` | 89.00% / 88.53% | **49.73% / 48.33%** | 50.0% |
+| **$A_5 \le \mathrm{SO}(3)$ ($L=6$, 60-class):** `Proto-Metric SO(3)` | 97.5% | **3.50%** | 1.67% ($1/60$, 200 eps) |
+
+**Group-Theory Falsification Control ($S_5 \not\le \mathrm{SO}(3)^M$, `DIAG 4`):** Running the identical zero-oracle `Proto-Metric SO(3)` model on the 120-element symmetric group $S_5$ (which contains odd permutations and has **no** faithful homomorphism into $\mathrm{SO}(3)^M$, trained on $L \le 8$) yields `L=6: 96.5% -> L=12: 81.0% -> L=18: 60.0% -> L=30: 27.5% -> L=50: 8.0%`. This confirms that $A_5$'s `92–95%` extrapolation at $L = 30..50$ (`46–52%` at $L = 500$) arises genuinely from discovering the faithful $\mathrm{SO}(3)$ representation — and fails exactly where group theory predicts it must fail.
+
+### 4.2 Phase-2 Root-Cause Resolutions vs Remaining Open Limitations
+
+| Diagnosed Failure Axis | Phase-1 Baseline | Phase-2 Zero-Oracle Algebraic Fix | Measured Outcome & Remaining Limitation |
+| :--- | :--- | :--- | :--- |
+| **1. $A_5 \le \mathrm{SO}(3)$ Extrapolation ($L=30..500$)** | Linear readout: `3.0%` at $L=30$, $\|R(b)^5 - I\|_F = 0.996$ | Task-agnostic **Proto-Metric $\mathrm{SO}(3)$** (`rational_probs_p4_into` + intra-class center-pull, 0% `exp`, 0 group oracle) | **Resolved (with variance):** $\|R(b)^5 - I\|_F$ drops **5.7×** (`0.996 -> 0.175`); Suite 1 `L=30` jumps `3.0% -> 74.3±28.3%` (`M=4`, `4/10` seeds $\ge 95\%$, max `100%`) and Axis 3A sustains `94.8%` ($L=30$), `79.3%` ($L=200$), `46.0–51.7%` ($L=500$). *Open:* non-convex seed variance (`±28–41%`) and non-embeddability of $S_5 \not\le \mathrm{SO}(3)^M$. |
+| **2. Axis 3B `RepeatPrevious` ($K=2..24$)** | 3D slow `band=2`: `60.9%` ($K=4$), `26.7%` ($K=8$) vs `Sel-SSM 96.8% / 69.9%` | `band=1` fix + **`AlgebraicSelectiveCayley` (2D Rational & Selective, 36D, `4.9 KB`, 0% `exp`)** | **Fully Resolved:** `2D Rat. Cayley` reaches `99.7% / 85.1% / 66.2% / 53.1% / 36.6%` ($K=4..24$), beating transcendental `Selective SSM` at every delay by up to **+15.2 pp**; `Alg.Sel.Cayley` also beats `Sel-SSM` at every delay (`98.9%..33.5%`). |
+| **3. Real `ELEC2` (Raw & $+y_{t-1}$)** | `MicroCore (PH=3.6)`: `89.5%` raw / `90.7%` $+y_{t-1}$ | Volatility-calibrated `PH=8` + **`Alg.Sel.Cayley (0% exp)`** | **Mostly Resolved:** `MicroCore (PH=8)` reaches **`91.5%`** raw (**+2.2 pp** over `LRU` `89.3%`, **+3.2 pp** over `river ARF` `88.26%`, SEU-Safe = YES); `Alg.Sel.Cayley` reaches **`92.0%`** on $+y_{t-1}$ (SEU-Safe = YES). *Open:* `-1.4 pp` behind transcendental Adam `Online LRU-RTRL` (`93.4%`, SEU-Safe = NO) on $+y_{t-1}$. |
+| **4. Axis 4B Continual Regimes ($R=2..32$)** | `Core(Seq)`: `75.0–77.2%` at $R=8..32$ vs `1-Bank 85.5–88.0%` | **Causal 6-step parallel read-only bank scoring (`Par6`)** | **Mostly Resolved:** Recovers **+8.3–9.5 pp** (`84.5% / 85.5% / 84.1%` at $R=8/16/32$) in `O(1)` step latency (`5.13–5.34 µs`), beating `1-Bank` at $R=2$ (`86.0%` vs `83.8%`). *Open:* `-1.0` to `-3.9 pp` below true 1-Bank on fast linear hyperplanes at $R=4..32$. |
+| **5. `T-Maze` & `Majority Corridor` without `novelty_gate`** | `MicroCore (ng=0.0)`: `49.0%` ($L=5$), `49.8%` ($L=15$), `48.0%` (Maj. $L=20$) | **`Alg.Sel.Cayley` (RL, `ng=0.0`, 0% `exp`, `5.6 KB`)** | **Partial / Honest Mixed:** Gains **+16.1 pp** at T-Maze $L=5$ (`65.1%`, Ret `66.8%`, beating `RTRRL-LRU` `56.6%` and `GRU` Ret `45.8%`) and leads all `ng=0.0` models at $L=15$ (`53.8%`), **but does not solve high-noise $L=15$ T-Maze or Majority Corridor $L=20$ (`48.9%`)**. |
+
+**Additional Unchanged Architectural Boundaries:**
+- **Zero-Shot `UnseenHoldout` (`0.0–0.3%`, `bench_step1`):** FNV-1a token hashing maps disjoint unseen words to orthogonal random hash slots; without lexical overlap or shared co-occurrence, zero-shot semantic transfer is information-theoretically impossible.
+- **i.i.d. Static Tabular Drift (`SEA`, `STAGGER`, `Rotating Hyperplane`):** Fixed random `SpinorEncoder` + linear Delta-Rule (`rtrl_sectors = 0`) still trails a trainable 2-layer ReLU `OnlineMlpAdam` (`-1.1` to `-4.7 pp`).
+- **Hierarchical `Dyck-2` Bracket Stack (`72.9%` vs `Sup-GRU` `91.5%`):** Multiplicative state-gated stack push/pop with BPTT remains superior to LTI local-DFA stacks.
+- **SEU Resilience Attribution:** Hardware bit-flip survival in floating-point recurrent networks requires explicit non-finite/bound scrubbing (`scrub_state_seu`/`scrub_weight_seu` in `MicroContinualCore`/`AlgebraicSelectiveCayley`, or `+FinGuard` on baselines) alongside bounded rational dynamics.

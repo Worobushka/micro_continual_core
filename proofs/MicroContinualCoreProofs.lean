@@ -2344,11 +2344,41 @@ theorem step109b_cayley_rot3_equiv (e : Vec3) (w : Balance) (v : Vec3)
 
 def v_ex : Vec3 := ⟨bone, bzero, bzero⟩
 def v_ey : Vec3 := ⟨bzero, bone, bzero⟩
+def v_ez : Vec3 := ⟨bzero, bzero, bone⟩
+
+def det3 (c1 c2 c3 : Vec3) : Balance :=
+  dot3 c1 (cross3 c2 c3)
 
 private def e_c3 (g v : BExpr × BExpr × BExpr) : BExpr × BExpr × BExpr :=
   let g2 := vDotE g g
   vAddE (vAddE (vScaleE (.sub .one g2) v) (vScaleE (.nat 2) (vCrossE g v)))
         (vScaleE (.mul (.nat 2) (vDotE g v)) g)
+
+private def e_det_L : BExpr :=
+  let eg : BExpr × BExpr × BExpr := (.var 0, .var 1, .var 2)
+  let c1 := e_c3 eg (.one, .zero, .zero)
+  let c2 := e_c3 eg (.zero, .one, .zero)
+  let c3 := e_c3 eg (.zero, .zero, .one)
+  vDotE c1 (vCrossE c2 c3)
+
+private def e_det_R : BExpr :=
+  let eg : BExpr × BExpr × BExpr := (.var 0, .var 1, .var 2)
+  let d := BExpr.add .one (vDotE eg eg)
+  .mul d (.mul d d)
+
+private theorem p_det_one : e_det_L.norm = e_det_R.norm := rfl
+
+/-- ШАГ 109c. Строгая принадлежность специальной ортогональной группе SO(3) (det R(g) = +1):
+    Для произвольного 3D-генератора g : Vec3 определитель матрицы числителей `R_num(g)`
+    тождественно равен `(1 + ||g||²)³`, следовательно `det(R(g)) = +1` (собственное вращение, не отражение!). -/
+theorem step109c_cayley3d_det_one (g : Vec3) :
+    BalGtZero (balance_add bone (dot3 g g)) ∧
+    BalanceEquiv
+      (det3 (cayley3d_num g v_ex) (cayley3d_num g v_ey) (cayley3d_num g v_ez))
+      (balance_mul (balance_add bone (dot3 g g)) (bsq (balance_add bone (dot3 g g)))) := by
+  refine ⟨bal_add_gt_ge bone_gt_zero (dot3_self_ge_zero g), ?_⟩
+  let env : Nat → Balance := fun | 0 => g.x | 1 => g.y | 2 => g.z | _ => bzero
+  exact bal_poly_eq env e_det_L e_det_R p_det_one
 
 private def e_so3_L : BExpr := (e_c3 (.one, .zero, .zero) (e_c3 (.zero, .one, .zero) (.one, .zero, .zero))).2.1
 private def e_so3_R : BExpr := (e_c3 (.zero, .one, .zero) (e_c3 (.one, .zero, .zero) (.one, .zero, .zero))).2.1
@@ -2494,6 +2524,60 @@ theorem step113_kerr_w1_total_denom (eps : Balance) (heps : BalGtZero eps) (gs :
     (.sub (.add (.var 0) (.var 1)) (.var 2)) rfl
   exact bal_gt_zero_of_equiv hlt_eq (bal_add_gt_ge heps hle_x)
 
+def bpow4 (x : Balance) : Balance := bsq (bsq x)
+
+def sum_pow4 : List Balance → Balance
+  | [] => bzero
+  | g :: gs => balance_add (bpow4 g) (sum_pow4 gs)
+
+theorem bal_pow4_ge_zero (x : Balance) : BalGeZero (bpow4 x) :=
+  bal_sq_ge_zero (bsq x)
+
+theorem sum_pow4_ge_zero (gs : List Balance) : BalGeZero (sum_pow4 gs) := by
+  induction gs with
+  | nil => exact Or.inl (step24_balance_refl bzero)
+  | cons g rest ih => exact bal_add_ge_ge (bal_pow4_ge_zero g) ih
+
+theorem mem_pow4_le_sum_pow4 {x : Balance} {gs : List Balance} (h : x ∈ gs) :
+    BalLe (bpow4 x) (sum_pow4 gs) := by
+  induction gs with
+  | nil => cases h
+  | cons g rest ih =>
+    cases h with
+    | head =>
+      dsimp [BalLe, sum_pow4]
+      let env : Nat → Balance := fun | 0 => bpow4 x | 1 => sum_pow4 rest | _ => bzero
+      have hsub := bal_poly_eq env (.var 1) (.sub (.add (.var 0) (.var 1)) (.var 0)) rfl
+      exact bal_ge_zero_of_equiv hsub (sum_pow4_ge_zero rest)
+    | tail _ hmem =>
+      have hrest := ih hmem
+      dsimp [BalLe, sum_pow4] at *
+      let env : Nat → Balance := fun | 0 => bpow4 g | 1 => sum_pow4 rest | 2 => bpow4 x | _ => bzero
+      have hsub := bal_poly_eq env
+        (.add (.var 0) (.sub (.var 1) (.var 2)))
+        (.sub (.add (.var 0) (.var 1)) (.var 2)) rfl
+      exact bal_ge_zero_of_equiv hsub (bal_add_ge_ge (bal_pow4_ge_zero g) hrest)
+
+/-- ШАГ 113b. Теорема W1 Kerr-конкуренции степени p = 4 (`src/memory.rs::KerrKernelBank`):
+    Для любого ε > 0 и любого списка g:
+    1. ε + ∑ gᵢ⁴ ≥ ε и строго > 0 (деление при p = 4 тотально).
+    2. Для каждого члена g_k ∈ g: g_k⁴ < ε + ∑ gᵢ⁴ (каждый вес строго < 1). -/
+theorem step113b_kerr_w1_p4_total_denom (eps : Balance) (heps : BalGtZero eps) (gs : List Balance) :
+    let den := balance_add eps (sum_pow4 gs)
+    BalLe eps den ∧ BalGtZero den ∧ (∀ x, x ∈ gs → BalLt (bpow4 x) den) := by
+  dsimp only
+  let env : Nat → Balance := fun | 0 => eps | 1 => sum_pow4 gs | _ => bzero
+  have hle_eq := bal_poly_eq env (.var 1) (.sub (.add (.var 0) (.var 1)) (.var 0)) rfl
+  refine ⟨bal_ge_zero_of_equiv hle_eq (sum_pow4_ge_zero gs),
+          bal_add_gt_ge heps (sum_pow4_ge_zero gs), ?_⟩
+  intro x hmem
+  have hle_x := mem_pow4_le_sum_pow4 hmem
+  let env2 : Nat → Balance := fun | 0 => eps | 1 => sum_pow4 gs | 2 => bpow4 x | _ => bzero
+  have hlt_eq := bal_poly_eq env2
+    (.add (.var 0) (.sub (.var 1) (.var 2)))
+    (.sub (.add (.var 0) (.var 1)) (.var 2)) rfl
+  exact bal_gt_zero_of_equiv hlt_eq (bal_add_gt_ge heps hle_x)
+
 -- Расширение существующего DualBalance (a + bε, ε² = 0) сложением и вложением скаляра
 def dual_add (x y : DualBalance) : DualBalance :=
   ⟨balance_add x.re y.re, balance_add x.eps y.eps⟩
@@ -2607,6 +2691,111 @@ theorem step114_rtrl_exact_derivatives_dual (w a : Balance) :
          ⟨bal_poly_eq env e_c2_L.1 e_c2_R.1 p_c2_re, bal_poly_eq env e_c2_L.2 e_c2_R.2 p_c2_eps⟩,
          ⟨hlam_re, hlam_eps⟩⟩
 
+/-- ШАГ 112b. Рациональный Softmax порядка p = 4 (`src/math.rs::rational_probs_p4_into`, 0% exp):
+    В целочисленном масштабе 8·q(z) = 8 - 4z + z²:
+    1. 8 - 4z + z² ~ 4 + (z - 2)² ≥ 4 > 0 для ВСЕХ z : Balance.
+    2. Знаменатель (8·q(z))⁴ > 0 (деление w(z) = 1 / q(z)⁴ тотально и строго положительно).
+    3. Точная дуальная производная 8·q(z + ε) ~ (8 - 4z + z²) + (2z - 4)ε,
+       откуда лог-производная ψ(z) = (w'/w) = -4 q'(z)/q(z) = (2 - z) / q(z). -/
+theorem step112b_rational_softmax_p4_positive (z : Balance) :
+    let q8 := balance_add (balance_sub (balOfNat 8) (balance_mul (balOfNat 4) z)) (bsq z)
+    let zd := dual_var z
+    let q8_d := dual_add
+      (dual_add (dual_const (balOfNat 8)) (dual_mul (dual_const (balance_neg (balOfNat 4))) zd))
+      (dual_mul zd zd)
+    BalanceEquiv q8 (balance_add (balOfNat 4) (bsq (balance_sub z (balOfNat 2)))) ∧
+    BalLe (balOfNat 4) q8 ∧
+    BalGtZero q8 ∧
+    BalGtZero (bpow4 q8) ∧
+    DualEquiv q8_d ⟨q8, balance_sub (balance_mul (balOfNat 2) z) (balOfNat 4)⟩ := by
+  dsimp only [dual_var, dual_const, dual_mul, dual_add, DualEquiv, bsq]
+  let env : Nat → Balance := fun | 0 => z | _ => bzero
+  let ez : BExpr := .var 0
+  let eq8 : BExpr := .add (.sub (.nat 8) (.mul (.nat 4) ez)) (.mul ez ez)
+  have hq8_id : BalanceEquiv
+      (balance_add (balance_sub (balOfNat 8) (balance_mul (balOfNat 4) z)) (bsq z))
+      (balance_add (balOfNat 4) (bsq (balance_sub z (balOfNat 2)))) :=
+    bal_poly_eq env eq8 (.add (.nat 4) (.mul (.sub ez (.nat 2)) (.sub ez (.nat 2)))) rfl
+  have hq8_sub : BalanceEquiv
+      (bsq (balance_sub z (balOfNat 2)))
+      (balance_sub (balance_add (balance_sub (balOfNat 8) (balance_mul (balOfNat 4) z)) (bsq z)) (balOfNat 4)) :=
+    bal_poly_eq env (.mul (.sub ez (.nat 2)) (.sub ez (.nat 2))) (.sub eq8 (.nat 4)) rfl
+  have hq8_gt : BalGtZero (balance_add (balance_sub (balOfNat 8) (balance_mul (balOfNat 4) z)) (bsq z)) :=
+    bal_gt_zero_of_equiv (step24_balance_symm hq8_id)
+      (bal_add_gt_ge (balOfNat_succ_gt_zero 3) (bal_sq_ge_zero (balance_sub z (balOfNat 2))))
+  have hq8_p4 : BalGtZero (bpow4 (balance_add (balance_sub (balOfNat 8) (balance_mul (balOfNat 4) z)) (bsq z))) :=
+    bal_mul_gt_gt (bal_mul_gt_gt hq8_gt hq8_gt) (bal_mul_gt_gt hq8_gt hq8_gt)
+  have hd_re : BalanceEquiv
+      (balance_add (balance_add (balOfNat 8) (balance_mul (balance_neg (balOfNat 4)) z)) (balance_mul z z))
+      (balance_add (balance_sub (balOfNat 8) (balance_mul (balOfNat 4) z)) (balance_mul z z)) :=
+    bal_poly_eq env
+      (.add (.add (.nat 8) (.mul (.neg (.nat 4)) ez)) (.mul ez ez))
+      eq8 rfl
+  have hd_eps : BalanceEquiv
+      (balance_add (balance_add bzero (balance_add (balance_mul (balance_neg (balOfNat 4)) bone) (balance_mul bzero z)))
+                   (balance_add (balance_mul z bone) (balance_mul bone z)))
+      (balance_sub (balance_mul (balOfNat 2) z) (balOfNat 4)) :=
+    bal_poly_eq env
+      (.add (.add .zero (.add (.mul (.neg (.nat 4)) .one) (.mul .zero ez)))
+            (.add (.mul ez .one) (.mul .one ez)))
+      (.sub (.mul (.nat 2) ez) (.nat 4)) rfl
+  exact ⟨hq8_id,
+         bal_ge_zero_of_equiv hq8_sub (bal_sq_ge_zero (balance_sub z (balOfNat 2))),
+         hq8_gt,
+         hq8_p4,
+         ⟨hd_re, hd_eps⟩⟩
+
+private def e_cos_L : BExpr × BExpr :=
+  dMulE e_den_wd (.mul (.sub .one (.mul (.var 0) (.var 0))) e_Dw, .neg (.mul (.nat 4) (.var 0)))
+private def e_cos_R : BExpr × BExpr :=
+  dMulE (.mul e_Dw e_Dw, .zero) (.sub .one (.mul (.var 0) (.var 0)), .neg (.add (.mul (.var 0) .one) (.mul .one (.var 0))))
+private theorem p_cos_re : e_cos_L.1.norm = e_cos_R.1.norm := rfl
+private theorem p_cos_eps : e_cos_L.2.norm = e_cos_R.2.norm := rfl
+
+/-- ШАГ 115. Алгебраический селективный 2D ротор Кэли (`src/rtrl.rs::AlgebraicSelectiveCayley`, 0% exp/sin/cos):
+    1. Строгое BIBO-сжатие при любом селективном шаге Δ > 0 и любом α : Balance:
+       0 < 998 < 1000(1 + Δ·α²)  (то есть 0 < λ(Δ, α) = 0.998 / (1 + Δ·α²) < 1).
+    2. Точная дуальная производная рационального косинуса Кэли c(w) = (1 - w²)/(1 + w²):
+       c'(w) = -4w / (1 + w²)² = -(2 / (1 + w²)) · s(w),
+       что вместе с `step114` для s(w) = 2w/(1 + w²) доказывает `d(c, s)/dw = (2/(1+w²)) · (-s, c)`. -/
+theorem step115_selective_cayley_contraction_and_deriv (delta a w : Balance) (hdelta : BalGtZero delta) :
+    let num := balOfNat 998
+    let den := balance_mul (balOfNat 1000) (balance_add bone (balance_mul delta (bsq a)))
+    let wd := dual_var w
+    let w2d := dual_mul wd wd
+    let den_wd := dual_add (dual_const bone) w2d
+    let D_w := balance_add bone (bsq w)
+    let c_N := balance_sub bone (bsq w)
+    let dc_num := balance_neg (balance_mul (balOfNat 4) w)
+    let c_num_d : DualBalance := ⟨balance_sub bone (bsq w), balance_neg (balance_add (balance_mul w bone) (balance_mul bone w))⟩
+    BalGtZero num ∧ BalGtZero den ∧ BalLt num den ∧
+    DualEquiv
+      (dual_mul den_wd ⟨balance_mul c_N D_w, dc_num⟩)
+      (dual_mul (dual_const (bsq D_w)) c_num_d) := by
+  dsimp only [dual_var, dual_const, dual_mul, dual_add, DualEquiv, bsq]
+  have h998 : BalGtZero (balOfNat 998) := balOfNat_succ_gt_zero 997
+  have h1000 : BalGtZero (balOfNat 1000) := balOfNat_succ_gt_zero 999
+  have hda2 : BalGeZero (balance_mul delta (balance_mul a a)) :=
+    bal_mul_gt_ge hdelta (bal_sq_ge_zero a)
+  have hden : BalGtZero (balance_mul (balOfNat 1000) (balance_add bone (balance_mul delta (balance_mul a a)))) :=
+    bal_mul_gt_gt h1000 (bal_add_gt_ge bone_gt_zero hda2)
+  let env_c : Nat → Balance := fun | 0 => balance_mul delta (balance_mul a a) | _ => bzero
+  have hdiff : BalanceEquiv
+      (balance_add (balOfNat 2) (balance_mul (balOfNat 1000) (balance_mul delta (balance_mul a a))))
+      (balance_sub (balance_mul (balOfNat 1000) (balance_add bone (balance_mul delta (balance_mul a a)))) (balOfNat 998)) :=
+    bal_poly_eq env_c
+      (.add (.nat 2) (.mul (.nat 1000) (.var 0)))
+      (.sub (.mul (.nat 1000) (.add .one (.var 0))) (.nat 998))
+      rfl
+  have hlt : BalLt (balOfNat 998)
+      (balance_mul (balOfNat 1000) (balance_add bone (balance_mul delta (balance_mul a a)))) :=
+    bal_gt_zero_of_equiv hdiff
+      (bal_add_gt_ge (balOfNat_succ_gt_zero 1) (bal_mul_gt_ge h1000 hda2))
+  let env_w : Nat → Balance := fun | 0 => w | _ => bzero
+  exact ⟨h998, hden, hlt,
+         ⟨bal_poly_eq env_w e_cos_L.1 e_cos_R.1 p_cos_re,
+          bal_poly_eq env_w e_cos_L.2 e_cos_R.2 p_cos_eps⟩⟩
+
 end PosNat
 end Foundations
 
@@ -2652,8 +2841,12 @@ open Foundations.PosNat
 #print axioms step108_su2_lie_laws
 #print axioms step109_cayley3d_exact_orthogonality
 #print axioms step109b_cayley_rot3_equiv
+#print axioms step109c_cayley3d_det_one
 #print axioms step110_so3_noncommutativity
 #print axioms step111_rtrl_decay_strict_contraction
 #print axioms step112_rational_softmax_positive
+#print axioms step112b_rational_softmax_p4_positive
 #print axioms step113_kerr_w1_total_denom
+#print axioms step113b_kerr_w1_p4_total_denom
 #print axioms step114_rtrl_exact_derivatives_dual
+#print axioms step115_selective_cayley_contraction_and_deriv

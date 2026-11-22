@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! # Axiom-Zero (`axiom_zero`)
 //!
 //! A compile-time totality validator and homeostatic runtime toolkit for zero-crash Rust.
@@ -8,10 +10,10 @@
 //!
 //! `axiom_zero` replaces those fragile patterns with a constructive, non-annihilating model:
 //!
-//! * **Compile-Time Static Validation (`#[axiom_zero]`):** AST validation pass (`[E001]`–`[E011]`)
+//! * **Compile-Time Static Validation (`#[axiom_zero]`):** AST validation pass (`[E001]`–`[E012]`)
 //!   that rejects panics, assertions, `todo!`/`unimplemented!`/`unreachable!`, `.unwrap*()`/`.expect*()`,
-//!   direct `None` references, terminating calls (`exit`/`abort`), raw indexing (`arr[i]`), and raw
-//!   division/modulo (`/` and `%`) at compile time.
+//!   direct `None` references, terminating calls (`exit`/`abort`), raw indexing (`arr[i]`), raw
+//!   division/modulo (`/` and `%`), and transcendental float methods (`exp`/`ln`/`sin`/`cos`/`tanh`/`powf`/etc.) at compile time.
 //! * **Total Presence (`Presence<T>`):** Algebraic replacement for `Option<T>` that eliminates empty
 //!   null states by resolving every query to either a `Live(T)` payload or an explicit `Boundary(T)`
 //!   fallback token.

@@ -8,7 +8,7 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["totality", "no-panic", "fault-tolerance", "homeostasis", "crdt"]
 categories = ["development-tools", "rust-patterns", "asynchronous"]
-repository = "https://github.com/axiom-zero/axiom-zero"
+repository = "https://github.com/Worobushka/axiom-zero"
 
 [dependencies]
 axiom_zero_macros = { path = "axiom_zero_macros", version = "0.1.0" }

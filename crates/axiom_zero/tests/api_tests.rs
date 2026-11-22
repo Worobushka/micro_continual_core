@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 use axiom_zero::{
     axiom_zero, mask_get, sanitize_bounded_f32, total_div_f32, total_div_unit_shifted_f32,
     total_div_usize, total_get_copy, total_rem_nonzero, Attractor, Presence, RelationalIdentity,

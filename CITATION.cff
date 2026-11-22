@@ -1,16 +1,16 @@
 cff-version: 1.2.0
 message: "If you use this software or formal Lean 4 proofs, please cite them using this metadata."
 title: "MicroContinualCore: Unified Axiom-Zero Continual Learning & Cayley-RTRL Wave-Rotor Architecture"
-version: "0.3.0"
-doi: "10.5281/zenodo.24424983"
+version: "0.4.0"
+doi: "10.5281/zenodo.24424982"
 identifiers:
-  - type: doi
-    value: "10.5281/zenodo.24424983"
-    description: "Zenodo archive for MicroContinualCore v0.3.0"
   - type: doi
     value: "10.5281/zenodo.24424982"
     description: "Zenodo concept DOI for all versions of MicroContinualCore"
-date-released: 2026-11-21
+  - type: doi
+    value: "10.5281/zenodo.24424983"
+    description: "Zenodo archive for MicroContinualCore v0.3.0 (SUPERSEDED/RETRACTED due to methodologically flawed benchmark shortcuts; see v0.4.0)"
+date-released: 2026-11-22
 license: PolyForm-Noncommercial-1.0.0
 authors:
   - family-names: "İşmuhanov"

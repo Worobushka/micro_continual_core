@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Adrian Aleksandrovich İşmuhanov
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! MicroContinualCore v0.3.0 (Единая архитектура: Frozen SO(3) + KerrKernel + 2L Fast-Slow Cayley-RTRL + Page-Hinkley):
+//! MicroContinualCore v0.4.0 (Единая архитектура: Frozen SO(3) + KerrKernel + 2L Fast-Slow Cayley-RTRL + Page-Hinkley):
 //! - 100% #[axiom_zero], zero-alloc горячий путь, полная SEU-защита, 0% exp/ln/sin/cos/tanh.
 //! - Полоса 0 («Замороженные часы»): опциональный фиксированный ортогональный ротор Кэли SO(3)^S + KerrKernelBank.
 //! - Полоса 1 («Пластичный Fast/Mid Cayley-RTRL», `rtrl_sectors > 0`):
@@ -122,6 +122,9 @@ pub struct MicroCoreConfig {
     pub ph_delta: f32,
     pub ph_threshold: f32,
     pub ph_warmup: usize,
+    /// Параллельный read-only скоринг всех зрелых банков при дрейфе за O(1) окно (8 шагов)
+    /// вместо последовательного перебора O(R) банков (для многорежимных потоков R > 2).
+    pub parallel_bank_probe: bool,
     pub seed: u64,
 }
 
@@ -162,6 +165,7 @@ impl Default for MicroCoreConfig {
             ph_delta: 0.22,
             ph_threshold: 3.20,
             ph_warmup: 45,
+            parallel_bank_probe: false,
             seed: 0x4D49_4352_4F56_0001,
         }
     }
@@ -172,7 +176,7 @@ impl MicroCoreConfig {
         Self {
             half_sectors: 20,
             sem_slots_pow2: 0,
-            num_actions: num_classes.clamp(2, 32),
+            num_actions: num_classes.clamp(1, 32),
             max_regimes: 4,
             obs_bank_capacity: 0,
             bank_capacity: 28,
@@ -204,6 +208,7 @@ impl MicroCoreConfig {
             ph_delta: 0.14,
             ph_threshold: 3.6,
             ph_warmup: 50,
+            parallel_bank_probe: false,
             seed,
         }
     }
@@ -252,18 +257,31 @@ fn fill_small_rand(buf: &mut [f32], seed: u64, scale: f32) {
 }
 
 #[axiom_zero]
+fn scrub_vec_seu(buf: &mut [f32], limit: f32, replacement: f32) -> u64 {
+    let mut faults = 0u64;
+    for v in buf.iter_mut() {
+        if !v.is_finite() || v.abs() > limit {
+            *v = replacement;
+            faults = faults.saturating_add(1);
+        }
+    }
+    faults
+}
+
+#[axiom_zero]
 impl RegimeBank {
     pub fn new(cfg: &MicroCoreConfig, dim: usize, half_dim: usize, bank_idx: usize) -> Self {
-        let na = cfg.num_actions.clamp(2, 64);
+        let na = cfg.num_actions.clamp(1, 64);
         let has_frozen = cfg.half_sectors > 0;
         let use_lin = has_frozen && (cfg.linear_lr > 0.0 || cfg.actor_critic_lr > 0.0);
         let use_ac = cfg.actor_critic_lr > 0.0;
         let use_bias = cfg.linear_lr > 0.0 || use_ac;
+        let need_rtrl_critic = use_ac || na >= 2;
 
         let rtrl_seed = cfg.seed.wrapping_add((bank_idx as u64).wrapping_mul(0x9E37_79B9));
         let slow_sec = if cfg.rtrl_sectors > 0 { cfg.rtrl_slow_sectors } else { 0 };
         let slow_in = if slow_sec > 0 {
-            cfg.rtrl_max_in.clamp(1, 12).saturating_add(4).min(16)
+            cfg.rtrl_max_in.clamp(1, 256).saturating_add(4).min(260)
         } else {
             1
         };
@@ -284,24 +302,24 @@ impl RegimeBank {
         let rdim = rtrl_params.dim();
         let r2dim = rtrl_slow_params.dim();
         let skip_dim = if cfg.rtrl_sectors > 0 && cfg.rtrl_use_skip_x {
-            cfg.rtrl_max_in.clamp(1, 16)
+            cfg.rtrl_max_in.clamp(1, 256)
         } else {
             0
         };
 
         let w_init = if slow_sec > 0 { 0.05_f32 } else { 0.08_f32 };
         let mut rtrl_actor_w = if rdim > 0 { vec![0.0_f32; na.saturating_mul(rdim)] } else { Vec::new() };
-        let mut rtrl_critic_w = if rdim > 0 { vec![0.0_f32; rdim] } else { Vec::new() };
+        let mut rtrl_critic_w = if rdim > 0 && need_rtrl_critic { vec![0.0_f32; rdim] } else { Vec::new() };
         fill_small_rand(&mut rtrl_actor_w, rtrl_seed ^ 0xA4C7_0011_55AA_33CC, w_init);
         fill_small_rand(&mut rtrl_critic_w, rtrl_seed ^ 0xC4C7_0011_55AA_33DD, w_init);
 
         let mut rtrl_slow_actor_w = if r2dim > 0 { vec![0.0_f32; na.saturating_mul(r2dim)] } else { Vec::new() };
-        let mut rtrl_slow_critic_w = if r2dim > 0 { vec![0.0_f32; r2dim] } else { Vec::new() };
+        let mut rtrl_slow_critic_w = if r2dim > 0 && need_rtrl_critic { vec![0.0_f32; r2dim] } else { Vec::new() };
         fill_small_rand(&mut rtrl_slow_actor_w, rtrl_seed ^ 0xB5D8_1122_66BB_44EE, w_init);
         fill_small_rand(&mut rtrl_slow_critic_w, rtrl_seed ^ 0xD5D8_1122_66BB_44FF, w_init);
 
         let mut rtrl_skip_actor_w = if skip_dim > 0 { vec![0.0_f32; na.saturating_mul(skip_dim)] } else { Vec::new() };
-        let mut rtrl_skip_critic_w = if skip_dim > 0 { vec![0.0_f32; skip_dim] } else { Vec::new() };
+        let mut rtrl_skip_critic_w = if skip_dim > 0 && need_rtrl_critic { vec![0.0_f32; skip_dim] } else { Vec::new() };
         fill_small_rand(&mut rtrl_skip_actor_w, rtrl_seed ^ 0x5119_0011_77CC_8899, w_init);
         fill_small_rand(&mut rtrl_skip_critic_w, rtrl_seed ^ 0x5119_0011_77CC_88AA, w_init);
 
@@ -382,6 +400,25 @@ impl RegimeBank {
                 + self.rtrl_skip_critic_w.len())
             .saturating_mul(4)
             + 64
+    }
+
+    pub fn scrub_weight_seu(&mut self) -> u64 {
+        let mut faults = self.rtrl_params.scrub_weight_seu();
+        faults = faults.saturating_add(self.rtrl_slow_params.scrub_weight_seu());
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.rtrl_actor_w, 6.1, 0.0));
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.rtrl_slow_actor_w, 6.1, 0.0));
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.rtrl_skip_actor_w, 6.1, 0.0));
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.linear_w, 6.1, 0.0));
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.rtrl_critic_w, 16.1, 0.0));
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.rtrl_slow_critic_w, 16.1, 0.0));
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.rtrl_skip_critic_w, 16.1, 0.0));
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.critic_w, 16.1, 0.0));
+        faults = faults.saturating_add(scrub_vec_seu(&mut self.linear_bias, 16.1, 0.0));
+        if !self.critic_bias.is_finite() || self.critic_bias.abs() > 16.1 {
+            self.critic_bias = 0.0;
+            faults = faults.saturating_add(1);
+        }
+        faults
     }
 
     #[inline]
@@ -575,6 +612,9 @@ pub struct CoreScratch {
     pub td_mean_ema: f32,
     pub td_var_ema: f32,
     pub pending_active_in: usize,
+    pub parallel_bank_hits: Vec<u16>,
+    pub parallel_bank_margins: Vec<f32>,
+    pub last_reg_pred: f32,
 }
 
 #[axiom_zero]
@@ -589,6 +629,7 @@ impl CoreScratch {
         rtrl_slow_dim: usize,
         slow_in_dim: usize,
         skip_dim: usize,
+        max_in_dim: usize,
         use_frozen: bool,
         need_sem: bool,
         need_kernels: bool,
@@ -598,6 +639,7 @@ impl CoreScratch {
         let has_r1 = rtrl_dim > 0;
         let has_r2 = rtrl_slow_dim > 0;
         let has_skip = skip_dim > 0;
+        let feat_cap = max_in_dim.clamp(32, 256);
         Self {
             obs_vec: if use_frozen { vec![0.0_f32; dim] } else { Vec::new() },
             obs_trace: if need_obs_trace {
@@ -616,27 +658,27 @@ impl CoreScratch {
             ac_logits: vec![0.0_f32; num_actions],
             ac_probs: vec![0.0_f32; num_actions],
             ac_psi: vec![1.0_f32; num_actions],
-            feat_mean: vec![0.0_f32; 32],
-            feat_var: vec![1.0_f32; 32],
+            feat_mean: vec![0.0_f32; feat_cap],
+            feat_var: vec![1.0_f32; feat_cap],
             feat_count: 0,
-            prev_raw_obs: vec![0.0_f32; 32],
+            prev_raw_obs: vec![0.0_f32; feat_cap],
             has_prev_obs: false,
-            vec_aug_buf: vec![0.0_f32; 64],
+            vec_aug_buf: vec![0.0_f32; feat_cap.saturating_mul(2)],
             ep_slots_unused: if need_sem { Vec::with_capacity(16) } else { Vec::new() },
             intra_ep_fatigue: vec![0.0_f32; num_actions],
-            td_e_actor_f: if has_r1 && use_frozen { vec![0.0_f32; num_actions.saturating_mul(dim)] } else { Vec::new() },
-            td_e_actor_b: if has_r1 { vec![0.0_f32; num_actions] } else { Vec::new() },
-            td_e_critic_f: if has_r1 && use_frozen { vec![0.0_f32; dim] } else { Vec::new() },
+            td_e_actor_f: if has_r1 && use_frozen && num_actions >= 2 { vec![0.0_f32; num_actions.saturating_mul(dim)] } else { Vec::new() },
+            td_e_actor_b: if has_r1 && num_actions >= 2 { vec![0.0_f32; num_actions] } else { Vec::new() },
+            td_e_critic_f: if has_r1 && use_frozen && num_actions >= 2 { vec![0.0_f32; dim] } else { Vec::new() },
             td_e_critic_b: 0.0,
-            td_e_actor_r: if has_r1 { vec![0.0_f32; num_actions.saturating_mul(rtrl_dim)] } else { Vec::new() },
-            td_e_critic_r: if has_r1 { vec![0.0_f32; rtrl_dim] } else { Vec::new() },
+            td_e_actor_r: if has_r1 && num_actions >= 2 { vec![0.0_f32; num_actions.saturating_mul(rtrl_dim)] } else { Vec::new() },
+            td_e_critic_r: if has_r1 && num_actions >= 2 { vec![0.0_f32; rtrl_dim] } else { Vec::new() },
             rtrl_fb_buf: if has_r1 { vec![0.0_f32; rtrl_dim] } else { Vec::new() },
-            td_e_actor_r2: if has_r2 { vec![0.0_f32; num_actions.saturating_mul(rtrl_slow_dim)] } else { Vec::new() },
-            td_e_critic_r2: if has_r2 { vec![0.0_f32; rtrl_slow_dim] } else { Vec::new() },
+            td_e_actor_r2: if has_r2 && num_actions >= 2 { vec![0.0_f32; num_actions.saturating_mul(rtrl_slow_dim)] } else { Vec::new() },
+            td_e_critic_r2: if has_r2 && num_actions >= 2 { vec![0.0_f32; rtrl_slow_dim] } else { Vec::new() },
             rtrl_slow_fb_buf: if has_r2 { vec![0.0_f32; rtrl_slow_dim] } else { Vec::new() },
             rtrl_slow_in_buf: if has_r2 { vec![0.0_f32; slow_in_dim] } else { Vec::new() },
-            td_e_actor_skip: if has_skip { vec![0.0_f32; num_actions.saturating_mul(skip_dim)] } else { Vec::new() },
-            td_e_critic_skip: if has_skip { vec![0.0_f32; skip_dim] } else { Vec::new() },
+            td_e_actor_skip: if has_skip && num_actions >= 2 { vec![0.0_f32; num_actions.saturating_mul(skip_dim)] } else { Vec::new() },
+            td_e_critic_skip: if has_skip && num_actions >= 2 { vec![0.0_f32; skip_dim] } else { Vec::new() },
             rtrl_skip_buf: if has_skip { vec![0.0_f32; skip_dim] } else { Vec::new() },
             has_pending_td: false,
             pending_v: 0.0,
@@ -644,6 +686,9 @@ impl CoreScratch {
             td_mean_ema: 0.0,
             td_var_ema: 0.25,
             pending_active_in: 0,
+            parallel_bank_hits: Vec::new(),
+            parallel_bank_margins: Vec::new(),
+            last_reg_pred: 0.0,
         }
     }
 
@@ -678,8 +723,10 @@ impl CoreScratch {
             + self.rtrl_slow_in_buf.len()
             + self.td_e_actor_skip.len()
             + self.td_e_critic_skip.len()
-            + self.rtrl_skip_buf.len())
+            + self.rtrl_skip_buf.len()
+            + self.parallel_bank_margins.len())
         .saturating_mul(4)
+            + self.parallel_bank_hits.len().saturating_mul(2)
     }
 
     pub fn clear_td_traces(&mut self) {
@@ -701,6 +748,7 @@ impl CoreScratch {
     }
 }
 
+#[derive(Clone)]
 pub struct MicroContinualCore {
     pub config: MicroCoreConfig,
     pub encoder: SpinorEncoder,
@@ -715,9 +763,12 @@ pub struct MicroContinualCore {
     pub probe_eps_left: usize,
     pub probe_return_sum: f32,
     pub probe_return_cnt: usize,
+    pub parallel_probe_left: usize,
+    pub parallel_probe_prev: usize,
     pub total_switches: usize,
     pub rng_state: u64,
     pub scratch: CoreScratch,
+    pub seu_fault_count: u64,
 }
 
 #[axiom_zero]
@@ -743,7 +794,7 @@ impl MicroContinualCore {
 
         let slow_sec = if rtrl_state.sectors > 0 { config.rtrl_slow_sectors } else { 0 };
         let slow_in = if slow_sec > 0 {
-            config.rtrl_max_in.clamp(1, 12).saturating_add(4).min(16)
+            config.rtrl_max_in.clamp(1, 256).saturating_add(4).min(260)
         } else {
             1
         };
@@ -755,24 +806,68 @@ impl MicroContinualCore {
         } else {
             Vec::new()
         };
-        if !rtrl_pool_w.is_empty() {
+        if !rtrl_pool_w.is_empty() && r1_dim > 0 {
             let p_scale = total_div_f32(1.0, (r1_dim.max(1) as f32).sqrt(), 0.2);
             fill_small_rand(&mut rtrl_pool_w, config.seed ^ 0x41E2_CA71_E700, p_scale);
+            // Modified Gram-Schmidt (2 passes) so the 4 rows of rtrl_pool_w are orthonormal (P P^T = I_4).
+            for r in 0..4usize {
+                let roff = r.saturating_mul(r1_dim);
+                for _pass in 0..2usize {
+                    for prev in 0..r {
+                        let poff = prev.saturating_mul(r1_dim);
+                        let mut dot = 0.0_f32;
+                        for i in 0..r1_dim {
+                            dot = sanitize_f32(
+                                dot + total_get_copy(&rtrl_pool_w, roff + i, 0.0)
+                                    * total_get_copy(&rtrl_pool_w, poff + i, 0.0),
+                            );
+                        }
+                        for i in 0..r1_dim {
+                            let nv = sanitize_f32(
+                                total_get_copy(&rtrl_pool_w, roff + i, 0.0)
+                                    - dot * total_get_copy(&rtrl_pool_w, poff + i, 0.0),
+                            );
+                            let _ = total_set(&mut rtrl_pool_w, roff + i, nv);
+                        }
+                    }
+                }
+                let mut n2 = 0.0_f32;
+                for i in 0..r1_dim {
+                    let v = total_get_copy(&rtrl_pool_w, roff + i, 0.0);
+                    n2 = sanitize_f32(n2 + v * v);
+                }
+                let norm = n2.sqrt();
+                if norm > 1e-6 {
+                    let inv_n = total_div_f32(1.0, norm, 0.0);
+                    for i in 0..r1_dim {
+                        let nv = sanitize_f32(total_get_copy(&rtrl_pool_w, roff + i, 0.0) * inv_n);
+                        let _ = total_set(&mut rtrl_pool_w, roff + i, nv);
+                    }
+                } else {
+                    for i in 0..r1_dim {
+                        let _ = total_set(&mut rtrl_pool_w, roff + i, 0.0);
+                    }
+                }
+            }
         }
 
         let skip_dim = if rtrl_state.sectors > 0 && config.rtrl_use_skip_x {
-            config.rtrl_max_in.clamp(1, 16)
+            config.rtrl_max_in.clamp(1, 256)
         } else {
             0
         };
 
-        let n_act = config.num_actions.clamp(2, 64);
+        let n_act = config.num_actions.clamp(1, 64);
         let use_trace = !(config.actor_critic_lr > 0.0 && r1_dim > 0);
-        let trace_cap = if use_trace { config.trace_capacity } else { 0 };
+        let trace_cap = if use_trace && !(n_act == 1 && config.actor_critic_lr <= 0.0) {
+            config.trace_capacity
+        } else {
+            0
+        };
         let trace_na = if config.actor_critic_lr > 0.0 && r1_dim == 0 { n_act } else { 0 };
         let trace = EligibilityTraceRing::with_actions(d, trace_cap, trace_na);
 
-        let n_reg = config.max_regimes.clamp(2, 12);
+        let n_reg = config.max_regimes.clamp(1, 64);
         let mut banks = Vec::with_capacity(n_reg);
         for bidx in 0..n_reg {
             banks.push(RegimeBank::new(&config, d, hd, bidx));
@@ -780,7 +875,7 @@ impl MicroContinualCore {
 
         let need_kernels = use_frozen && config.actor_critic_lr <= 0.0 && config.linear_mix < 0.99;
         let need_obs_trace = need_kernels && config.obs_bank_capacity > 0;
-        let scratch = CoreScratch::new(
+        let mut scratch = CoreScratch::new(
             d,
             hd,
             config.bank_capacity.max(config.obs_bank_capacity),
@@ -790,11 +885,16 @@ impl MicroContinualCore {
             r2_dim,
             slow_in,
             skip_dim,
+            config.rtrl_max_in,
             use_frozen,
             encoder.num_slots > 0,
             need_kernels,
             need_obs_trace,
         );
+        if config.parallel_bank_probe {
+            scratch.parallel_bank_hits = vec![0u16; n_reg];
+            scratch.parallel_bank_margins = vec![0.0_f32; n_reg];
+        }
 
         Self {
             config,
@@ -810,9 +910,84 @@ impl MicroContinualCore {
             probe_eps_left: 0,
             probe_return_sum: 0.0,
             probe_return_cnt: 0,
+            parallel_probe_left: 0,
+            parallel_probe_prev: 0,
             total_switches: 0,
             rng_state: splitmix64(config.seed ^ 0x9e37_79b9_7f4a_7c15),
             scratch,
+            seu_fault_count: 0,
+        }
+    }
+
+    pub fn total_seu_faults(&self) -> u64 {
+        self.seu_fault_count
+            .saturating_add(self.rtrl_state.seu_fault_count)
+            .saturating_add(self.rtrl_slow_state.seu_fault_count)
+    }
+
+    /// Прямая инъекция побитового переворота IEEE-754 в живой регистр состояния
+    /// (симметрично по Band 1 `rtrl_state.u` и Band 2 `rtrl_slow_state.u`, либо в `belief.state`).
+    pub fn inject_register_bit_flip(&mut self, reg_idx: usize, bit: u32) {
+        let nf = self.rtrl_state.u.len();
+        let ns = self.rtrl_slow_state.u.len();
+        let tot = nf.saturating_add(ns);
+        if tot > 0 {
+            let r = total_rem_usize(reg_idx, tot, 0);
+            if r < nf {
+                self.rtrl_state.inject_register_bit_flip(r, bit);
+            } else {
+                self.rtrl_slow_state.inject_register_bit_flip(r.saturating_sub(nf), bit);
+            }
+        } else if !self.belief.state.is_empty() {
+            let idx = total_rem_usize(reg_idx, self.belief.state.len(), 0);
+            let cur = total_get_copy(&self.belief.state, idx, 0.0);
+            let flipped = f32::from_bits(cur.to_bits() ^ (1u32 << (bit & 31)));
+            let _ = total_set(&mut self.belief.state, idx, flipped);
+        }
+    }
+
+    /// Прямая инъекция побитового переворота IEEE-754 равномерно по ВСЕМ живым обучаемым весам
+    /// активного банка (физическая модель SRAM SEU пропорционально размеру каждого тензора).
+    pub fn inject_weight_bit_flip(&mut self, reg_idx: usize, bit: u32) {
+        let mask = 1u32 << (bit & 31);
+        if let Some(bank) = self.banks.get_mut(self.active_regime) {
+            let mut slices: [&mut [f32]; 14] = [
+                &mut bank.rtrl_params.alpha,
+                &mut bank.rtrl_params.omega,
+                &mut bank.rtrl_params.in_w,
+                &mut bank.rtrl_slow_params.alpha,
+                &mut bank.rtrl_slow_params.omega,
+                &mut bank.rtrl_slow_params.in_w,
+                &mut bank.rtrl_actor_w,
+                &mut bank.rtrl_slow_actor_w,
+                &mut bank.rtrl_skip_actor_w,
+                &mut bank.linear_w,
+                &mut bank.rtrl_critic_w,
+                &mut bank.rtrl_slow_critic_w,
+                &mut bank.rtrl_skip_critic_w,
+                &mut bank.critic_w,
+            ];
+            let mut total_len = 0usize;
+            for sl in slices.iter() {
+                total_len = total_len.saturating_add(sl.len());
+            }
+            if total_len == 0 {
+                return;
+            }
+            let hashed = reg_idx.wrapping_mul(2_654_435_761usize);
+            let mut rem = total_rem_usize(hashed, total_len, 0);
+            for sl in slices.iter_mut() {
+                let len = sl.len();
+                if rem < len {
+                    let mut cur = total_get_copy(sl, rem, 1.25);
+                    if cur.is_finite() && (cur.abs() < 1.001 || cur.abs() >= 2.0) {
+                        cur = if cur < 0.0 { -1.25 } else { 1.25 };
+                    }
+                    let _ = total_set(sl, rem, f32::from_bits(cur.to_bits() ^ mask));
+                    return;
+                }
+                rem = rem.saturating_sub(len);
+            }
         }
     }
 
@@ -861,18 +1036,27 @@ impl MicroContinualCore {
         self.decide_from_encoded_obs(train_mode, true, seu_nan, seu_spikes, 0)
     }
 
-    pub fn decide_vec(
+    fn encode_and_advance_bands(
         &mut self,
         features: &[f32],
         train_mode: bool,
         seu_nan: bool,
         seu_spikes: bool,
-    ) -> Presence<(usize, f32)> {
-        let n_in = features.len().min(32);
+    ) -> usize {
+        let n_in = features.len().min(self.scratch.feat_mean.len());
         let mut aug_len = n_in;
 
+        let mut input_corrupted = false;
+        for i in 0..n_in {
+            let rv = total_get_copy(features, i, 0.0);
+            if !rv.is_finite() || rv.abs() > 1e5 {
+                self.seu_fault_count = self.seu_fault_count.saturating_add(1);
+                input_corrupted = true;
+            }
+        }
+
         if self.config.standardize_vec && n_in > 0 {
-            let update_stats = !seu_nan && !seu_spikes && (train_mode || self.config.actor_critic_lr <= 0.0);
+            let update_stats = !input_corrupted && (train_mode || self.config.actor_critic_lr <= 0.0);
             if update_stats {
                 self.scratch.feat_count = self.scratch.feat_count.saturating_add(1);
                 let alpha = if self.scratch.feat_count < 40 {
@@ -953,20 +1137,21 @@ impl MicroContinualCore {
                     let _ = total_set(&mut self.scratch.rtrl_skip_buf, i, sanitize_f32(v * 0.5));
                 }
             }
-            if let Some(bank) = self.banks.get(self.active_regime) {
+            if let Some(bank) = self.banks.get_mut(self.active_regime) {
+                self.seu_fault_count = self.seu_fault_count.saturating_add(bank.scrub_weight_seu());
                 {
                     let r_slice = self.scratch.vec_aug_buf.get(0..r_in).unwrap_or(&[]);
                     self.rtrl_state.step_forward(&bank.rtrl_params, r_slice);
                 }
                 if self.rtrl_slow_state.sectors > 0 {
-                    let d_raw = self.rtrl_state.max_in.min(12);
+                    let slow_len = self.scratch.rtrl_slow_in_buf.len();
+                    let d_raw = self.rtrl_state.max_in.min(slow_len.saturating_sub(4));
                     self.scratch.rtrl_slow_in_buf.fill(0.0);
                     for i in 0..r_in.min(d_raw) {
                         let v = sanitize_bounded_f32(total_get_copy(&self.scratch.vec_aug_buf, i, 0.0), 8.0);
                         let _ = total_set(&mut self.scratch.rtrl_slow_in_buf, i, v);
                     }
                     let r1_dim = self.rtrl_state.b.len();
-                    let slow_len = self.scratch.rtrl_slow_in_buf.len();
                     for c in 0..4usize {
                         if d_raw + c < slow_len {
                             let poff = c.saturating_mul(r1_dim);
@@ -979,13 +1164,84 @@ impl MicroContinualCore {
                         .step_forward(&bank.rtrl_slow_params, &self.scratch.rtrl_slow_in_buf);
                 }
             }
+        } else if let Some(bank) = self.banks.get_mut(self.active_regime) {
+            self.seu_fault_count = self.seu_fault_count.saturating_add(bank.scrub_weight_seu());
         }
 
         if self.config.half_sectors > 0 && !self.scratch.obs_vec.is_empty() {
             let slice = self.scratch.vec_aug_buf.get(0..aug_len).unwrap_or(&[]);
             self.encoder.encode_vec_into(slice, &mut self.scratch.obs_vec);
         }
+        aug_len
+    }
+
+    pub fn decide_vec(
+        &mut self,
+        features: &[f32],
+        train_mode: bool,
+        seu_nan: bool,
+        seu_spikes: bool,
+    ) -> Presence<(usize, f32)> {
+        let aug_len = self.encode_and_advance_bands(features, train_mode, seu_nan, seu_spikes);
         self.decide_from_encoded_obs(train_mode, false, seu_nan, seu_spikes, aug_len)
+    }
+
+    /// Непрерывный регрессионный шаг поверх Полосы 1 (Fast/Mid Cayley-RTRL) + Полосы 2 (Slow Envelope)
+    /// + прямого skip-канала (+ опционально Полосы 0). 100% #[axiom_zero], 0% exp, 0 heap allocs.
+    pub fn decide_reg_vec(
+        &mut self,
+        features: &[f32],
+        train_mode: bool,
+        seu_nan: bool,
+        seu_spikes: bool,
+    ) -> Presence<f32> {
+        let aug_len = self.encode_and_advance_bands(features, train_mode, seu_nan, seu_spikes);
+        self.scratch.pending_active_in = aug_len;
+        let use_frozen = self.config.half_sectors > 0 && !self.scratch.obs_vec.is_empty();
+        if use_frozen {
+            if seu_nan {
+                let _ = total_set(&mut self.scratch.obs_vec, 0, f32::NAN);
+                let _ = total_set(&mut self.scratch.obs_vec, 3, f32::INFINITY);
+            }
+            if seu_spikes {
+                let _ = total_set(&mut self.scratch.obs_vec, 1, 1e28_f32);
+                let _ = total_set(&mut self.scratch.obs_vec, 2, -1e30_f32);
+            }
+            sanitize_and_normalize_unit(&mut self.scratch.obs_vec, 8.0);
+            if self.belief.state.iter().any(|&v| !v.is_finite() || v.abs() > 8.0) {
+                self.seu_fault_count = self.seu_fault_count.saturating_add(1);
+            }
+            let _ = self.belief.update(&self.scratch.obs_vec);
+        }
+        let Some(bank) = self.banks.get(self.active_regime) else {
+            self.scratch.last_reg_pred = 0.0;
+            return Presence::boundary(0.0);
+        };
+        let pred = bank.split_band_logit(
+            0,
+            &self.belief.state,
+            &self.rtrl_state.b,
+            &self.rtrl_slow_state.b,
+            &self.scratch.rtrl_skip_buf,
+        );
+        self.scratch.last_reg_pred = pred;
+        Presence::new(pred)
+    }
+
+    #[inline]
+    pub fn last_reg_pred(&self) -> f32 {
+        self.scratch.last_reg_pred
+    }
+
+    /// Нормированная энергия медленной огибающей Полосы 2 (`||b_slow||_2 / sqrt(S_2)`), read-only.
+    #[inline]
+    pub fn slow_envelope_norm(&self) -> f32 {
+        let s2 = self.rtrl_slow_state.sectors;
+        if s2 == 0 || self.rtrl_slow_state.b.is_empty() {
+            return 0.0;
+        }
+        let n2 = fast_dot(&self.rtrl_slow_state.b, &self.rtrl_slow_state.b).max(0.0);
+        total_div_f32(n2.sqrt(), (s2 as f32).sqrt(), 0.0)
     }
 
     fn bank_suspect_drift(&self, reg_id: usize) -> bool {
@@ -1011,7 +1267,11 @@ impl MicroContinualCore {
         let adv_err = total_div_f32(centered, self.scratch.td_var_ema.sqrt(), 0.0).clamp(-2.5, 2.5);
 
         let a_lr = self.config.actor_critic_lr;
-        let c_lr = self.config.critic_lr.max(sanitize_f32(a_lr * 3.5)).max(0.04);
+        let c_lr = if self.config.critic_lr > 0.0 {
+            self.config.critic_lr.max(0.04)
+        } else {
+            sanitize_f32(a_lr * 3.5).max(0.04)
+        };
         let r_lr = self.config.rtrl_lr;
         let wd = self.config.linear_wd;
         let keep = (1.0 - sanitize_f32(wd).clamp(0.0, 0.05)).clamp(0.95, 1.0);
@@ -1159,6 +1419,9 @@ impl MicroContinualCore {
                 let _ = total_set(&mut self.scratch.obs_vec, 2, -1e30_f32);
             }
             sanitize_and_normalize_unit(&mut self.scratch.obs_vec, 8.0);
+            if self.belief.state.iter().any(|&v| !v.is_finite() || v.abs() > 8.0) {
+                self.seu_fault_count = self.seu_fault_count.saturating_add(1);
+            }
             self.belief.update(&self.scratch.obs_vec)
         } else {
             1.0_f32
@@ -1166,7 +1429,7 @@ impl MicroContinualCore {
 
         let reg_id = self.active_regime;
         let n_act = self.config.num_actions.clamp(2, 64);
-        let in_probe = self.probe_eps_left > 0;
+        let in_probe = self.probe_eps_left > 0 || self.parallel_probe_left > 0;
         let r1_dim = self.rtrl_state.sectors.saturating_mul(3);
         let r2_dim = self.rtrl_slow_state.sectors.saturating_mul(3);
         let skip_dim = self.scratch.rtrl_skip_buf.len();
@@ -1937,6 +2200,99 @@ impl MicroContinualCore {
         let r_norm = if correct { 1.0_f32 } else { 0.0_f32 };
         let reg_id = self.active_regime;
 
+        if self.parallel_probe_left > 0 {
+            let n_act = self.config.num_actions.clamp(2, 64);
+            let n_banks = self.banks.len();
+            for bi in 0..n_banks {
+                if bi == self.parallel_probe_prev {
+                    continue;
+                }
+                if let Some(b) = self.banks.get(bi) {
+                    if b.age_eps < 20 {
+                        continue;
+                    }
+                    let mut best_a = 0usize;
+                    let mut best_l = -1e30_f32;
+                    let mut logit_y = 0.0_f32;
+                    let mut best_other = -1e30_f32;
+                    for a in 0..n_act {
+                        let lg = b.split_band_logit(
+                            a,
+                            &self.belief.state,
+                            &self.rtrl_state.b,
+                            &self.rtrl_slow_state.b,
+                            &self.scratch.rtrl_skip_buf,
+                        );
+                        if lg > best_l {
+                            best_l = lg;
+                            best_a = a;
+                        }
+                        if a == true_label {
+                            logit_y = lg;
+                        } else if lg > best_other {
+                            best_other = lg;
+                        }
+                    }
+                    if best_a == true_label {
+                        let old_h = total_get_copy(&self.scratch.parallel_bank_hits, bi, 0);
+                        let _ = total_set(
+                            &mut self.scratch.parallel_bank_hits,
+                            bi,
+                            old_h.saturating_add(1),
+                        );
+                    }
+                    let m = sanitize_bounded_f32(logit_y - best_other, 2.0);
+                    let old_m = total_get_copy(&self.scratch.parallel_bank_margins, bi, 0.0);
+                    let _ = total_set(
+                        &mut self.scratch.parallel_bank_margins,
+                        bi,
+                        sanitize_f32(old_m + m),
+                    );
+                }
+            }
+            self.parallel_probe_left -= 1;
+            let mut best_b = self.parallel_probe_prev;
+            let mut best_h = 0u16;
+            let mut best_m = -1e30_f32;
+            let mut found = false;
+            for bi in 0..n_banks {
+                if bi == self.parallel_probe_prev {
+                    continue;
+                }
+                if let Some(b) = self.banks.get(bi) {
+                    if b.age_eps < 20 {
+                        continue;
+                    }
+                    let h = total_get_copy(&self.scratch.parallel_bank_hits, bi, 0);
+                    let m = total_get_copy(&self.scratch.parallel_bank_margins, bi, -1e30);
+                    if !found || h > best_h || (h == best_h && m > best_m) {
+                        found = true;
+                        best_b = bi;
+                        best_h = h;
+                        best_m = m;
+                    }
+                }
+            }
+            if self.parallel_probe_left > 0 {
+                // Строго каузально переключаем прогноз на текущего лидера (без обновления весов до конца окна!)
+                if found {
+                    self.active_regime = best_b;
+                }
+                return false;
+            }
+            if found && best_h >= 4 {
+                self.active_regime = best_b;
+                self.probe_eps_left = 0;
+                if let Some(b) = self.banks.get_mut(best_b) {
+                    b.ph.reset_cusum();
+                }
+                self.total_switches = self.total_switches.saturating_add(1);
+                return true;
+            }
+            self.active_regime = self.parallel_probe_prev;
+            return self.allocate_fresh_or_evict_bank();
+        }
+
         if self.probe_eps_left > 0 {
             self.probe_return_sum = sanitize_f32(self.probe_return_sum + r_norm);
             self.probe_return_cnt = self.probe_return_cnt.saturating_add(1);
@@ -2108,12 +2464,222 @@ impl MicroContinualCore {
                 bank.ph.reset_cusum();
                 bank.cooldown_until = self.episode_counter.saturating_add(48);
             }
+            if self.config.parallel_bank_probe {
+                let mut mature_candidates = 0usize;
+                for (bi, b) in self.banks.iter().enumerate() {
+                    if bi != reg_id && b.age_eps >= 20 {
+                        mature_candidates = mature_candidates.saturating_add(1);
+                    }
+                }
+                if mature_candidates >= 2 {
+                    self.scratch.parallel_bank_hits.fill(0);
+                    self.scratch.parallel_bank_margins.fill(0.0);
+                    self.parallel_probe_prev = reg_id;
+                    self.parallel_probe_left = 6;
+                    return false;
+                }
+                return self.switch_to_next_or_fresh_bank();
+            }
             return self.switch_to_next_or_fresh_bank();
         }
         false
     }
 
+    /// Онлайн MSE-обновление непрерывного регрессионного контура (Полоса 0/1/2 + Skip + RTRL + Page-Hinkley).
+    /// 100% #[axiom_zero], 0% exp, 0 heap allocs. Возвращает `true`, если PH переключил банк.
+    pub fn end_reg_step(&mut self, target: f32) -> bool {
+        self.episode_counter = self.episode_counter.saturating_add(1);
+        let tgt = sanitize_bounded_f32(target, 16.0);
+        let reg_id = self.active_regime;
+        let pred = self
+            .banks
+            .get(reg_id)
+            .map(|b| {
+                b.split_band_logit(
+                    0,
+                    &self.belief.state,
+                    &self.rtrl_state.b,
+                    &self.rtrl_slow_state.b,
+                    &self.scratch.rtrl_skip_buf,
+                )
+            })
+            .unwrap_or(0.0);
+        let err_raw = sanitize_f32(tgt - pred);
+        let err = sanitize_bounded_f32(err_raw, 2.5);
+        // Рациональная оценка качества в (0, 1] без exp: q = 1 / (1 + 4 * err^2)
+        let q_norm = total_div_f32(1.0, sanitize_f32(1.0 + 4.0 * err * err), 0.0);
+
+        if self.probe_eps_left > 0 {
+            self.probe_return_sum = sanitize_f32(self.probe_return_sum + q_norm);
+            self.probe_return_cnt = self.probe_return_cnt.saturating_add(1);
+            self.probe_eps_left -= 1;
+            if self.probe_eps_left == 0 {
+                let avg = total_div_f32(
+                    self.probe_return_sum,
+                    self.probe_return_cnt.max(1) as f32,
+                    0.0,
+                );
+                if avg >= 0.65 {
+                    if let Some(b) = self.banks.get_mut(reg_id) {
+                        b.ph.reset_cusum();
+                    }
+                    return false;
+                } else {
+                    if let Some(b) = self.banks.get_mut(reg_id) {
+                        b.cooldown_until = self.episode_counter.saturating_add(48);
+                    }
+                    return self.switch_to_next_or_fresh_bank();
+                }
+            }
+            return false;
+        }
+
+        let multi_bank = self.banks.len() > 1;
+        let bank_suspect_drift = multi_bank
+            && self
+                .banks
+                .get(reg_id)
+                .map(|b| b.ph.cusum > b.ph.threshold * 0.55 && b.ph.mu_bank >= 0.60)
+                .unwrap_or(false);
+
+        let lin_lr = self.config.linear_lr;
+        let lin_wd = self.config.linear_wd;
+        let r1_dim = self.rtrl_state.sectors.saturating_mul(3);
+        let r2_dim = self.rtrl_slow_state.sectors.saturating_mul(3);
+        let skip_dim = self.scratch.rtrl_skip_buf.len();
+
+        if !bank_suspect_drift {
+            let r1_scale = total_div_f32(1.0, (self.rtrl_state.sectors.max(1) as f32).sqrt(), 0.25);
+            let r2_scale = total_div_f32(1.0, (self.rtrl_slow_state.sectors.max(1) as f32).sqrt(), 0.25);
+            let r_lr = self.config.rtrl_lr;
+            let keep = (1.0 - sanitize_f32(lin_wd).clamp(0.0, 0.05)).clamp(0.95, 1.0);
+            if r1_dim > 0 {
+                self.scratch.rtrl_fb_buf.fill(0.0);
+                self.scratch.rtrl_slow_fb_buf.fill(0.0);
+            }
+
+            if let Some(bank) = self.banks.get_mut(reg_id) {
+                bank.age_eps = bank.age_eps.saturating_add(1);
+                if lin_lr > 0.0 {
+                    let step = sanitize_f32(lin_lr * err);
+                    if !bank.linear_w.is_empty() {
+                        if let Some(w) = bank.linear_w.get_mut(0..bank.dim) {
+                            update_normed_vec(w, &self.belief.state, step, keep, 6.0);
+                        }
+                    }
+                    if r1_dim > 0 {
+                        if let Some(rw) = bank.rtrl_actor_w.get(0..r1_dim) {
+                            fast_saxpy(&mut self.scratch.rtrl_fb_buf, rw, sanitize_f32(err * r1_scale));
+                        }
+                        if let Some(rw) = bank.rtrl_actor_w.get_mut(0..r1_dim) {
+                            update_normed_vec(rw, &self.rtrl_state.b, sanitize_f32(step * r1_scale), keep, 6.0);
+                        }
+                    }
+                    if r2_dim > 0 {
+                        if let Some(sw) = bank.rtrl_slow_actor_w.get(0..r2_dim) {
+                            fast_saxpy(&mut self.scratch.rtrl_slow_fb_buf, sw, sanitize_f32(err * r2_scale));
+                        }
+                        if let Some(sw) = bank.rtrl_slow_actor_w.get_mut(0..r2_dim) {
+                            update_normed_vec(sw, &self.rtrl_slow_state.b, sanitize_f32(step * r2_scale), keep, 6.0);
+                        }
+                    }
+                    if skip_dim > 0 {
+                        if let Some(xw) = bank.rtrl_skip_actor_w.get_mut(0..skip_dim) {
+                            update_normed_vec(xw, &self.scratch.rtrl_skip_buf, step, keep, 6.0);
+                        }
+                    }
+                    let ob = total_get_copy(&bank.linear_bias, 0, 0.0);
+                    let _ = total_set(
+                        &mut bank.linear_bias,
+                        0,
+                        sanitize_bounded_f32(ob + step * 0.5, 4.0),
+                    );
+
+                    if r_lr > 0.0 && r1_dim > 0 {
+                        let sup_decay = sanitize_f32(self.config.trace_gamma.clamp(0.0, 0.90));
+                        self.rtrl_state.accumulate_traces(
+                            &self.scratch.rtrl_fb_buf,
+                            sup_decay,
+                            self.scratch.pending_active_in,
+                        );
+                        self.rtrl_state.apply_td_update(
+                            &mut bank.rtrl_params,
+                            1.0,
+                            r_lr,
+                            self.scratch.pending_active_in,
+                        );
+                        if r2_dim > 0 {
+                            self.rtrl_slow_state.accumulate_traces(
+                                &self.scratch.rtrl_slow_fb_buf,
+                                sup_decay,
+                                self.rtrl_slow_state.max_in,
+                            );
+                            self.rtrl_slow_state.apply_td_update(
+                                &mut bank.rtrl_slow_params,
+                                1.0,
+                                r_lr,
+                                self.rtrl_slow_state.max_in,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let drift_detected = if multi_bank {
+            if let Some(bank) = self.banks.get_mut(reg_id) {
+                bank.ph.observe(q_norm)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if drift_detected {
+            if let Some(bank) = self.banks.get_mut(reg_id) {
+                bank.ph.reset_cusum();
+                bank.cooldown_until = self.episode_counter.saturating_add(48);
+            }
+            return self.switch_to_next_or_fresh_bank();
+        }
+        false
+    }
+
+    fn allocate_fresh_or_evict_bank(&mut self) -> bool {
+        if self.banks.len() <= 1 {
+            return false;
+        }
+        self.scratch.td_mean_ema = 0.0;
+        self.scratch.td_var_ema = 0.25;
+        let prev = self.active_regime;
+        let n = self.banks.len();
+        for r in 0..n {
+            if r != prev {
+                if let Some(b) = self.banks.get(r) {
+                    if b.age_eps == 0 && self.episode_counter >= b.cooldown_until {
+                        self.active_regime = r;
+                        self.probe_eps_left = 0;
+                        self.total_switches = self.total_switches.saturating_add(1);
+                        return true;
+                    }
+                }
+            }
+        }
+        let next_r = total_rem_usize(prev.saturating_add(1), n, 0);
+        if let Some(b) = self.banks.get_mut(next_r) {
+            b.clear_all(&self.config, next_r);
+        }
+        self.active_regime = next_r;
+        self.probe_eps_left = 0;
+        self.total_switches = self.total_switches.saturating_add(1);
+        true
+    }
+
     fn switch_to_next_or_fresh_bank(&mut self) -> bool {
+        if self.banks.len() <= 1 {
+            return false;
+        }
         self.scratch.td_mean_ema = 0.0;
         self.scratch.td_var_ema = 0.25;
         let prev = self.active_regime;

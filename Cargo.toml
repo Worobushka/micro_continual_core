@@ -1,10 +1,12 @@
 [package]
 name = "micro_continual_core"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["Adrian Aleksandrovich İşmuhanov", "Sofia Sidorenko"]
 license = "PolyForm-Noncommercial-1.0.0"
-description = "Unified cache-resident (<30 KB) Axiom-Zero continual learning & wave-rotor Cayley-RTRL micro-core"
+description = "Unified Axiom-Zero continual learning & wave-rotor Cayley-RTRL micro-core (4.9-738 KB RAM; 4.9-454 KB with i8 encoder)"
+readme = "README.md"
+homepage = "https://github.com/Worobushka/micro_continual_core"
 repository = "https://github.com/Worobushka/micro_continual_core"
 
 [dependencies]

@@ -1,7 +1,6 @@
 # `axiom-zero`
 
-[![Crates.io](https://img.shields.io/badge/crates.io-v0.1.0-orange.svg)](https://crates.io/crates/axiom_zero)
-[![Documentation](https://docs.rs/axiom_zero/badge.svg)](https://docs.rs/axiom_zero)
+[![GitHub](https://img.shields.io/badge/github-Worobushka%2Faxiom--zero-blue.svg)](https://github.com/Worobushka/axiom-zero)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
 [![Build Status](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
 
@@ -29,7 +28,7 @@ Production outages across modern backends, autonomous agents, and embedded devic
 
 | Layer | Mechanism | Engineering Guarantee |
 | :--- | :--- | :--- |
-| **Static Compiler Macro** (`#[axiom_zero]`) | AST-level validation pass (`[E001]`–`[E011]`) using `syn` | Statically prevents compilation of `panic!`, `assert!`/`debug_assert!`, `.unwrap*()`/`.expect*()`, `Option::None`, `todo!`, `unreachable!`, `exit`/`abort`, raw indexing `arr[i]`, and raw `/` / `%`. |
+| **Static Compiler Macro** (`#[axiom_zero]`) | AST-level validation pass (`[E001]`–`[E012]`) using `syn` | Statically prevents compilation of `panic!`, `assert!`/`debug_assert!`, `.unwrap*()`/`.expect*()`, `Option::None`, `todo!`, `unreachable!`, `exit`/`abort`, raw indexing `arr[i]`, raw `/` / `%`, and transcendental float methods (`exp`/`ln`/`sin`/`cos`/`tanh`/`powf`/etc.). |
 | **Total Presence Container** (`Presence<T>`) | Replacement for `Option<T>` | Eliminates unhandled absence; queries resolve to either a live payload or an explicit boundary fallback token. |
 | **Non-Empty Attractor** (`Attractor<S>`) | Structurally non-empty limit cycle `(head, tail)` | Period `>= 1` guaranteed by construction (`NonZeroUsize`) with zero-panic phase indexing and $\tau = 1$ perturbation recovery. |
 | **Total Slice & Arithmetic Guards** (`total_get`, `total_div_*`, `sanitize_bounded_f32`) | Bounds-checked & zero-safe runtime primitives | Eliminates out-of-bounds panics, integer/float division-by-zero traps, `NaN`/`Inf`, and extreme amplitude spikes. |
@@ -190,27 +189,17 @@ fn main() {
 
 ---
 
-## Examples
+## Running Tests
 
-Run the bundled examples from the repository root:
+Run the unit and macro validation suite in `tests/api_tests.rs`:
 
 ```bash
-# Total Presence demonstration
-cargo run --example 01_total_presence
-
-# Homeostatic Attractor microservice demonstration
-cargo run --example 02_homeostatic_service
-
-# Hardware stress-test: 100,000 cosmic ray bit-flips and noise injection
-cargo run --example 03_cosmic_ray_noise_resilience
-
-# Historical aerospace simulation: 1991 Patriot missile clock-drift failure
-cargo run --example 04_patriot_drift_simulation
+cargo test --manifest-path crates/axiom_zero/Cargo.toml
 ```
 
 ---
 
-## Validation Error Codes (`[E001]`–`[E011]`)
+## Validation Error Codes (`[E001]`–`[E012]`)
 
 Inside any `#[axiom_zero]` function, module, or `impl` block (`#[test]` and `#[cfg(test)]` are exempted):
 
@@ -224,6 +213,7 @@ Inside any `#[axiom_zero]` function, module, or `impl` block (`#[test]` and `#[c
 | `[E009]` | `exit`, `abort`, `panic_any` | Bounded recovery / boundary tokens |
 | `[E010]` | Raw indexing `arr[i]` | `total_get`, `total_get_copy`, `total_set`, `mask_get`, `TotalSliceExt` |
 | `[E011]` | Raw division `/` and modulo `%` | `total_div_usize`, `total_rem_nonzero`, `total_div_f32`, `total_div_unit_shifted_f32` |
+| `[E012]` | Transcendental float methods (`exp`, `exp2`, `exp_m1`, `ln`, `ln_1p`, `log*`, `sin*`, `cos*`, `tan*`, `asin*`, `acos*`, `atan*`, `sinh`, `cosh`, `tanh`, `powf`) | Exact rational/algebraic operators (Cayley rotors, Kerr competition, rational softmax) |
 
 ## Finite Stabilization & Slice Access
 

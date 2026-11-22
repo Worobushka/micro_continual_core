@@ -7,7 +7,7 @@
 //!   3. `sparse_reward: true` — на промежуточных шагах reward = 0.0, награда (+1.0/-1.0) только в конце.
 //!   4. `unlabeled_domain_cloze_logs_noisy()` — перекрывающиеся рамки, шумные токены, дисбаланс 3:1.
 
-use axiom_zero::{axiom_zero, total_rem_usize, Presence};
+use axiom_zero::{axiom_zero, total_get, total_rem_usize, Presence};
 
 use crate::math::splitmix64;
 
@@ -78,74 +78,70 @@ pub struct HardPomdpV2 {
     pub fatal_trapped: bool,
 }
 
-/// Fix 4: зашумлённые неразмеченные Cloze-логи:
-/// - общие перекрывающиеся шаблоны между РАЗНЫМИ подсистемами;
+/// Зашумлённые неразмеченные Cloze-логи (строго БЕЗ утечки `UnseenHoldout`-фраз!):
+/// - общие перекрывающиеся шаблоны между разными подсистемами;
 /// - случайные мусорные токены;
-/// - несбалансированная частота 3:1 (канонических примеров в 3 раза больше, чем holdout).
+/// - содержат только фразы из `CanonicalTrain` и независимый фоновый шум,
+///   чтобы `UnseenHoldout` оставался на 100% невидимым на тесте.
+#[axiom_zero]
 pub fn unlabeled_domain_cloze_logs_noisy() -> Vec<String> {
     let mut out = Vec::new();
-    let shared_frames = [
-        ("service daemon noticed", "during production cycle"),
-        ("monitor watcher logged", "under cluster load"),
-    ];
+    let sf0 = ("service daemon noticed", "during production cycle");
+    let sf1 = ("monitor watcher logged", "under cluster load");
     let noise_pool = ["xtag", "m_901", "vbuf", "tmpnode", "k_44", "sync_q", "ev_72", "bus_p"];
+    let fallback_noise: &str = "xtag";
 
-    let stage1: [(&str, &str, &str, &str); 4] = [
-        ("disk array blk stall", "nvme volume sector wait", "block storage driver", "on flush tier"),
-        ("compiler rustc type err", "build pipeline ast fault", "crate checker pass", "in trait solver"),
-        ("webhook json parse drop", "http ingest malformed body", "gateway proxy filter", "on socket stream"),
-        ("ledger tx outlier lock", "audit queue balance freeze", "clearing journal gate", "under variance check"),
+    let stage1: [(&str, &str, &str); 4] = [
+        ("disk array blk stall", "block storage driver", "on flush tier"),
+        ("compiler rustc type err", "crate checker pass", "in trait solver"),
+        ("webhook json parse drop", "gateway proxy filter", "on socket stream"),
+        ("ledger tx outlier lock", "clearing journal gate", "under variance check"),
     ];
 
     let mut rng = 0x9911_2233_4455_6677u64;
-    let next_noise = |r: &mut u64| -> &'static str {
-        *r = splitmix64(*r);
-        let idx = ((*r >> 16) as usize) % noise_pool.len();
-        noise_pool[idx]
+    let mut next_noise = || -> &'static str {
+        rng = splitmix64(rng);
+        let idx = total_rem_usize((rng >> 16) as usize, noise_pool.len(), 0);
+        *total_get(&noise_pool, idx, &fallback_noise)
     };
 
-    for (canon, hold, pre_dom, post_dom) in stage1 {
-        // Дисбаланс 3:1 (канон x3, holdout x1) + шум + перекрывающиеся общие рамки
+    for (canon, pre_dom, post_dom) in stage1 {
         for _ in 0..3 {
-            let n1 = next_noise(&mut rng);
-            let n2 = next_noise(&mut rng);
+            let n1 = next_noise();
+            let n2 = next_noise();
             out.push(format!("{} {} {} {} {}", pre_dom, n1, canon, post_dom, n2));
-            out.push(format!("{} {} {} {}", shared_frames[0].0, canon, n1, shared_frames[0].1));
+            out.push(format!("{} {} {} {}", sf0.0, canon, n1, sf0.1));
         }
-        let nh = next_noise(&mut rng);
-        out.push(format!("{} {} {} {}", pre_dom, hold, post_dom, nh));
-        out.push(format!("{} {} {} {}", shared_frames[1].0, hold, nh, shared_frames[1].1));
+        let n_bg = next_noise();
+        out.push(format!("{} subsystem healthy {} {} {}", pre_dom, n_bg, post_dom, sf1.1));
     }
 
-    let stage2: [(&str, &str, &str, &str); 4] = [
-        ("clue perm denied chmod", "diag access revoked uid", "posix capability gate", "for file descriptor"),
-        ("clue mismatch schema field", "diag bad contract payload", "protobuf wire check", "on required attribute"),
-        ("clue pool deadlock mutex", "diag thread starve lock", "worker semaphore wait", "across queue"),
-        ("clue auth breach signature", "diag spoof token alert", "crypto cert verifier", "from remote session"),
+    let stage2: [(&str, &str, &str); 4] = [
+        ("clue perm denied chmod", "posix capability gate", "for file descriptor"),
+        ("clue mismatch schema field", "protobuf wire check", "on required attribute"),
+        ("clue pool deadlock mutex", "worker semaphore wait", "across queue"),
+        ("clue auth breach signature", "crypto cert verifier", "from remote session"),
     ];
 
-    for (canon, hold, pre_dom, post_dom) in stage2 {
+    for (canon, pre_dom, post_dom) in stage2 {
         for _ in 0..3 {
-            let n1 = next_noise(&mut rng);
+            let n1 = next_noise();
             out.push(format!("{} {} {} {}", pre_dom, canon, n1, post_dom));
-            out.push(format!("{} {} {}", shared_frames[0].0, canon, shared_frames[1].1));
+            out.push(format!("{} {} {}", sf0.0, canon, sf1.1));
         }
-        let nh = next_noise(&mut rng);
-        out.push(format!("{} {} {} {}", pre_dom, nh, hold, post_dom));
-        out.push(format!("{} {} {}", shared_frames[1].0, hold, shared_frames[0].1));
+        let n_bg = next_noise();
+        out.push(format!("{} check nominal {} {}", pre_dom, n_bg, post_dom));
     }
 
-    // Общие контрольные фразы с шумом и 3:1 дисбалансом
     let ctrl = [
-        ("state dirty undo rollback needed", "corrupt buffer revert previous action", "journal unwind", "before retry"),
-        ("repair staged run verify suite", "patch committed execute postcheck", "hotfix ready", "for validation"),
+        ("state dirty undo rollback needed", "journal unwind", "before retry"),
+        ("repair staged run verify suite", "hotfix ready", "for validation"),
     ];
-    for (canon, hold, pre_dom, post_dom) in ctrl {
+    for (canon, pre_dom, post_dom) in ctrl {
         for _ in 0..3 {
-            let n1 = next_noise(&mut rng);
+            let n1 = next_noise();
             out.push(format!("{} {} {} {}", pre_dom, canon, n1, post_dom));
         }
-        out.push(format!("{} {} {}", pre_dom, hold, post_dom));
     }
     out
 }

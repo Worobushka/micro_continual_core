@@ -178,6 +178,23 @@ pub fn fast_dot(a: &[f32], b: &[f32]) -> f32 {
     sanitize_f32(sum)
 }
 
+/// Raw IEEE-754 AVX2+FMA dot product WITHOUT `sanitize_f32` (for unbiased baseline evaluation:
+/// preserves full SIMD throughput while faithfully propagating `NaN`/`Inf` when SEU guards are OFF).
+#[inline]
+pub fn fast_dot_raw(a: &[f32], b: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") {
+            return unsafe { simd_x86::dot_avx2_fma(a, b) };
+        }
+    }
+    let mut sum = 0.0_f32;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        sum += x * y;
+    }
+    sum
+}
+
 #[axiom_zero]
 #[inline]
 pub fn fast_saxpy(dst: &mut [f32], src: &[f32], scale: f32) {
@@ -383,8 +400,95 @@ pub fn rational_probs_into(logits: &[f32], out_probs: &mut [f32]) {
 
 /// Совместимый псевдоним (делегирует в чисто рациональную политику `rational_probs_into`, 0% exp).
 #[axiom_zero]
+#[inline]
 pub fn softmax_into(logits: &[f32], out_probs: &mut [f32]) {
     rational_probs_into(logits, out_probs);
+}
+
+/// Рациональный Softmax порядка p = 4 с резким хвостом O(1/z^8) и точной лог-производной (0% exp/ln):
+///   z_i = clamp(l_i - max_k l_k, -20, 0)
+///   q(z) = 1 - 0.5*z + 0.125*z^2 = 0.125*(4 + (z - 2)^2) >= 0.5 > 0 (доказано в Lean 4: step112b, 0 аксиом)
+///   w(z) = 1 / q(z)^4,  p_i = w(z_i) / sum_k w(z_k),  psi(z) = w'(z)/w(z) = (2 - z) / q(z).
+/// Устраняет размывание градиента на задачах с большим числом классов (например, 60 классов A_5).
+#[axiom_zero]
+pub fn rational_probs_p4_into(logits: &[f32], out_probs: &mut [f32], out_psi: &mut [f32]) {
+    let n = logits.len().min(out_probs.len());
+    if n == 0 {
+        return;
+    }
+    let mut max_l = -1e30_f32;
+    let mut has_fin = false;
+    for i in 0..n {
+        let raw = total_get_copy(logits, i, 0.0);
+        if raw.is_finite() {
+            let l = sanitize_bounded_f32(raw, 64.0);
+            if !has_fin || l > max_l {
+                max_l = l;
+                has_fin = true;
+            }
+        }
+    }
+    let inv_n = total_div_f32(1.0, n as f32, 0.5);
+    if !has_fin {
+        for i in 0..n {
+            let _ = total_set(out_probs, i, inv_n);
+            if i < out_psi.len() {
+                let _ = total_set(out_psi, i, 1.0);
+            }
+        }
+        return;
+    }
+    let mut sum_w = 0.0_f32;
+    for i in 0..n {
+        let l = sanitize_bounded_f32(total_get_copy(logits, i, 0.0), 64.0);
+        let z = sanitize_f32(l - max_l).clamp(-20.0, 0.0);
+        let q = sanitize_f32(1.0 - 0.5 * z + 0.125 * z * z).max(0.5);
+        let q2 = sanitize_f32(q * q);
+        let w = total_div_f32(1.0, sanitize_f32(q2 * q2), 0.0);
+        let _ = total_set(out_probs, i, w);
+        if i < out_psi.len() {
+            let psi = total_div_f32(sanitize_f32(2.0 - z), q, 0.0);
+            let _ = total_set(out_psi, i, psi);
+        }
+        sum_w = sanitize_f32(sum_w + w);
+    }
+    for i in 0..n {
+        let w = total_get_copy(out_probs, i, 0.0);
+        let p = if sum_w > 1e-12 && sum_w.is_finite() {
+            total_div_f32(w, sum_w, inv_n)
+        } else {
+            inv_n
+        };
+        let _ = total_set(out_probs, i, p);
+    }
+}
+
+/// Гладкий C^1 строго положительный рациональный вентиль шага времени Delta(z) и его производная (0% exp/ln):
+///   pos(z) = 1 + z                 при z >= 0
+///   pos(z) = 1 / (1 - z + 0.5*z^2) при z < 0  (знаменатель >= 0.5 > 0 доказан в Lean 4: step112)
+/// Результат ограничен отрезком [0.05, 2.0] с точной кусочной производной.
+#[axiom_zero]
+#[inline]
+pub fn rational_pos_and_deriv(z: f32) -> (f32, f32) {
+    let zc = sanitize_bounded_f32(z, 10.0);
+    if zc >= 0.0 {
+        let v = sanitize_f32(1.0 + zc);
+        if v >= 2.0 {
+            (2.0, 0.0)
+        } else {
+            (v, 1.0)
+        }
+    } else {
+        let shift = sanitize_f32(-zc + 0.5 * zc * zc);
+        let q = sanitize_f32(1.0 + shift);
+        let v = total_div_unit_shifted_f32(1.0, shift);
+        if v <= 0.05 {
+            (0.05, 0.0)
+        } else {
+            let dv = total_div_f32(sanitize_f32(1.0 - zc), sanitize_f32(q * q), 0.0);
+            (v, dv)
+        }
+    }
 }
 
 /// C^1-гладкая периодическая рациональная окружность Кэли (0% sin, 0% cos):

@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Adrian Aleksandrovich İşmuhanov
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Честная абляция единой архитектуры `MicroContinualCore v0.3.0`:
+//! Честная абляция единой архитектуры `MicroContinualCore v0.4.0`:
 //! Изолирует точный числовой вклад каждого нового механизма ВНУТРИ ОДНОЙ И ТОЙ ЖЕ структуры `MicroContinualCore`:
 //!   [A0] Frozen Rotor Only (без RTRL: `rtrl_sectors = 0`)
 //!   [A1] + 1L Cayley-RTRL (Замороженный резервуар: `rtrl_lr = 0.0`, без градиентного обучения RTRL)
 //!   [A2] + 1L Cayley-RTRL (Обучаемый, сопряжённая сетка `rtrl_grid_mode = 0`)
 //!   [A3] + 1L Cayley-RTRL (Обучаемый, развязанная сетка `частота x добротность Q`, `rtrl_grid_mode = 1`)
+//!   [A3+Skip] + 1L Cayley-RTRL (Обучаемый, развязанная сетка + сквозной skip-x вход)
 //!   [A4] Unified 2L Fast-Slow Cayley-RTRL + PH Banks (`rtrl_slow_sectors > 0`, `rtrl_use_skip_x = true`)
 //!
 //! Задачи:
@@ -21,6 +22,7 @@ use std::time::Instant;
 
 use micro_continual_core::baselines::OnlineGruBaseline;
 use micro_continual_core::math::{rand_signed_f32, rand_unit_f32, splitmix64};
+use micro_continual_core::rtrl::PlasticCayleyParams;
 use micro_continual_core::stream_baselines::NoChangePersistent;
 use micro_continual_core::{MicroContinualCore, MicroCoreConfig};
 
@@ -29,17 +31,21 @@ enum Stage {
     A0NoRtrl,
     A1RtrlFrozen,
     A2RtrlTrainedCpl,
+    A3RtrlDecoupledFrozen,
     A3RtrlDecoupled,
+    A3RtrlSkip,
     A4Unified2L,
 }
 
 impl Stage {
-    fn all() -> [Stage; 5] {
+    fn all() -> [Stage; 7] {
         [
             Stage::A0NoRtrl,
             Stage::A1RtrlFrozen,
             Stage::A2RtrlTrainedCpl,
+            Stage::A3RtrlDecoupledFrozen,
             Stage::A3RtrlDecoupled,
+            Stage::A3RtrlSkip,
             Stage::A4Unified2L,
         ]
     }
@@ -49,10 +55,92 @@ impl Stage {
             Stage::A0NoRtrl => "[A0] Frozen Rotor Only (no RTRL)",
             Stage::A1RtrlFrozen => "[A1] +1L RTRL Frozen (rtrl_lr=0)",
             Stage::A2RtrlTrainedCpl => "[A2] +1L RTRL Trained (coupled)",
+            Stage::A3RtrlDecoupledFrozen => "[A3-Frozen] +1L Frozen (dec Qxw)",
             Stage::A3RtrlDecoupled => "[A3] +1L RTRL Trained (dec Qxw)",
+            Stage::A3RtrlSkip => "[A3+Skip] +1L RTRL + SkipX",
             Stage::A4Unified2L => "[A4] Unified 2L Fast-Slow + PH",
         }
     }
+}
+
+fn log_rtrl_spectrum_diff(title: &str, init_p: &PlasticCayleyParams, learned_p: &PlasticCayleyParams) {
+    let s_cnt = init_p.sectors.min(learned_p.sectors);
+    let m_in = init_p.max_in.min(learned_p.max_in);
+    if s_cnt == 0 {
+        return;
+    }
+    println!("\n--- Learned Spectrum & Parameter Shift: {} (S={}, in={}) ---", title, s_cnt, m_in);
+    println!(
+        "{:<4} | {:<18} | {:<18} | {:<15} | {:<17} | {}",
+        "Sec", "alpha (0 -> trn)", "omega (0 -> trn)", "lambda (0->t)", "T_steps (0 -> t)", "||W_in||_2 (0->t)"
+    );
+    println!("{}", "-".repeat(100));
+
+    let mut sum_da = 0.0_f64;
+    let mut max_da = 0.0_f64;
+    let mut sum_dw = 0.0_f64;
+    let mut max_dw = 0.0_f64;
+    let mut sum_dt = 0.0_f64;
+    let mut max_dt = 0.0_f64;
+    let mut dwin_f2 = 0.0_f64;
+
+    let period = |w: f32| -> f64 {
+        let th = (w.abs() as f64).atan().max(1e-3);
+        std::f64::consts::PI / th
+    };
+    let lambda_val = |a: f32| -> f64 {
+        0.995_f64 / (1.0 + (a as f64) * (a as f64))
+    };
+
+    for s in 0..s_cnt {
+        let a0 = init_p.alpha[s];
+        let a1 = learned_p.alpha[s];
+        let w0 = init_p.omega[s];
+        let w1 = learned_p.omega[s];
+        let t0 = period(w0);
+        let t1 = period(w1);
+        let l0 = lambda_val(a0);
+        let l1 = lambda_val(a1);
+
+        let mut wn0 = 0.0_f64;
+        let mut wn1 = 0.0_f64;
+        for j in 0..m_in {
+            let v0 = init_p.in_w[s * m_in + j] as f64;
+            let v1 = learned_p.in_w[s * m_in + j] as f64;
+            wn0 += v0 * v0;
+            wn1 += v1 * v1;
+            dwin_f2 += (v1 - v0) * (v1 - v0);
+        }
+        wn0 = wn0.sqrt();
+        wn1 = wn1.sqrt();
+
+        let da = (a1 as f64 - a0 as f64).abs();
+        let dw = (w1 as f64 - w0 as f64).abs();
+        let dt = (t1 - t0).abs();
+        sum_da += da;
+        if da > max_da { max_da = da; }
+        sum_dw += dw;
+        if dw > max_dw { max_dw = dw; }
+        sum_dt += dt;
+        if dt > max_dt { max_dt = dt; }
+
+        if s < 8 || s == s_cnt - 1 {
+            println!(
+                "s{:<3} | {:6.3} -> {:6.3}   | {:+6.3} -> {:+6.3}   | {:.3}->{:.3}    | {:6.1} -> {:6.1}  | {:.3} -> {:.3}",
+                s, a0, a1, w0, w1, l0, l1, t0.min(999.9), t1.min(999.9), wn0, wn1
+            );
+        }
+    }
+    println!(
+        "Aggregate shift: mean|dAlpha|={:.4} (max {:.4}), mean|dOmega|={:.4} (max {:.4}), mean|dT|={:.2} (max {:.2}), ||dW_in||_F={:.4}",
+        sum_da / (s_cnt as f64),
+        max_da,
+        sum_dw / (s_cnt as f64),
+        max_dw,
+        sum_dt / (s_cnt as f64),
+        max_dt,
+        dwin_f2.sqrt()
+    );
 }
 
 #[derive(Default, Clone)]
@@ -174,7 +262,7 @@ fn cfg_repeat_prev(stage: Stage, seed: u64) -> MicroCoreConfig {
             cfg.rtrl_grid_mode = 0;
             cfg.rtrl_kappa = 0.65;
         }
-        Stage::A3RtrlDecoupled => {
+        Stage::A3RtrlDecoupledFrozen | Stage::A3RtrlDecoupled | Stage::A3RtrlSkip => {
             cfg.half_sectors = 12;
             cfg.linear_lr = 0.0;
             cfg.actor_critic_lr = 0.09;
@@ -182,13 +270,13 @@ fn cfg_repeat_prev(stage: Stage, seed: u64) -> MicroCoreConfig {
             cfg.entropy_beta = 0.003;
             cfg.rtrl_sectors = 16;
             cfg.rtrl_max_in = 4;
-            cfg.rtrl_lr = 0.012;
+            cfg.rtrl_lr = if matches!(stage, Stage::A3RtrlDecoupledFrozen) { 0.0 } else { 0.012 };
             cfg.rtrl_grid_mode = 1;
+            cfg.rtrl_use_skip_x = matches!(stage, Stage::A3RtrlSkip);
             cfg.rtrl_kappa = 0.65;
         }
         Stage::A4Unified2L => {
-            cfg.half_sectors = 0; // чистая 2-слойная волновая память внутри RegimeBank (~14 KB!)
-            cfg.max_regimes = 2;
+            cfg.half_sectors = 0; // чистая 2-слойная волновая память внутри RegimeBank
             cfg.linear_lr = 0.0;
             cfg.actor_critic_lr = 0.085;
             cfg.critic_lr = 0.16;
@@ -380,13 +468,14 @@ fn cfg_cartpole(stage: Stage, use_delta: bool, seed: u64) -> MicroCoreConfig {
             cfg.rtrl_lr = 0.006;
             cfg.rtrl_grid_mode = 0;
         }
-        Stage::A3RtrlDecoupled => {
+        Stage::A3RtrlDecoupledFrozen | Stage::A3RtrlDecoupled | Stage::A3RtrlSkip => {
             cfg.half_sectors = 16;
             cfg.trace_capacity = 0;
             cfg.rtrl_sectors = 16;
             cfg.rtrl_max_in = if use_delta { 4 } else { 2 };
-            cfg.rtrl_lr = 0.006;
+            cfg.rtrl_lr = if matches!(stage, Stage::A3RtrlDecoupledFrozen) { 0.0 } else { 0.006 };
             cfg.rtrl_grid_mode = 1;
+            cfg.rtrl_use_skip_x = matches!(stage, Stage::A3RtrlSkip);
         }
         Stage::A4Unified2L => {
             cfg.half_sectors = 16;
@@ -540,15 +629,16 @@ fn cfg_wave(stage: Stage, ph_enabled: bool, seed: u64) -> MicroCoreConfig {
             cfg.rtrl_grid_mode = 0;
             cfg.rtrl_kappa = 0.65;
         }
-        Stage::A3RtrlDecoupled => {
+        Stage::A3RtrlDecoupledFrozen | Stage::A3RtrlDecoupled | Stage::A3RtrlSkip => {
             cfg.half_sectors = 12;
             cfg.actor_critic_lr = 0.075;
             cfg.critic_lr = 0.14;
             cfg.entropy_beta = 0.003;
             cfg.rtrl_sectors = 16;
             cfg.rtrl_max_in = 1;
-            cfg.rtrl_lr = 0.010;
+            cfg.rtrl_lr = if matches!(stage, Stage::A3RtrlDecoupledFrozen) { 0.0 } else { 0.010 };
             cfg.rtrl_grid_mode = 1;
+            cfg.rtrl_use_skip_x = matches!(stage, Stage::A3RtrlSkip);
             cfg.rtrl_kappa = 0.65;
         }
         Stage::A4Unified2L => {
@@ -581,7 +671,7 @@ struct WaveMetrics {
     seu_safe: bool,
 }
 
-fn eval_wave_ablation(stage: Stage, seed: u64) -> WaveMetrics {
+fn eval_wave_ablation_with_params(stage: Stage, seed: u64) -> (WaveMetrics, PlasticCayleyParams) {
     let mut core = MicroContinualCore::new(cfg_wave(stage, false, seed));
     core.encoder.freeze_to_i8();
     let mut rng = splitmix64(seed ^ 0xBA7E_509E);
@@ -652,7 +742,7 @@ fn eval_wave_ablation(stage: Stage, seed: u64) -> WaveMetrics {
         && core.rtrl_state.b.iter().all(|v| v.is_finite())
         && core.rtrl_slow_state.b.iter().all(|v| v.is_finite());
 
-    WaveMetrics {
+    let metrics = WaveMetrics {
         abc: scores[0],
         a: scores[1],
         b: scores[2],
@@ -662,7 +752,9 @@ fn eval_wave_ablation(stage: Stage, seed: u64) -> WaveMetrics {
         ram_kb: core.memory_footprint_bytes() as f64 / 1024.0,
         us_per_step: elapsed_us / (steps.max(1) as f64),
         seu_safe,
-    }
+    };
+    let params = core.banks[core.active_regime].rtrl_params.clone();
+    (metrics, params)
 }
 
 fn eval_continual_wave_flip_unified(ph_enabled: bool, seed: u64) -> RlMetrics {
@@ -856,8 +948,13 @@ fn main() {
         "Stage / Architecture", "A+B+C", "ZS:A", "ZS:B", "ZS:C", "ZS:A+B", "Mean ZS", "RAM(KB)", "Lat", "SEU"
     );
     println!("{}", "-".repeat(126));
+    let mut wave_seed1_learned: Option<PlasticCayleyParams> = None;
     for st in Stage::all() {
-        let ms: Vec<_> = seeds.iter().map(|&s| eval_wave_ablation(st, s)).collect();
+        let res: Vec<_> = seeds.iter().map(|&s| eval_wave_ablation_with_params(st, s)).collect();
+        let ms: Vec<_> = res.iter().map(|(m, _)| m.clone()).collect();
+        if matches!(st, Stage::A3RtrlDecoupled) {
+            wave_seed1_learned = Some(res[0].1.clone());
+        }
         let avg = |f: fn(&WaveMetrics) -> f64| -> f64 { ms.iter().map(f).sum::<f64>() / 10.0 };
         let zsv: Vec<f64> = ms.iter().map(|m| m.zs_mean).collect();
         let (zsm, zss) = mean_sd(&zsv);
@@ -875,6 +972,14 @@ fn main() {
             avg(|m| m.ram_kb),
             avg(|m| m.us_per_step),
             if seu { "YES" } else { "NO" }
+        );
+    }
+    if let Some(ref learned_w) = wave_seed1_learned {
+        let init_core_w = MicroContinualCore::new(cfg_wave(Stage::A3RtrlDecoupled, false, 1));
+        log_rtrl_spectrum_diff(
+            "Wave-Superposition [A3] (seed 1)",
+            &init_core_w.banks[0].rtrl_params,
+            learned_w,
         );
     }
 
@@ -911,6 +1016,9 @@ fn main() {
             println!("\n=== Ablation 5: Electricity ELEC2 Temporal ({} rows, 3 seeds) ===", data.len());
             println!("{:<34} | {:<11} | {:<7} | {:<9} | {:<9} | {}", "Stage", "Acc(m±sd)", "KappaT", "RAM (KB)", "Latency", "SEU");
             println!("{}", "-".repeat(88));
+            let mut elec_init_banks: Option<Vec<PlasticCayleyParams>> = None;
+            let mut elec_learned_reg: usize = 0;
+            let mut elec_learned_p: Option<PlasticCayleyParams> = None;
             for st in Stage::all() {
                 let mut accs = Vec::new();
                 let mut rams = Vec::new();
@@ -943,13 +1051,14 @@ fn main() {
                             cfg.rtrl_grid_mode = 0;
                             cfg.rtrl_kappa = 0.65;
                         }
-                        Stage::A3RtrlDecoupled => {
+                        Stage::A3RtrlDecoupledFrozen | Stage::A3RtrlDecoupled | Stage::A3RtrlSkip => {
                             cfg.half_sectors = 12;
                             cfg.belief_lambda = 0.25;
                             cfg.rtrl_sectors = 12;
                             cfg.rtrl_max_in = 8;
-                            cfg.rtrl_lr = 0.004;
+                            cfg.rtrl_lr = if matches!(st, Stage::A3RtrlDecoupledFrozen) { 0.0 } else { 0.004 };
                             cfg.rtrl_grid_mode = 1;
+                            cfg.rtrl_use_skip_x = matches!(st, Stage::A3RtrlSkip);
                             cfg.rtrl_kappa = 0.65;
                         }
                         Stage::A4Unified2L => {
@@ -965,14 +1074,14 @@ fn main() {
                         }
                     }
                     let mut core = MicroContinualCore::new(cfg);
+                    if s == 1 && matches!(st, Stage::A3RtrlDecoupled) {
+                        elec_init_banks = Some(core.banks.iter().map(|b| b.rtrl_params.clone()).collect());
+                    }
                     core.encoder.freeze_to_i8();
                     core.start_episode();
                     let mut hits = 0usize;
                     let t0 = Instant::now();
                     for (x, y) in &data {
-                        if matches!(st, Stage::A0NoRtrl) {
-                            core.start_episode();
-                        }
                         let pred = core.decide_vec(x, false, false, false).get().0;
                         if pred == *y {
                             hits += 1;
@@ -980,6 +1089,10 @@ fn main() {
                         let _ = core.end_supervised_step(pred, *y);
                     }
                     let us = t0.elapsed().as_nanos() as f64 / 1000.0;
+                    if s == 1 && matches!(st, Stage::A3RtrlDecoupled) {
+                        elec_learned_reg = core.active_regime;
+                        elec_learned_p = Some(core.banks[core.active_regime].rtrl_params.clone());
+                    }
                     core.start_episode();
                     let p_seu = core.decide_vec(&[f32::NAN, 1e30, -1e30], false, true, true);
                     if !(p_seu.get().1.is_finite()
@@ -1006,6 +1119,13 @@ fn main() {
                     rm,
                     lm,
                     if seu_ok { "YES" } else { "NO (NaN)" }
+                );
+            }
+            if let (Some(ref init_banks), Some(ref ep1)) = (elec_init_banks, elec_learned_p) {
+                log_rtrl_spectrum_diff(
+                    &format!("Electricity ELEC2 [A3] (seed 1, bank {})", elec_learned_reg),
+                    &init_banks[elec_learned_reg],
+                    ep1,
                 );
             }
             break;

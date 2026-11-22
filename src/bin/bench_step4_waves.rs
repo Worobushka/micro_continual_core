@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Adrian Aleksandrovich İşmuhanov
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Бенчмарк Шага 4 (v0.3.0): Масштабирование длинной памяти и эксперимент волновой суперпозиции
+//! Бенчмарк Шага 4 (v0.4.0): Масштабирование длинной памяти и эксперимент волновой суперпозиции
 //! 10 сидов, прямое сравнение на одном CPU:
 //! 1. Non-Stationary T-Maze L=30 и L=50 (шум ±0.35, Drift A -> B -> A, sparse reward)
 //! 2. POPGym RepeatPrevious K=6 и K=8 (4 символа, чистое RL +1/-1)
@@ -53,10 +53,10 @@ fn recovery_window(vals: &[f64], target: f64, win: usize) -> f64 {
 fn print_rl_header(title: &str) {
     println!("\n=== {} (10 seeds) ===", title);
     println!(
-        "{:<26} | {:<15} | {:<8} | {:<11} | {:<10} | {:<10} | {}",
+        "{:<28} | {:<15} | {:<8} | {:<11} | {:<10} | {:<10} | {}",
         "Model", "Score(mean±sd)", "Retent.", "Recovery", "RAM (KB)", "Latency", "SEU-Safe"
     );
-    println!("{}", "-".repeat(104));
+    println!("{}", "-".repeat(106));
 }
 
 fn print_rl_row(name: &str, unit: &str, ms: &[RlMetrics]) {
@@ -74,7 +74,7 @@ fn print_rl_row(name: &str, unit: &str, ms: &[RlMetrics]) {
     let (ltm, _) = mean_sd(&lt);
 
     println!(
-        "{:<26} | {:6.1}±{:4.1}{:<2} | {:6.1}{:<2} | {:8.1} ep | {:7.1} KB | {:7.2} µs | {}",
+        "{:<28} | {:6.1}±{:4.1}{:<2} | {:6.1}{:<2} | {:8.1} ep | {:7.1} KB | {:7.2} µs | {}",
         name,
         sm,
         ss,
@@ -92,18 +92,18 @@ fn print_rl_row(name: &str, unit: &str, ms: &[RlMetrics]) {
 // 1. Long-Horizon Non-Stationary T-Maze (L=30, L=50, noise=±0.35, Drift A->B->A)
 // =============================================================================
 
-fn run_tmaze_micro(corridor_len: usize, seed: u64) -> RlMetrics {
+fn run_tmaze_micro(corridor_len: usize, novelty_gate: f32, seed: u64) -> RlMetrics {
     let noise_amp = 0.35_f32;
     let mut cfg = MicroCoreConfig::numeric_stream(2, seed);
     cfg.belief_lambda = 0.96;
     cfg.belief_gamma = 0.65;
     cfg.rotor_norm = 0.12;
-    cfg.novelty_gate = 0.28;
+    cfg.novelty_gate = novelty_gate;
     cfg.linear_lr = 0.20;
     cfg.linear_mix = 0.55;
     cfg.bank_capacity = 48;
     cfg.obs_bank_capacity = 16;
-    cfg.trace_capacity = corridor_len + 4;
+    cfg.trace_capacity = 64;
     cfg.explore_ucb = 0.35;
     cfg.trace_gamma = 0.98;
     cfg.ph_delta = 0.18;
@@ -887,7 +887,8 @@ fn main() {
             "Long-Horizon T-Maze (L={}, noise=±0.35, Drift A->B->A, sparse)",
             l
         ));
-        let r_mic: Vec<_> = seeds.iter().map(|&s| run_tmaze_micro(l, s)).collect();
+        let r_mic: Vec<_> = seeds.iter().map(|&s| run_tmaze_micro(l, 0.0, s)).collect();
+        let r_mic_gate: Vec<_> = seeds.iter().map(|&s| run_tmaze_micro(l, 0.28, s)).collect();
         let r_lru: Vec<_> = seeds.iter().map(|&s| run_tmaze_lru(l, s)).collect();
         let r_gru: Vec<_> = seeds.iter().map(|&s| run_tmaze_gru(l, s)).collect();
         let r_rnd = vec![RlMetrics {
@@ -898,7 +899,8 @@ fn main() {
             us_per_step: 0.05,
             seu_safe: true,
         }];
-        print_rl_row("MicroContinualCore", "%", &r_mic);
+        print_rl_row("MicroContinualCore (ng=0.0)", "%", &r_mic);
+        print_rl_row("MicroCore (+gate=0.28 Abl.)", "%", &r_mic_gate);
         print_rl_row("RTRRL-LRU (AAAI'25)", "%", &r_lru);
         print_rl_row("Online GRU + A2C", "%", &r_gru);
         print_rl_row("Random (floor)", "%", &r_rnd);

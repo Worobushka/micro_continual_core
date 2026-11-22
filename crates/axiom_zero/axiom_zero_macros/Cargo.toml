@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Axiom-Zero Contributors"]
 description = "Procedural macro validator for the axiom_zero totality toolkit"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/axiom-zero/axiom-zero"
+repository = "https://github.com/Worobushka/axiom-zero"
 
 [lib]
 proc-macro = true

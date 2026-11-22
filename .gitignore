@@ -8,3 +8,7 @@ electricity-normalized.arff
 elecNormNew.csv
 electricity.csv
 *.arff
+context.txt
+CMAPSSData/
+*.zip
+logs/
