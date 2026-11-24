@@ -25,6 +25,41 @@ fn scrub_slice_seu(slice: &mut [f32], limit: f32, replacement: f32) -> u64 {
     faults
 }
 
+fn greedy_head_action(bias: &[f32], weight: &[f32], feat: &[f32], num_actions: usize) -> usize {
+    let f_dim = feat.len();
+    let mut logits = vec![0.0_f32; num_actions];
+    let mut max_l = f32::NEG_INFINITY;
+    for a in 0..num_actions {
+        let off = a * f_dim;
+        let s = bias[a] + fast_dot_raw(&weight[off..off + f_dim], feat);
+        logits[a] = s;
+        if s > max_l {
+            max_l = s;
+        }
+    }
+    let mut sum_e = 0.0_f32;
+    let mut probs = vec![0.0_f32; num_actions];
+    for a in 0..num_actions {
+        let e = (logits[a] - max_l).exp();
+        probs[a] = e;
+        sum_e += e;
+    }
+    if !sum_e.is_finite() || sum_e <= 0.0 {
+        return 0;
+    }
+    let inv = 1.0 / sum_e;
+    let mut best = 0usize;
+    let mut best_p = -1.0_f32;
+    for (a, &p) in probs.iter().enumerate() {
+        let pn = p * inv;
+        if pn > best_p {
+            best_p = pn;
+            best = a;
+        }
+    }
+    best
+}
+
 /// Uniform physical SRAM Weight-SEU injection across ALL live learnable weight slices
 /// proportional to tensor size (identical Knuth-hash indexing to `MicroContinualCore`).
 fn flip_weight_in_slices(slices: &mut [&mut [f32]], reg_idx: usize, bit: u32) {
@@ -398,6 +433,7 @@ impl OnlineGruBaseline {
             + self.bo.bytes()
             + self.wv.bytes()
             + self.bv.bytes()
+            + self.h_cur.len() * 4
     }
 
     pub fn start_episode(&mut self) {
@@ -1825,6 +1861,84 @@ impl RtrrlLruBaseline {
             self.has_pending = false;
         }
     }
+
+    pub(crate) fn step_lru_forward_readonly(
+        &self,
+        x: &[f32],
+        h_re: &mut [f32],
+        h_im: &mut [f32],
+        y_re: &mut [f32],
+        y_im: &mut [f32],
+    ) {
+        let m = self.units;
+        let d = self.in_dim;
+        let x_len = x.len().min(d);
+        let kap2 = self.kappa * self.kappa;
+
+        for j in 0..m {
+            let nu_c = self.nu[j].clamp(-5.2, 1.5);
+            let exp_nu = nu_c.exp();
+            let r = (-exp_nu).exp();
+            let th = self.theta[j];
+            let (cth, sth) = (th.cos(), th.sin());
+            let lam_r = r * cth;
+            let lam_i = r * sth;
+            let gam = (1.0 - r * r).max(1e-4).sqrt();
+
+            let hr_prev = h_re[j];
+            let hi_prev = h_im[j];
+            let lhr = lam_r * hr_prev - lam_i * hi_prev;
+            let lhi = lam_r * hi_prev + lam_i * hr_prev;
+
+            let mut ur = 0.0_f32;
+            let mut ui = 0.0_f32;
+            let off = j * d;
+            for k in 0..x_len {
+                let xk = x[k];
+                ur += self.b_re[off + k] * xk;
+                ui += self.b_im[off + k] * xk;
+            }
+            let hr = lhr + gam * ur;
+            let hi = lhi + gam * ui;
+            h_re[j] = hr;
+            h_im[j] = hi;
+            let rho = (hr * hr + hi * hi + kap2).sqrt();
+            y_re[j] = hr / rho;
+            y_im[j] = hi / rho;
+        }
+    }
+
+    pub fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        let mut h_re = self.h_re.clone();
+        let mut h_im = self.h_im.clone();
+        let mut y_re = self.y_re.clone();
+        let mut y_im = self.y_im.clone();
+        let mut x_buf = self.x_buf.clone();
+
+        for &features in window {
+            x_buf.fill(0.0);
+            for i in 0..self.in_dim.min(features.len()) {
+                x_buf[i] = features[i];
+            }
+            if self.enable_input_clamp {
+                for v in &mut x_buf {
+                    *v = if v.is_finite() { v.clamp(-10.0, 10.0) } else { 0.0 };
+                }
+            }
+            self.step_lru_forward_readonly(&x_buf, &mut h_re, &mut h_im, &mut y_re, &mut y_im);
+        }
+
+        let mut feat_buf = vec![0.0_f32; self.feat_buf.len()];
+        let sc = 1.0 / (self.units.max(1) as f32).sqrt();
+        for j in 0..self.units {
+            feat_buf[2 * j] = y_re[j] * sc;
+            feat_buf[2 * j + 1] = y_im[j] * sc;
+        }
+        for k in 0..self.in_dim {
+            feat_buf[2 * self.units + k] = x_buf[k] * 0.5;
+        }
+        greedy_head_action(&self.actor_b, &self.actor_w, &feat_buf, self.num_actions)
+    }
 }
 
 /// Контрольный бейзлайн: `RtrrlLruBaseline` + те же банки `PageHinkleyDetector` + входной clamp,
@@ -2053,6 +2167,7 @@ impl RtrrlLruPhBaseline {
 //   4. OnlineGruPerStepPhBaseline (Per-Step Online TD(lambda) GRU + PH + Clamp)
 // =============================================================================
 
+#[derive(Clone)]
 struct PhRegimeCtrl {
     phs: Vec<PageHinkleyDetector>,
     age_eps: Vec<usize>,
@@ -2385,7 +2500,7 @@ impl SelectiveSsmBank {
     }
 
     pub fn memory_footprint_bytes(&self) -> usize {
-        (self.nu.len() * 19
+        (self.nu.len() * 22
             + self.w_delta.len() * 15
             + self.actor_w.len()
             + self.v_aw.len()
@@ -2976,8 +3091,74 @@ impl SelectiveSsmBank {
             self.has_pending = false;
         }
     }
+
+    pub fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        let mut h_re = self.h_re.clone();
+        let mut h_im = self.h_im.clone();
+        let mut y_re = self.y_re.clone();
+        let mut y_im = self.y_im.clone();
+        let mut x_buf = self.x_buf.clone();
+        let m = self.units;
+        let d = self.in_dim;
+        let kap2 = self.kappa * self.kappa;
+
+        for &raw_x in window {
+            x_buf.fill(0.0);
+            for i in 0..d.min(raw_x.len()) {
+                let v = raw_x[i];
+                x_buf[i] = if self.enable_input_clamp {
+                    if v.is_finite() { v.clamp(-10.0, 10.0) } else { 0.0 }
+                } else {
+                    v
+                };
+            }
+            for j in 0..m {
+                let off = j * d;
+                let mut zd = self.b_delta[j];
+                let mut br_in = 0.0_f32;
+                let mut bi_in = 0.0_f32;
+                for k in 0..d {
+                    let xk = x_buf[k];
+                    zd += self.w_delta[off + k] * xk;
+                    br_in += self.w_bre[off + k] * xk;
+                    bi_in += self.w_bim[off + k] * xk;
+                }
+                let exp_z = zd.clamp(-10.0, 10.0).exp();
+                let delta = (1.0 + exp_z).ln().clamp(0.02, 2.0);
+                let sig_nu = self.nu[j].clamp(-5.2, 1.5).exp();
+                let r = (-delta * sig_nu).exp();
+                let th = delta * self.omega[j];
+                let (cth, sth) = (th.cos(), th.sin());
+                let (lam_r, lam_i) = (r * cth, r * sth);
+                let gam = (1.0 - r * r).max(1e-4).sqrt();
+                let g_dt = gam * delta;
+
+                let hp_r = h_re[j];
+                let hp_i = h_im[j];
+                let hr = (lam_r * hp_r - lam_i * hp_i) + g_dt * br_in;
+                let hi = (lam_r * hp_i + lam_i * hp_r) + g_dt * bi_in;
+                h_re[j] = hr;
+                h_im[j] = hi;
+                let rho = (hr * hr + hi * hi + kap2).sqrt();
+                y_re[j] = hr / rho;
+                y_im[j] = hi / rho;
+            }
+        }
+
+        let mut feat_buf = vec![0.0_f32; self.feat_buf.len()];
+        let sc = 1.0 / (m.max(1) as f32).sqrt();
+        for j in 0..m {
+            feat_buf[2 * j] = y_re[j] * sc;
+            feat_buf[2 * j + 1] = y_im[j] * sc;
+        }
+        for k in 0..d {
+            feat_buf[2 * m + k] = x_buf[k] * 0.5;
+        }
+        greedy_head_action(&self.actor_b, &self.actor_w, &feat_buf, self.num_actions)
+    }
 }
 
+#[derive(Clone)]
 pub struct OnlineSelectiveSsmPhBaseline {
     pub banks: Vec<SelectiveSsmBank>,
     ctrl: PhRegimeCtrl,
@@ -3086,6 +3267,10 @@ impl OnlineSelectiveSsmPhBaseline {
             self.banks[nr] = fresh;
         }
         pred
+    }
+
+    pub fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        self.banks[self.ctrl.active_regime].predict_k_ahead_readonly(window)
     }
 }
 
@@ -3795,8 +3980,76 @@ impl DeepRtrrlLruBank {
         }
         pred
     }
+
+    pub fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        let mut f_h_re = self.fast.h_re.clone();
+        let mut f_h_im = self.fast.h_im.clone();
+        let mut f_y_re = self.fast.y_re.clone();
+        let mut f_y_im = self.fast.y_im.clone();
+        let mut s_h_re = self.slow.h_re.clone();
+        let mut s_h_im = self.slow.h_im.clone();
+        let mut s_y_re = self.slow.y_re.clone();
+        let mut s_y_im = self.slow.y_im.clone();
+        let mut x_buf = self.x_buf.clone();
+        let mut slow_in_buf = vec![0.0_f32; self.slow_in_buf.len()];
+        let u1 = self.fast.units;
+        let u2 = self.slow.units;
+        let fast_dim = 2 * u1;
+
+        for &raw_x in window {
+            x_buf.fill(0.0);
+            for i in 0..self.in_dim.min(raw_x.len()) {
+                let v = raw_x[i];
+                x_buf[i] = if self.enable_input_clamp {
+                    if v.is_finite() { v.clamp(-10.0, 10.0) } else { 0.0 }
+                } else {
+                    v
+                };
+            }
+            self.fast
+                .step_lru_forward_readonly(&x_buf, &mut f_h_re, &mut f_h_im, &mut f_y_re, &mut f_y_im);
+            for k in 0..self.in_dim {
+                slow_in_buf[k] = x_buf[k];
+            }
+            for c in 0..4usize {
+                let mut acc = 0.0_f32;
+                let row = c * fast_dim;
+                for j in 0..u1 {
+                    acc += self.pool_w[row + 2 * j] * f_y_re[j]
+                        + self.pool_w[row + 2 * j + 1] * f_y_im[j];
+                }
+                slow_in_buf[self.in_dim + c] = acc;
+            }
+            self.slow.step_lru_forward_readonly(
+                &slow_in_buf,
+                &mut s_h_re,
+                &mut s_h_im,
+                &mut s_y_re,
+                &mut s_y_im,
+            );
+        }
+
+        let mut feat_buf = vec![0.0_f32; self.feat_buf.len()];
+        let sc1 = 1.0 / (u1.max(1) as f32).sqrt();
+        let sc2 = 1.0 / (u2.max(1) as f32).sqrt();
+        for j in 0..u1 {
+            feat_buf[2 * j] = f_y_re[j] * sc1;
+            feat_buf[2 * j + 1] = f_y_im[j] * sc1;
+        }
+        let o2 = 2 * u1;
+        for j in 0..u2 {
+            feat_buf[o2 + 2 * j] = s_y_re[j] * sc2;
+            feat_buf[o2 + 2 * j + 1] = s_y_im[j] * sc2;
+        }
+        let ox = o2 + 2 * u2;
+        for k in 0..self.in_dim {
+            feat_buf[ox + k] = x_buf[k] * 0.5;
+        }
+        greedy_head_action(&self.actor_b, &self.actor_w, &feat_buf, self.num_actions)
+    }
 }
 
+#[derive(Clone)]
 pub struct DeepRtrrlLruPhBaseline {
     pub banks: Vec<DeepRtrrlLruBank>,
     ctrl: PhRegimeCtrl,
@@ -3906,6 +4159,10 @@ impl DeepRtrrlLruPhBaseline {
             self.banks[nr] = fresh;
         }
         pred
+    }
+
+    pub fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        self.banks[self.ctrl.active_regime].predict_k_ahead_readonly(window)
     }
 }
 
@@ -4162,8 +4419,7 @@ impl GruPerStepBank {
                 + self.ring_hp.len()
                 + self.ring_z.len()
                 + self.ring_r.len()
-                + self.ring_n.len()
-                + self.gru.h_cur.len())
+                + self.ring_n.len())
                 * 4
     }
 
@@ -4664,10 +4920,10 @@ impl GruPerStepBank {
                     self.dh_buf.fill(0.0);
                     for a in 0..na {
                         let dl = self.probs_buf[a] - if a == y { 1.0 } else { 0.0 };
-                        self.gru.bo.step_single(a, dl, lr, inv_bc1, inv_bc2);
-                        self.gru.wo.step_row_scaled(a, hd, dl, &self.hn_buf, lr, inv_bc1, inv_bc2);
                         let off = a * hd;
                         fast_saxpy(&mut self.dh_buf, &self.gru.wo.w[off..off + hd], dl);
+                        self.gru.bo.step_single(a, dl, lr, inv_bc1, inv_bc2);
+                        self.gru.wo.step_row_scaled(a, hd, dl, &self.hn_buf, lr, inv_bc1, inv_bc2);
                     }
                     self.dr_buf.fill(0.0);
                     for i in 0..hd {
@@ -4676,14 +4932,14 @@ impl GruPerStepBank {
                         let zi = self.z_buf[i];
                         let dsn = dhi * zi * (1.0 - ni * ni);
                         let dsz = dhi * (ni - self.hp_buf[i]) * zi * (1.0 - zi);
+                        let row_h = i * hd;
+                        fast_saxpy(&mut self.dr_buf, &self.gru.un.w[row_h..row_h + hd], dsn);
                         self.gru.bn.step_single(i, dsn, lr, inv_bc1, inv_bc2);
                         self.gru.bz.step_single(i, dsz, lr, inv_bc1, inv_bc2);
                         self.gru.wn.step_row_scaled(i, xd, dsn, &self.x_buf, lr, inv_bc1, inv_bc2);
                         self.gru.wz.step_row_scaled(i, xd, dsz, &self.x_buf, lr, inv_bc1, inv_bc2);
                         self.gru.un.step_row_scaled(i, hd, dsn, &self.rhp_buf, lr, inv_bc1, inv_bc2);
                         self.gru.uz.step_row_scaled(i, hd, dsz, &self.hp_buf, lr, inv_bc1, inv_bc2);
-                        let row_h = i * hd;
-                        fast_saxpy(&mut self.dr_buf, &self.gru.un.w[row_h..row_h + hd], dsn);
                     }
                     for i in 0..hd {
                         let ri = self.r_buf[i];
@@ -4833,9 +5089,9 @@ impl GruPerStepBank {
                 if cap <= 1 || self.g_wz.is_empty() {
                     let (inv_bc1, inv_bc2) = AdamParam::bias_corr(t);
                     self.dh_buf.fill(0.0);
+                    fast_saxpy(&mut self.dh_buf, &self.gru.wo.w[0..hd], dl);
                     self.gru.bo.step_single(0, dl, lr, inv_bc1, inv_bc2);
                     self.gru.wo.step_row_scaled(0, hd, dl, &self.hn_buf, lr, inv_bc1, inv_bc2);
-                    fast_saxpy(&mut self.dh_buf, &self.gru.wo.w[0..hd], dl);
                     self.dr_buf.fill(0.0);
                     for i in 0..hd {
                         let dhi = self.dh_buf[i].clamp(-4.0, 4.0);
@@ -4843,14 +5099,14 @@ impl GruPerStepBank {
                         let zi = self.z_buf[i];
                         let dsn = dhi * zi * (1.0 - ni * ni);
                         let dsz = dhi * (ni - self.hp_buf[i]) * zi * (1.0 - zi);
+                        let row_h = i * hd;
+                        fast_saxpy(&mut self.dr_buf, &self.gru.un.w[row_h..row_h + hd], dsn);
                         self.gru.bn.step_single(i, dsn, lr, inv_bc1, inv_bc2);
                         self.gru.bz.step_single(i, dsz, lr, inv_bc1, inv_bc2);
                         self.gru.wn.step_row_scaled(i, xd, dsn, &self.x_buf, lr, inv_bc1, inv_bc2);
                         self.gru.wz.step_row_scaled(i, xd, dsz, &self.x_buf, lr, inv_bc1, inv_bc2);
                         self.gru.un.step_row_scaled(i, hd, dsn, &self.rhp_buf, lr, inv_bc1, inv_bc2);
                         self.gru.uz.step_row_scaled(i, hd, dsz, &self.hp_buf, lr, inv_bc1, inv_bc2);
-                        let row_h = i * hd;
-                        fast_saxpy(&mut self.dr_buf, &self.gru.un.w[row_h..row_h + hd], dsn);
                     }
                     for i in 0..hd {
                         let ri = self.r_buf[i];
@@ -4937,8 +5193,59 @@ impl GruPerStepBank {
         }
         pred
     }
+
+    pub fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        let hd = self.gru.h_dim;
+        let xd = self.gru.x_dim;
+        let na = self.gru.num_actions;
+        let mut x_buf = self.x_buf.clone();
+        let mut hn_buf = self.gru.h_cur.clone();
+        let mut hp_buf = vec![0.0_f32; hd];
+        let mut z_buf = vec![0.0_f32; hd];
+        let mut r_buf = vec![0.0_f32; hd];
+        let mut rhp_buf = vec![0.0_f32; hd];
+
+        for &raw_x in window {
+            x_buf.fill(0.0);
+            for i in 0..xd.min(raw_x.len()) {
+                let v = raw_x[i];
+                x_buf[i] = if self.gru.enable_input_clamp {
+                    if v.is_finite() { v.clamp(-10.0, 10.0) } else { 0.0 }
+                } else {
+                    v
+                };
+            }
+            hp_buf.copy_from_slice(&hn_buf);
+            for i in 0..hd {
+                let row_x = i * xd;
+                let row_h = i * hd;
+                let sz = self.gru.bz.w[i]
+                    + fast_dot_raw(&self.gru.wz.w[row_x..row_x + xd], &x_buf)
+                    + fast_dot_raw(&self.gru.uz.w[row_h..row_h + hd], &hp_buf);
+                let sr = self.gru.br.w[i]
+                    + fast_dot_raw(&self.gru.wr.w[row_x..row_x + xd], &x_buf)
+                    + fast_dot_raw(&self.gru.ur.w[row_h..row_h + hd], &hp_buf);
+                let zi = if sz.is_finite() { 1.0 / (1.0 + (-sz.clamp(-12.0, 12.0)).exp()) } else { sz };
+                let ri = if sr.is_finite() { 1.0 / (1.0 + (-sr.clamp(-12.0, 12.0)).exp()) } else { sr };
+                z_buf[i] = zi;
+                r_buf[i] = ri;
+                rhp_buf[i] = ri * hp_buf[i];
+            }
+            for i in 0..hd {
+                let row_x = i * xd;
+                let row_h = i * hd;
+                let sn = self.gru.bn.w[i]
+                    + fast_dot_raw(&self.gru.wn.w[row_x..row_x + xd], &x_buf)
+                    + fast_dot_raw(&self.gru.un.w[row_h..row_h + hd], &rhp_buf);
+                let ni = if sn.is_finite() { sn.tanh() } else { sn };
+                hn_buf[i] = (1.0 - z_buf[i]) * hp_buf[i] + z_buf[i] * ni;
+            }
+        }
+        greedy_head_action(&self.gru.bo.w, &self.gru.wo.w, &hn_buf, na)
+    }
 }
 
+#[derive(Clone)]
 pub struct OnlineGruPerStepPhBaseline {
     pub banks: Vec<GruPerStepBank>,
     ctrl: PhRegimeCtrl,
@@ -5131,6 +5438,10 @@ impl OnlineGruPerStepPhBaseline {
             self.banks[nr] = fresh;
         }
         pred
+    }
+
+    pub fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        self.banks[self.ctrl.active_regime].predict_k_ahead_readonly(window)
     }
 }
 

@@ -122,7 +122,7 @@ pub struct MicroCoreConfig {
     pub ph_delta: f32,
     pub ph_threshold: f32,
     pub ph_warmup: usize,
-    /// Параллельный read-only скоринг всех зрелых банков при дрейфе за O(1) окно (8 шагов)
+    /// Параллельный read-only скоринг всех зрелых банков при дрейфе за O(1) окно (6 шагов, Par6)
     /// вместо последовательного перебора O(R) банков (для многорежимных потоков R > 2).
     pub parallel_bank_probe: bool,
     pub seed: u64,
@@ -727,6 +727,7 @@ impl CoreScratch {
             + self.parallel_bank_margins.len())
         .saturating_mul(4)
             + self.parallel_bank_hits.len().saturating_mul(2)
+            + self.ep_slots_unused.capacity().saturating_mul(16)
     }
 
     pub fn clear_td_traces(&mut self) {
@@ -1186,6 +1187,281 @@ impl MicroContinualCore {
         self.decide_from_encoded_obs(train_mode, false, seu_nan, seu_spikes, aug_len)
     }
 
+    /// Чисто read-only $K$-шаговый прогноз вперёд по окну наблюдений `window` без мутации `&self`
+    /// (сохраняет неизменными веса, статистику нормализации, RTRL-чувствительности и Page-Hinkley).
+    pub fn predict_vec_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        let reg_id = self.active_regime;
+        let Some(bank) = self.banks.get(reg_id) else {
+            return 0;
+        };
+        let mut feat_mean = self.scratch.feat_mean.clone();
+        let mut feat_var = self.scratch.feat_var.clone();
+        let mut feat_count = self.scratch.feat_count;
+        let mut prev_raw_obs = self.scratch.prev_raw_obs.clone();
+        let mut has_prev_obs = self.scratch.has_prev_obs;
+        let mut vec_aug_buf = vec![0.0_f32; self.scratch.vec_aug_buf.len()];
+        let mut skip_buf = self.scratch.rtrl_skip_buf.clone();
+        let mut r1_u = self.rtrl_state.u.clone();
+        let mut r1_b = self.rtrl_state.b.clone();
+        let mut r2_u = self.rtrl_slow_state.u.clone();
+        let mut r2_b = self.rtrl_slow_state.b.clone();
+        let mut slow_in_buf = vec![0.0_f32; self.scratch.rtrl_slow_in_buf.len()];
+        let mut bel_state = self.belief.state.clone();
+        let mut bel_obs_ema = self.belief.obs_ema.clone();
+        let mut bel_obs_count = self.belief.obs_count;
+        let mut bel_init = self.belief.initialized;
+        let mut bel_rot = vec![0.0_f32; self.belief.rot_buf.len()];
+        let mut bel_comm = vec![0.0_f32; self.belief.comm_buf.len()];
+        let mut obs_vec = self.scratch.obs_vec.clone();
+
+        for &features in window {
+            let n_in = features.len().min(feat_mean.len());
+            let mut aug_len = n_in;
+
+            let mut input_corrupted = false;
+            for i in 0..n_in {
+                let rv = total_get_copy(features, i, 0.0);
+                if !rv.is_finite() || rv.abs() > 1e5 {
+                    input_corrupted = true;
+                }
+            }
+
+            if self.config.standardize_vec && n_in > 0 {
+                let update_stats = !input_corrupted && self.config.actor_critic_lr <= 0.0;
+                if update_stats {
+                    feat_count = feat_count.saturating_add(1);
+                    let alpha = if feat_count < 40 {
+                        total_div_f32(1.0, feat_count as f32, 0.05).clamp(0.025, 0.5)
+                    } else {
+                        0.008_f32
+                    };
+                    let keep = 1.0 - alpha;
+                    for i in 0..n_in {
+                        let raw = sanitize_bounded_f32(total_get_copy(features, i, 0.0), 1e5);
+                        let mu = total_get_copy(&feat_mean, i, 0.0);
+                        let var = total_get_copy(&feat_var, i, 1.0);
+                        let diff = raw - mu;
+                        let new_mu = sanitize_f32(mu + alpha * diff);
+                        let new_var = sanitize_f32(keep * var + alpha * diff * (raw - new_mu)).max(1e-3);
+                        let _ = total_set(&mut feat_mean, i, new_mu);
+                        let _ = total_set(&mut feat_var, i, new_var);
+                        let std = new_var.sqrt().max(0.05);
+                        let z = if feat_count <= 2 {
+                            raw.clamp(-4.0, 4.0)
+                        } else {
+                            total_div_f32(raw - new_mu, std, 0.0).clamp(-4.0, 4.0)
+                        };
+                        let _ = total_set(&mut vec_aug_buf, i, z);
+                    }
+                } else {
+                    for i in 0..n_in {
+                        let raw = sanitize_bounded_f32(total_get_copy(features, i, 0.0), 1e5);
+                        let mu = total_get_copy(&feat_mean, i, 0.0);
+                        let var = total_get_copy(&feat_var, i, 1.0);
+                        let std = var.sqrt().max(0.05);
+                        let z = if feat_count <= 2 {
+                            raw.clamp(-4.0, 4.0)
+                        } else {
+                            total_div_f32(raw - mu, std, 0.0).clamp(-4.0, 4.0)
+                        };
+                        let _ = total_set(&mut vec_aug_buf, i, z);
+                    }
+                }
+            } else {
+                for i in 0..n_in {
+                    let raw = sanitize_bounded_f32(total_get_copy(features, i, 0.0), 1e5);
+                    let _ = total_set(&mut vec_aug_buf, i, raw);
+                }
+            }
+
+            if self.config.delta_obs_scale > 0.0 && n_in > 0 {
+                let dscale = sanitize_f32(self.config.delta_obs_scale).clamp(0.1, 50.0);
+                for i in 0..n_in {
+                    let cur = total_get_copy(&vec_aug_buf, i, 0.0);
+                    let prev = if has_prev_obs {
+                        total_get_copy(&prev_raw_obs, i, cur)
+                    } else {
+                        cur
+                    };
+                    let delta = sanitize_bounded_f32((cur - prev) * dscale, 4.0);
+                    let _ = total_set(&mut prev_raw_obs, i, cur);
+                    let _ = total_set(&mut vec_aug_buf, n_in + i, delta);
+                }
+                has_prev_obs = true;
+                aug_len = n_in.saturating_mul(2);
+            }
+
+            if self.rtrl_state.sectors > 0 {
+                let r_in = aug_len.min(self.rtrl_state.max_in);
+                if !skip_buf.is_empty() {
+                    skip_buf.fill(0.0);
+                    let sk_n = r_in.min(skip_buf.len());
+                    for i in 0..sk_n {
+                        let v = sanitize_bounded_f32(total_get_copy(&vec_aug_buf, i, 0.0), 8.0);
+                        let _ = total_set(&mut skip_buf, i, sanitize_f32(v * 0.5));
+                    }
+                }
+                {
+                    let r_slice = vec_aug_buf.get(0..r_in).unwrap_or(&[]);
+                    PlasticCayleyState::step_state_readonly(
+                        &bank.rtrl_params,
+                        self.rtrl_state.kappa,
+                        self.rtrl_state.max_in,
+                        r_slice,
+                        &mut r1_u,
+                        &mut r1_b,
+                    );
+                }
+                if self.rtrl_slow_state.sectors > 0 {
+                    let slow_len = slow_in_buf.len();
+                    let d_raw = self.rtrl_state.max_in.min(slow_len.saturating_sub(4));
+                    slow_in_buf.fill(0.0);
+                    for i in 0..r_in.min(d_raw) {
+                        let v = sanitize_bounded_f32(total_get_copy(&vec_aug_buf, i, 0.0), 8.0);
+                        let _ = total_set(&mut slow_in_buf, i, v);
+                    }
+                    let r1_dim = r1_b.len();
+                    for c in 0..4usize {
+                        if d_raw + c < slow_len {
+                            let poff = c.saturating_mul(r1_dim);
+                            let pw = self.rtrl_pool_w.get(poff..poff + r1_dim).unwrap_or(&[]);
+                            let proj = sanitize_bounded_f32(fast_dot(pw, &r1_b), 4.0);
+                            let _ = total_set(&mut slow_in_buf, d_raw + c, proj);
+                        }
+                    }
+                    PlasticCayleyState::step_state_readonly(
+                        &bank.rtrl_slow_params,
+                        self.rtrl_slow_state.kappa,
+                        self.rtrl_slow_state.max_in,
+                        &slow_in_buf,
+                        &mut r2_u,
+                        &mut r2_b,
+                    );
+                }
+            }
+
+            if self.config.half_sectors > 0 && !obs_vec.is_empty() {
+                let slice = vec_aug_buf.get(0..aug_len).unwrap_or(&[]);
+                self.encoder.encode_vec_into(slice, &mut obs_vec);
+                sanitize_and_normalize_unit(&mut obs_vec, 8.0);
+                let _ = self.belief.step_state_readonly(
+                    &obs_vec,
+                    &mut bel_state,
+                    &mut bel_obs_ema,
+                    &mut bel_obs_count,
+                    &mut bel_init,
+                    &mut bel_rot,
+                    &mut bel_comm,
+                );
+            }
+        }
+
+        let n_act = self.config.num_actions.clamp(2, 64);
+        let r1_dim = self.rtrl_state.sectors.saturating_mul(3);
+        let use_frozen = self.config.half_sectors > 0 && !obs_vec.is_empty();
+
+        if self.config.actor_critic_lr > 0.0 {
+            let mut ac_logits = vec![0.0_f32; n_act];
+            let mut ac_probs = vec![0.0_f32; n_act];
+            let mut ac_psi = vec![0.0_f32; n_act];
+            for a in 0..n_act {
+                let lg = if r1_dim > 0 {
+                    bank.split_band_logit(a, &bel_state, &r1_b, &r2_b, &skip_buf)
+                } else {
+                    bank.linear_score(a, &bel_state)
+                };
+                let _ = total_set(&mut ac_logits, a, lg);
+            }
+            rational_probs_and_psi_into(&ac_logits, &mut ac_probs, &mut ac_psi);
+            let mut ba = 0usize;
+            let mut bp = -1.0_f32;
+            for a in 0..n_act {
+                let p = total_get_copy(&ac_probs, a, 0.0);
+                if p > bp {
+                    bp = p;
+                    ba = a;
+                }
+            }
+            return ba;
+        }
+
+        let use_lin = self.config.linear_lr > 0.0 && self.config.linear_mix > 0.0;
+        let lin_mix = if use_lin {
+            sanitize_f32(self.config.linear_mix).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let need_kernels = use_frozen && lin_mix < 0.99;
+
+        let mut q_obs = if need_kernels { vec![0.0_f32; n_act] } else { Vec::new() };
+        let mut v_obs = if need_kernels { vec![0.0_f32; n_act] } else { Vec::new() };
+        let mut q_bel = if need_kernels { vec![0.0_f32; n_act] } else { Vec::new() };
+        let mut v_bel = if need_kernels { vec![0.0_f32; n_act] } else { Vec::new() };
+
+        if need_kernels {
+            let sim_cap = self.scratch.sims.len().max(self.scratch.weights.len()).max(32);
+            let mut sims = vec![0.0_f32; sim_cap];
+            let mut weights = vec![0.0_f32; sim_cap];
+            if bank.obs_kernel.active_count > 0 {
+                let _ = bank.obs_kernel.query_obs_gated_into(
+                    &obs_vec,
+                    4,
+                    0.35,
+                    false,
+                    &mut sims,
+                    &mut weights,
+                    &mut q_obs,
+                    &mut v_obs,
+                );
+            }
+            if bank.belief_kernel.active_count > 0 {
+                let _ = bank.belief_kernel.query_into(
+                    &bel_state,
+                    4,
+                    self.config.belief_tau,
+                    false,
+                    &mut sims,
+                    &mut weights,
+                    &mut q_bel,
+                    &mut v_bel,
+                );
+            }
+        }
+
+        let mut best_a = 0usize;
+        let mut best_s = -1e9_f32;
+        for a in 0..n_act {
+            let q_k = if need_kernels {
+                let qo = total_get_copy(&q_obs, a, 0.0);
+                let qb = total_get_copy(&q_bel, a, 0.0);
+                let vo = total_get_copy(&v_obs, a, 0.0).max(0.0);
+                let vb = total_get_copy(&v_bel, a, 0.0).max(0.0);
+                if vb >= 0.7 {
+                    sanitize_f32(0.85 * qb + 0.15 * qo)
+                } else if qo < -0.10 && vo >= 2.0 {
+                    qo
+                } else if qo > 0.12 && vo >= 1.0 {
+                    qo
+                } else {
+                    qb
+                }
+            } else {
+                0.0
+            };
+            let q_l = if use_lin {
+                bank.split_band_logit(a, &bel_state, &r1_b, &r2_b, &skip_buf)
+            } else {
+                0.0
+            };
+            let sc = sanitize_f32((1.0 - lin_mix) * q_k + lin_mix * q_l);
+            if sc > best_s {
+                best_s = sc;
+                best_a = a;
+            }
+        }
+        best_a
+    }
+
     /// Непрерывный регрессионный шаг поверх Полосы 1 (Fast/Mid Cayley-RTRL) + Полосы 2 (Slow Envelope)
     /// + прямого skip-канала (+ опционально Полосы 0). 100% #[axiom_zero], 0% exp, 0 heap allocs.
     pub fn decide_reg_vec(
@@ -1245,6 +1521,9 @@ impl MicroContinualCore {
     }
 
     fn bank_suspect_drift(&self, reg_id: usize) -> bool {
+        if self.banks.len() <= 1 {
+            return false;
+        }
         self.banks
             .get(reg_id)
             .map(|b| b.ph.cusum > b.ph.threshold * 0.42 && b.ph.mu_bank >= 0.62)
@@ -1950,8 +2229,12 @@ impl MicroContinualCore {
                     bank.solved_eps = bank.solved_eps.saturating_add(1);
                 }
             }
-            let drift_detected = if let Some(bank) = self.banks.get_mut(reg_id) {
-                bank.ph.observe(r_norm)
+            let drift_detected = if self.banks.len() > 1 {
+                if let Some(bank) = self.banks.get_mut(reg_id) {
+                    bank.ph.observe(r_norm)
+                } else {
+                    false
+                }
             } else {
                 false
             };
@@ -1970,11 +2253,12 @@ impl MicroContinualCore {
 
         // Ветвь Б: Эпизодический 3-факторный Actor-Critic (GAE + RMS)
         if ac_lr > 0.0 && t_len > 0 {
-            let bank_suspect_drift = self
-                .banks
-                .get(reg_id)
-                .map(|b| b.ph.cusum > b.ph.threshold * 0.35 && b.ph.mu_bank >= 0.50)
-                .unwrap_or(false);
+            let bank_suspect_drift = self.banks.len() > 1
+                && self
+                    .banks
+                    .get(reg_id)
+                    .map(|b| b.ph.cusum > b.ph.threshold * 0.35 && b.ph.mu_bank >= 0.50)
+                    .unwrap_or(false);
 
             if !bank_suspect_drift {
                 let mut gae = 0.0_f32;
@@ -2029,8 +2313,12 @@ impl MicroContinualCore {
                 }
             }
 
-            let drift_detected = if let Some(bank) = self.banks.get_mut(reg_id) {
-                bank.ph.observe(r_norm)
+            let drift_detected = if self.banks.len() > 1 {
+                if let Some(bank) = self.banks.get_mut(reg_id) {
+                    bank.ph.observe(r_norm)
+                } else {
+                    false
+                }
             } else {
                 false
             };
@@ -2110,11 +2398,12 @@ impl MicroContinualCore {
             }
         }
 
-        let bank_suspect_drift = self
-            .banks
-            .get(reg_id)
-            .map(|b| b.ph.cusum > b.ph.threshold * 0.55 && b.ph.mu_bank >= 0.55)
-            .unwrap_or(false);
+        let bank_suspect_drift = self.banks.len() > 1
+            && self
+                .banks
+                .get(reg_id)
+                .map(|b| b.ph.cusum > b.ph.threshold * 0.55 && b.ph.mu_bank >= 0.55)
+                .unwrap_or(false);
 
         let lin_lr = self.config.linear_lr;
         let lin_wd = self.config.linear_wd;
@@ -2178,8 +2467,12 @@ impl MicroContinualCore {
             }
         }
 
-        let drift_detected = if let Some(bank) = self.banks.get_mut(reg_id) {
-            bank.ph.observe(r_norm)
+        let drift_detected = if self.banks.len() > 1 {
+            if let Some(bank) = self.banks.get_mut(reg_id) {
+                bank.ph.observe(r_norm)
+            } else {
+                false
+            }
         } else {
             false
         };
@@ -2319,11 +2612,12 @@ impl MicroContinualCore {
             return false;
         }
 
-        let bank_suspect_drift = self
-            .banks
-            .get(reg_id)
-            .map(|b| b.ph.cusum > b.ph.threshold * 0.55 && b.ph.mu_bank >= 0.60)
-            .unwrap_or(false);
+        let bank_suspect_drift = self.banks.len() > 1
+            && self
+                .banks
+                .get(reg_id)
+                .map(|b| b.ph.cusum > b.ph.threshold * 0.55 && b.ph.mu_bank >= 0.60)
+                .unwrap_or(false);
 
         let lin_lr = self.config.linear_lr;
         let lin_wd = self.config.linear_wd;
@@ -2453,8 +2747,12 @@ impl MicroContinualCore {
             }
         }
 
-        let drift_detected = if let Some(bank) = self.banks.get_mut(reg_id) {
-            bank.ph.observe(r_norm)
+        let drift_detected = if self.banks.len() > 1 {
+            if let Some(bank) = self.banks.get_mut(reg_id) {
+                bank.ph.observe(r_norm)
+            } else {
+                false
+            }
         } else {
             false
         };

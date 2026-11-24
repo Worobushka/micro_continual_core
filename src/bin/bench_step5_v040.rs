@@ -696,7 +696,7 @@ fn eval_a5_suite() {
         // 4. Online Selective SSM / Mamba-RTRL (18 complex units = 36D)
         let mut rng_tr = splitmix64(seed ^ 0xA5_77A1);
         let mut rng_ev = splitmix64(seed ^ 0xA5_E7A1);
-        let mut ssm = SelectiveSsmBank::new(4, 18, 60, seed);
+        let mut ssm = SelectiveSsmBank::new_supervised(4, 18, 60, seed);
         ssm.enable_input_clamp = false;
         r_ssm.ram = ssm.memory_footprint_bytes() as f64 / 1024.0;
         let t0 = Instant::now();
@@ -1238,9 +1238,12 @@ impl SimpleCartPole {
     }
 }
 
-fn eval_suite3_hard_benchmarks() {
+fn eval_suite3_hard_benchmarks(filter: Option<&str>) {
     let seeds: Vec<u64> = (1..=10).collect();
     let tail_40 = |v: &[f64]| v[v.len() - 40..].iter().sum::<f64>() / 40.0;
+    let run_3a = want_section(filter, "suite 3 suite3 suite 3a suite3a 3a majority");
+    let run_3b = want_section(filter, "suite 3 suite3 suite 3b suite3b 3b lorenz l63");
+    let run_3c = want_section(filter, "suite 3 suite3 suite 3c suite3c 3c cartpole");
 
     // -------------------------------------------------------------------------
     // Task 3A: Multi-Cue Balanced Majority Corridor L=20 (A->B->A, noise +/-0.35)
@@ -1265,11 +1268,14 @@ fn eval_suite3_hard_benchmarks() {
         ("1L RTRRL-LRU + Matched PH + Clamp", HardRlKind::Lru1LPh),
     ];
 
-    println!("\n=== Suite 3A (v0.4.0): Multi-Cue Balanced Majority Corridor L=20 (A->B->A, noise +/-0.35, 10 seeds) ===");
-    println!("{:<37} | {:<13} | {:<13} | {}", "Model", "Majority Sc", "Majority Ret", "RAM");
-    println!("{}", "-".repeat(82));
+    if run_3a {
+        println!("\n=== Suite 3A (v0.4.0): Multi-Cue Balanced Majority Corridor L=20 (A->B->A, noise +/-0.35, 10 seeds) ===");
+        println!("{:<37} | {:<13} | {:<13} | {}", "Model", "Majority Sc", "Majority Ret", "RAM");
+        println!("{}", "-".repeat(82));
+    }
 
     for (name, kind) in models_3a {
+        if !run_3a { break; }
         let mut scores = Vec::new();
         let mut rets = Vec::new();
         let mut ram_kb = 0.0;
@@ -1438,9 +1444,11 @@ fn eval_suite3_hard_benchmarks() {
         ("Online LRU-RTRL Single-Bank (60D)", LorenzKind::LruSingle),
     ];
 
-    println!("\n=== Suite 3B (v0.4.0): Chaotic Lorenz-63 1D-Projection Stream (RK4, causal std, win=1, matched 60D, sign(x_{{t+8}}), dt=0.06, 2500 -> 2500 Inv -> 1000 Ret, 10 seeds) ===");
-    println!("{:<38} | {:<13} | {:<13} | {:<8} | {}", "Model", "Stream Acc", "Return Acc", "KappaT", "RAM");
-    println!("{}", "-".repeat(95));
+    if run_3b {
+        println!("\n=== Suite 3B (v0.4.0): Chaotic Lorenz-63 1D-Projection Stream (RK4, causal std, win=1, matched 60D, sign(x_{{t+8}}), dt=0.06, 2500 -> 2500 Inv -> 1000 Ret, 10 seeds) ===");
+        println!("{:<38} | {:<13} | {:<13} | {:<8} | {}", "Model", "Stream Acc", "Return Acc", "KappaT", "RAM");
+        println!("{}", "-".repeat(95));
+    }
 
     let rk4_step = |x: &mut f64, y: &mut f64, z: &mut f64| {
         let (sigma, rho, beta, dt) = (10.0_f64, 28.0_f64, 8.0 / 3.0, 0.02_f64);
@@ -1457,6 +1465,7 @@ fn eval_suite3_hard_benchmarks() {
     };
 
     for (name, kind) in models_3b {
+        if !run_3b { break; }
         let mut all_accs = Vec::new();
         let mut ret_accs = Vec::new();
         let mut kappas = Vec::new();
@@ -1524,7 +1533,8 @@ fn eval_suite3_hard_benchmarks() {
             let mut wf_n = 0usize;
             let mut wf_mean = 0.0_f64;
             let mut wf_m2 = 0.0_f64;
-            let mut prev_y = 1usize;
+            let mut obs_hist: Vec<[f32; 1]> = Vec::with_capacity(total_n);
+            let mut last_realized_y = 1usize;
 
             for t in 0..total_n {
                 wf_n += 1;
@@ -1535,30 +1545,59 @@ fn eval_suite3_hard_benchmarks() {
                 wf_m2 += delta * delta2;
                 let std_cur = if wf_n >= 2 { (wf_m2 / (wf_n - 1) as f64).sqrt().max(0.25) } else { 8.0 };
                 let z_t = ((x_cur - wf_mean) / std_cur).clamp(-4.0, 4.0) as f32;
-                let obs = [z_t];
+                obs_hist.push([z_t]);
 
+                // Строго каузальное отложенное обучение на реализовавшемся шаге s = t - k_ahead (без утечки будущего!)
+                if t >= k_ahead {
+                    let s = t - k_ahead;
+                    let inv_s = s >= 2500 && s < 5000;
+                    let y_s = if inv_s { usize::from(xs[t] < 0.0) } else { usize::from(xs[t] >= 0.0) };
+                    last_realized_y = y_s;
+                    let obs_s = &obs_hist[s];
+                    match kind {
+                        LorenzKind::MicroCore => {
+                            let p_s = core.decide_vec(obs_s, true, false, false).get().0;
+                            let _ = core.end_supervised_step(p_s, y_s);
+                        }
+                        LorenzKind::DeepLruPh => {
+                            let _ = deep.step_supervised(obs_s, y_s, 0.04, 0.01, true, 1);
+                        }
+                        LorenzKind::SelectiveSsmPh => {
+                            let _ = ssm.step_supervised(obs_s, y_s, 0.04, 0.01, true, 1);
+                        }
+                        LorenzKind::GruPerStepPh => {
+                            let _ = gru.step_supervised(obs_s, y_s, true, 1);
+                        }
+                        LorenzKind::LruSingle => {
+                            let _ = lru1.predict_and_train(obs_s, y_s, true);
+                        }
+                    }
+                }
+
+                // Read-only rollout до текущего t без мутации модели
+                let win_start = if t >= k_ahead { t - k_ahead + 1 } else { 0 };
+                let w_len = t + 1 - win_start;
+                let mut win_refs: [&[f32]; 8] = [&[]; 8];
+                for (wi, idx) in (win_start..=t).enumerate() {
+                    win_refs[wi] = &obs_hist[idx];
+                }
+                let pred = match kind {
+                    LorenzKind::MicroCore => core.predict_vec_k_ahead_readonly(&win_refs[..w_len]),
+                    LorenzKind::DeepLruPh => deep.predict_k_ahead_readonly(&win_refs[..w_len]),
+                    LorenzKind::SelectiveSsmPh => ssm.predict_k_ahead_readonly(&win_refs[..w_len]),
+                    LorenzKind::GruPerStepPh => gru.predict_k_ahead_readonly(&win_refs[..w_len]),
+                    LorenzKind::LruSingle => lru1.predict_k_ahead_readonly(&win_refs[..w_len]),
+                };
+
+                // Оценка относительно истинного исхода y_t (не передаётся в модель на шаге t!)
                 let inv = t >= 2500 && t < 5000;
                 let y = if inv { usize::from(xs[t + k_ahead] < 0.0) } else { usize::from(xs[t + k_ahead] >= 0.0) };
-                // Строго каузальная персистенция Бифета: прошлый наблюдаемый таргет y_{t-1} без утечки inv
-                let y_persist = if t > 0 { prev_y } else { 1 };
+                let y_persist = if t >= k_ahead { last_realized_y } else { 1 };
                 if y_persist == y { persist_hits += 1; }
-
-                let pred = match kind {
-                    LorenzKind::MicroCore => {
-                        let p = core.decide_vec(&obs, true, false, false).get().0;
-                        core.end_supervised_step(p, y);
-                        p
-                    }
-                    LorenzKind::DeepLruPh => deep.step_supervised(&obs, y, 0.04, 0.01, true, 1),
-                    LorenzKind::SelectiveSsmPh => ssm.step_supervised(&obs, y, 0.04, 0.01, true, 1),
-                    LorenzKind::GruPerStepPh => gru.step_supervised(&obs, y, true, 1),
-                    LorenzKind::LruSingle => lru1.predict_and_train(&obs, y, true),
-                };
                 if pred == y {
                     hits += 1;
                     if t >= 5000 { ret_hits += 1; }
                 }
-                prev_y = y;
             }
             let acc = hits as f64 * 100.0 / total_n as f64;
             let p_acc = persist_hits as f64 / total_n as f64;
@@ -1602,7 +1641,7 @@ fn eval_suite3_hard_benchmarks() {
         ("1L RTRRL-LRU Single-Bank (96D)", CartPoleKind::Lru1LSingle),
     ];
 
-    {
+    if run_3c {
         let mut srng = splitmix64(12345);
         let (mut srnd, mut ssig, mut spd) = (0.0_f64, 0.0_f64, 0.0_f64);
         for _ in 0..500 {
@@ -1621,14 +1660,15 @@ fn eval_suite3_hard_benchmarks() {
         }
         println!("\n=== Suite 3C (v0.4.0): Position-Only CartPole A->B->A (Matched 96D + Raw/Spinor Controls + Frozen Eval, 10 seeds) ===");
         println!("Physics Sanity (500 eps): Random={:.1} st | Memoryless sign(theta)={:.1} st | Oracle 4D-PD={:.1} st", srnd / 500.0, ssig / 500.0, spd / 500.0);
+        println!(
+            "{:<35} | {:<11} | {:<11} | {:<11} | {:<11} | {:<11} | {:<11} | {}",
+            "Model", "2D TrSc", "2D TrRet", "2D Ev(S/R)", "+dx TrSc", "+dx TrRet", "+dx Ev(S/R)", "RAM(4D)"
+        );
+        println!("{}", "-".repeat(130));
     }
-    println!(
-        "{:<35} | {:<11} | {:<11} | {:<11} | {:<11} | {:<11} | {:<11} | {}",
-        "Model", "2D TrSc", "2D TrRet", "2D Ev(S/R)", "+dx TrSc", "+dx TrRet", "+dx Ev(S/R)", "RAM(4D)"
-    );
-    println!("{}", "-".repeat(130));
 
     for (name, kind) in models_3c {
+        if !run_3c { break; }
         let mut s2d = Vec::new(); let mut r2d = Vec::new();
         let mut ev2s = Vec::new(); let mut ev2r = Vec::new();
         let mut sdx = Vec::new(); let mut rdx = Vec::new();
@@ -1840,9 +1880,39 @@ fn eval_suite3_hard_benchmarks() {
     }
 }
 
+fn parse_filter_arg() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if let Some(rest) = a.strip_prefix("--filter=") {
+            return Some(rest.to_ascii_lowercase());
+        }
+        if a == "--filter" {
+            return args.next().map(|s| s.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+fn want_section(filter: Option<&str>, tags: &str) -> bool {
+    match filter {
+        None => true,
+        Some(f) => f.is_empty() || tags.contains(f),
+    }
+}
+
 fn main() {
-    eval_a5_suite();
-    eval_suite2_task(false);
-    eval_suite2_task(true);
-    eval_suite3_hard_benchmarks();
+    let filter = parse_filter_arg();
+    let f = filter.as_deref();
+    if want_section(f, "suite 1 suite1 a5 non-abelian orb") {
+        eval_a5_suite();
+    }
+    if want_section(f, "suite 2 suite2 suite 2a suite2a repeat") {
+        eval_suite2_task(false);
+    }
+    if want_section(f, "suite 2 suite2 suite 2b suite2b modular") {
+        eval_suite2_task(true);
+    }
+    if want_section(f, "suite 3 suite3 suite 3a suite3a 3a majority suite 3b suite3b 3b lorenz l63 suite 3c suite3c 3c cartpole") {
+        eval_suite3_hard_benchmarks(f);
+    }
 }

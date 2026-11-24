@@ -448,6 +448,7 @@ fn eval_alg_cayley_stream(
     let mut bad_x = vec![0.0_f32; in_dim];
     if !bad_x.is_empty() { bad_x[0] = f32::NAN; }
     if bad_x.len() > 1 { bad_x[1] = 1e28; }
+    probe.h_re[0] = 1.25;
     probe.inject_register_bit_flip(0, 30);
     probe.inject_weight_bit_flip(0, 30);
     let _ = probe.step_and_learn_supervised(&bad_x, None, 0.0, 0.0);

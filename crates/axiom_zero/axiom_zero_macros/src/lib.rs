@@ -144,6 +144,24 @@ impl<'ast> Visit<'ast> for AxiomZeroVisitor {
                 }
                 _ => {}
             }
+            if matches!(
+                name.as_str(),
+                "vec" | "format" | "format_args" | "print" | "println" | "eprint" | "eprintln" | "write" | "writeln"
+            ) {
+                if let Ok(exprs) =
+                    node.parse_body_with(syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated)
+                {
+                    for expr in &exprs {
+                        self.visit_expr(expr);
+                    }
+                } else if let Ok(exprs) =
+                    node.parse_body_with(syn::punctuated::Punctuated::<Expr, syn::Token![;]>::parse_terminated)
+                {
+                    for expr in &exprs {
+                        self.visit_expr(expr);
+                    }
+                }
+            }
         }
         visit::visit_macro(self, node);
     }
@@ -235,15 +253,87 @@ impl<'ast> Visit<'ast> for AxiomZeroVisitor {
         visit::visit_expr_binary(self, node);
     }
 
-    // 6. Detect direct references to `None` (`Option::None`, etc.) in paths and patterns
+    // 6. Detect direct references to `None` (`Option::None`, etc.) and forbidden UFCS paths
     fn visit_path(&mut self, node: &'ast Path) {
         if let Some(last_seg) = node.segments.last() {
-            if last_seg.ident == "None" {
+            let last_name = last_seg.ident.to_string();
+            if last_name == "None" {
                 self.violations.push(
                     "[E007] AxiomZero Violation: Reference to `None` (`Option::None`) attempts \
                      to instantiate void (Ø). Use `Presence::boundary(default)` or concrete fallback tokens."
                         .to_string(),
                 );
+            }
+            if node.segments.len() >= 2 {
+                let segs: Vec<String> = node
+                    .segments
+                    .iter()
+                    .map(|seg| seg.ident.to_string())
+                    .collect();
+                let last = segs[segs.len() - 1].as_str();
+                let prev = segs[segs.len() - 2].as_str();
+                if matches!(
+                    last,
+                    "exp"
+                        | "exp2"
+                        | "exp_m1"
+                        | "ln"
+                        | "ln_1p"
+                        | "log"
+                        | "log2"
+                        | "log10"
+                        | "sin"
+                        | "cos"
+                        | "tan"
+                        | "sin_cos"
+                        | "sinh"
+                        | "cosh"
+                        | "tanh"
+                        | "asin"
+                        | "acos"
+                        | "atan"
+                        | "atan2"
+                        | "asinh"
+                        | "acosh"
+                        | "atanh"
+                        | "powf"
+                ) {
+                    self.violations.push(format!(
+                        "[E012] AxiomZero Violation: Transcendental function `{}` is forbidden in \
+                         `#[axiom_zero]` core modules. Use exact rational/algebraic operators \
+                         (Cayley rotors, Kerr competition, rational softmax).",
+                        last
+                    ));
+                } else if matches!(last, "unwrap" | "unwrap_err" | "unwrap_unchecked") {
+                    self.violations.push(
+                        "[E005] AxiomZero Violation: `.unwrap()` / `Option::unwrap` / `Result::unwrap` \
+                         permits thread collapse or UB on None/Err. Use `Presence<T>` or `.unwrap_or(...)` / `.resolve(...)`."
+                            .to_string(),
+                    );
+                } else if matches!(last, "expect" | "expect_err") {
+                    self.violations.push(
+                        "[E006] AxiomZero Violation: `.expect()` / `Option::expect` / `Result::expect` permits thread \
+                         collapse on None/Err. Replace with `Presence::boundary(default)` or `.unwrap_or(...)`."
+                            .to_string(),
+                    );
+                } else if matches!(
+                    (prev, last),
+                    ("Div", "div") | ("DivAssign", "div_assign") | ("Rem", "rem") | ("RemAssign", "rem_assign")
+                ) {
+                    self.violations.push(
+                        "[E011] AxiomZero Violation: Trait division or modulo (`Div::div`, `Rem::rem`) \
+                         can trap on zero or produce NaN/Inf. Use `total_div_usize`, `total_rem_nonzero`, \
+                         `total_div_f32`, or `total_div_unit_shifted_f32`."
+                            .to_string(),
+                    );
+                } else if matches!((prev, last), ("Index", "index") | ("IndexMut", "index_mut")) {
+                    self.violations.push(
+                        "[E010] AxiomZero Violation: Trait indexing (`Index::index`, `IndexMut::index_mut`) \
+                         can panic on out-of-bounds access. Use `total_get`, `mask_get`, `TotalSliceExt::total_get`, \
+                         or `Attractor::get_phase_state`."
+                            .to_string(),
+                    );
+                }
             }
         }
         visit::visit_path(self, node);
@@ -264,10 +354,11 @@ impl<'ast> Visit<'ast> for AxiomZeroVisitor {
 /// Compile-time enforcement attribute implementing Axiom-Zero Constructive Totality rules:
 /// `[E001]`–`[E012]`.
 ///
-/// Rejects panics, assertions, `todo!`/`unimplemented!`/`unreachable!`, `.unwrap*()`/`.expect*()`,
-/// direct `None` (`Option::None`) references, terminating calls (`exit`/`abort`),
-/// unchecked indexing (`arr[i]`), unchecked division/modulo (`/` and `%`),
-/// and transcendental float methods (`exp`/`ln`/`log`/`sin`/`cos`/`tan`/`tanh`/`powf`/etc.).
+/// Rejects panics, assertions, `todo!`/`unimplemented!`/`unreachable!`, `.unwrap*()`/`.expect*()`
+/// (including UFCS paths), direct `None` (`Option::None`) references, terminating calls (`exit`/`abort`),
+/// unchecked indexing (`arr[i]` and `Index::index`), unchecked division/modulo (`/` and `%` and `Div::div`),
+/// expression/formatting macro-token bypasses, and transcendental float methods and UFCS paths
+/// (`exp`/`ln`/`log`/`sin`/`cos`/`tan`/`tanh`/`powf`/etc.).
 /// Test functions (`#[test]`) and test modules (`#[cfg(test)]`) are exempted.
 #[proc_macro_attribute]
 pub fn axiom_zero(_attr: TokenStream, item: TokenStream) -> TokenStream {

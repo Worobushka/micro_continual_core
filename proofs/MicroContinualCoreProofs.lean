@@ -2832,6 +2832,7 @@ open Foundations.PosNat
 #print axioms step62_dual_eps_ne_zero
 #print axioms step62_dual_eps_squared_is_zero
 #print axioms step63_dual_exact_derivative
+#print axioms step66_bal_not_gt_and_lt
 #print axioms step103_dft4_orthogonality
 #print axioms step104_dft4_inversion
 #print axioms step104b_dft3_inversion

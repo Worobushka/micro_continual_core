@@ -308,6 +308,7 @@ fn run_part_a_label_shuffle() {
         y_shuf.swap(i, j);
     }
     for (label, ys) in [("Original", &y_orig), ("Shuffled y", &y_shuf)] {
+        let is_orig = label == "Original";
         let mut cfg = MicroCoreConfig::numeric_stream(2, 1);
         cfg.half_sectors = 0; cfg.rtrl_sectors = 10; cfg.rtrl_slow_sectors = 10;
         cfg.rtrl_max_in = 1; cfg.rtrl_lr = 0.012; cfg.rtrl_grid_mode = 1;
@@ -318,17 +319,40 @@ fn run_part_a_label_shuffle() {
         let mut deep = DeepRtrrlLruPhBaseline::new(1, 16, 14, 2, 4, 0.04, 2.2, 4, 1);
         deep.set_probe_accept_threshold(0.60);
         let (mut hc, mut hd, mut wf_n, mut wf_mean, mut wf_m2) = (0usize, 0usize, 0usize, 0.0_f64, 0.0_f64);
+        let mut obs_hist: Vec<[f32; 1]> = Vec::with_capacity(total_n);
+        let mut orig_preds_c = if is_orig { Vec::with_capacity(total_n) } else { Vec::new() };
+        let mut orig_preds_d = if is_orig { Vec::with_capacity(total_n) } else { Vec::new() };
         for t in 0..total_n {
             wf_n += 1;
             let x_cur = xs[t] as f64;
             let d1 = x_cur - wf_mean; wf_mean += d1 / wf_n as f64;
             let d2 = x_cur - wf_mean; wf_m2 += d1 * d2;
             let std_c = if wf_n >= 2 { (wf_m2 / (wf_n - 1) as f64).sqrt().max(0.25) } else { 8.0 };
-            let obs = [((x_cur - wf_mean) / std_c).clamp(-4.0, 4.0) as f32];
-            let pc = core.decide_vec(&obs, true, false, false).get().0;
-            core.end_supervised_step(pc, ys[t]);
+            obs_hist.push([((x_cur - wf_mean) / std_c).clamp(-4.0, 4.0) as f32]);
+            if t >= 8 {
+                let s = t - 8;
+                let y_s = if is_orig {
+                    if s >= 2500 && s < 5000 { usize::from(xs[t] < 0.0) } else { usize::from(xs[t] >= 0.0) }
+                } else {
+                    ys[s]
+                };
+                let p_s = core.decide_vec(&obs_hist[s], true, false, false).get().0;
+                core.end_supervised_step(p_s, y_s);
+                let _ = deep.step_supervised(&obs_hist[s], y_s, 0.04, 0.01, true, 1);
+            }
+            let win_start = if t >= 8 { t - 7 } else { 0 };
+            let w_len = t + 1 - win_start;
+            let mut win_refs: [&[f32]; 8] = [&[]; 8];
+            for (wi, idx) in (win_start..=t).enumerate() {
+                win_refs[wi] = &obs_hist[idx];
+            }
+            let pc = core.predict_vec_k_ahead_readonly(&win_refs[..w_len]);
+            let pd = deep.predict_k_ahead_readonly(&win_refs[..w_len]);
+            if is_orig {
+                orig_preds_c.push(pc);
+                orig_preds_d.push(pd);
+            }
             if pc == ys[t] { hc += 1; }
-            let pd = deep.step_supervised(&obs, ys[t], 0.04, 0.01, true, 1);
             if pd == ys[t] { hd += 1; }
         }
         println!(
@@ -337,6 +361,54 @@ fn run_part_a_label_shuffle() {
             hc as f64 * 100.0 / total_n as f64,
             hd as f64 * 100.0 / total_n as f64
         );
+        if is_orig {
+            // Causal Prefix Invariance check: mask future xs[t+1..] = f32::NAN at every t
+            let mut cfg_m = MicroCoreConfig::numeric_stream(2, 1);
+            cfg_m.half_sectors = 0; cfg_m.rtrl_sectors = 10; cfg_m.rtrl_slow_sectors = 10;
+            cfg_m.rtrl_max_in = 1; cfg_m.rtrl_lr = 0.012; cfg_m.rtrl_grid_mode = 1;
+            cfg_m.rtrl_use_skip_x = true; cfg_m.standardize_vec = false; cfg_m.linear_lr = 0.06;
+            cfg_m.ph_delta = 0.04; cfg_m.ph_threshold = 2.2; cfg_m.ph_warmup = 4; cfg_m.max_regimes = 4;
+            let mut core_m = MicroContinualCore::new(cfg_m);
+            core_m.encoder.freeze_to_i8(); core_m.start_episode();
+            let mut deep_m = DeepRtrrlLruPhBaseline::new(1, 16, 14, 2, 4, 0.04, 2.2, 4, 1);
+            deep_m.set_probe_accept_threshold(0.60);
+            let (mut mn_n, mut mn_mean, mut mn_m2) = (0usize, 0.0_f64, 0.0_f64);
+            let mut masked_hist: Vec<[f32; 1]> = Vec::with_capacity(total_n);
+            let (mut mis_c, mut mis_d) = (0usize, 0usize);
+            for t in 0..total_n {
+                let mut xs_masked = xs.clone();
+                xs_masked[(t + 1)..].fill(f32::NAN);
+                mn_n += 1;
+                let x_cur = xs_masked[t] as f64;
+                let d1 = x_cur - mn_mean; mn_mean += d1 / mn_n as f64;
+                let d2 = x_cur - mn_mean; mn_m2 += d1 * d2;
+                let std_c = if mn_n >= 2 { (mn_m2 / (mn_n - 1) as f64).sqrt().max(0.25) } else { 8.0 };
+                masked_hist.push([((x_cur - mn_mean) / std_c).clamp(-4.0, 4.0) as f32]);
+                if t >= 8 {
+                    let s = t - 8;
+                    let y_s = if s >= 2500 && s < 5000 { usize::from(xs_masked[t] < 0.0) } else { usize::from(xs_masked[t] >= 0.0) };
+                    let p_s = core_m.decide_vec(&masked_hist[s], true, false, false).get().0;
+                    core_m.end_supervised_step(p_s, y_s);
+                    let _ = deep_m.step_supervised(&masked_hist[s], y_s, 0.04, 0.01, true, 1);
+                }
+                let win_start = if t >= 8 { t - 7 } else { 0 };
+                let w_len = t + 1 - win_start;
+                let mut win_refs: [&[f32]; 8] = [&[]; 8];
+                for (wi, idx) in (win_start..=t).enumerate() {
+                    win_refs[wi] = &masked_hist[idx];
+                }
+                let pc_m = core_m.predict_vec_k_ahead_readonly(&win_refs[..w_len]);
+                let pd_m = deep_m.predict_k_ahead_readonly(&win_refs[..w_len]);
+                if pc_m != orig_preds_c[t] { mis_c += 1; }
+                if pd_m != orig_preds_d[t] { mis_d += 1; }
+            }
+            assert_eq!(mis_c, 0, "MicroCore violated causal prefix invariance!");
+            assert_eq!(mis_d, 0, "Deep 2L LRU violated causal prefix invariance!");
+            println!(
+                "  Causal Prefix Invariance (xs[t+1..]=NaN): MicroCore={}/{} | Deep 2L LRU={}/{}",
+                total_n - mis_c, total_n, total_n - mis_d, total_n
+            );
+        }
     }
 
     // [A3] Lorenz-96 (N=16 and N=256) Original vs Shuffled y
@@ -352,6 +424,7 @@ fn run_part_a_label_shuffle() {
             y_s.swap(i, j);
         }
         for (lbl, ys) in [("Original", &y_o), ("Shuffled y", &y_s)] {
+            let is_orig = lbl == "Original";
             let mut params = PlasticCayleyParams::new_with_grid(16, d_in, 777, 1);
             let mut state = PlasticCayleyState::new(16, d_in, 0.65);
             let d = params.dim();
@@ -364,31 +437,52 @@ fn run_part_a_label_shuffle() {
             let mut psis = [1.0_f32; 2];
             let mut gru = GruPerStepBank::new_supervised(d_in, 32, 2, 4, 777);
             let (mut hc, mut hg, mut n_eval) = (0usize, 0usize, 0usize);
+            let mut obs_hist: Vec<Vec<f32>> = Vec::with_capacity(2500);
             for t in 0..2500usize {
                 let x: Vec<f32> = traj[t].iter().map(|&v| v.clamp(-3.0, 3.0)).collect();
-                state.step_forward(&params, &x);
-                let l0 = out_b[0] + fast_dot(&out_w[0..d], &state.b);
-                let l1 = out_b[1] + fast_dot(&out_w[d..2 * d], &state.b);
-                let pc = usize::from(l1 > l0);
-                rational_probs_and_psi_into(&[l0, l1], &mut probs, &mut psis);
-                grad_b.fill(0.0);
-                for c in 0..2usize {
-                    let tgt = if c == ys[t] { 1.0 } else { 0.0 };
-                    let err_c = (psis[c] * (tgt - probs[c])).clamp(-2.0, 2.0);
-                    let off = c * d;
-                    fast_saxpy(&mut grad_b, &out_w[off..off + d], err_c);
-                    for i in 0..d {
-                        let g = err_c * state.b[i];
-                        v_w[off + i] = 0.98 * v_w[off + i] + 0.02 * g * g;
-                        let st = (g / (v_w[off + i] + 0.0025).sqrt()).clamp(-3.0, 3.0);
-                        out_w[off + i] = (out_w[off + i] * 0.99995 + 0.06 * st).clamp(-8.0, 8.0);
+                obs_hist.push(x);
+                if t >= 4 {
+                    let s = t - 4;
+                    let y_s_lbl = if is_orig { usize::from(traj[t][0] >= 0.0) } else { ys[s] };
+                    let xs_s = &obs_hist[s];
+                    state.step_forward(&params, xs_s);
+                    let l0 = out_b[0] + fast_dot(&out_w[0..d], &state.b);
+                    let l1 = out_b[1] + fast_dot(&out_w[d..2 * d], &state.b);
+                    rational_probs_and_psi_into(&[l0, l1], &mut probs, &mut psis);
+                    grad_b.fill(0.0);
+                    for c in 0..2usize {
+                        let tgt = if c == y_s_lbl { 1.0 } else { 0.0 };
+                        let err_c = (psis[c] * (tgt - probs[c])).clamp(-2.0, 2.0);
+                        let off = c * d;
+                        fast_saxpy(&mut grad_b, &out_w[off..off + d], err_c);
+                        for i in 0..d {
+                            let g = err_c * state.b[i];
+                            v_w[off + i] = 0.98 * v_w[off + i] + 0.02 * g * g;
+                            let st = (g / (v_w[off + i] + 0.0025).sqrt()).clamp(-3.0, 3.0);
+                            out_w[off + i] = (out_w[off + i] * 0.99995 + 0.06 * st).clamp(-8.0, 8.0);
+                        }
+                        v_b[c] = 0.98 * v_b[c] + 0.02 * err_c * err_c;
+                        out_b[c] = (out_b[c] + 0.25 * 0.06 * (err_c / (v_b[c] + 0.0025).sqrt()).clamp(-3.0, 3.0)).clamp(-4.0, 4.0);
                     }
-                    v_b[c] = 0.98 * v_b[c] + 0.02 * err_c * err_c;
-                    out_b[c] = (out_b[c] + 0.25 * 0.06 * (err_c / (v_b[c] + 0.0025).sqrt()).clamp(-3.0, 3.0)).clamp(-4.0, 4.0);
+                    state.accumulate_traces(&grad_b, 0.2, state.max_in);
+                    state.apply_td_update(&mut params, 1.0, 0.012, state.max_in);
+                    let _ = gru.step_and_learn_supervised(xs_s, Some(y_s_lbl));
                 }
-                state.accumulate_traces(&grad_b, 0.2, d_in);
-                state.apply_td_update(&mut params, 1.0, 0.012, d_in);
-                let pg = gru.step_and_learn_supervised(&x, Some(ys[t]));
+                let win_start = if t >= 4 { t - 3 } else { 0 };
+                let w_len = t + 1 - win_start;
+                let mut win_refs: [&[f32]; 4] = [&[]; 4];
+                for (wi, idx) in (win_start..=t).enumerate() {
+                    win_refs[wi] = &obs_hist[idx];
+                }
+                let mut u_ro = state.u.clone();
+                let mut b_ro = state.b.clone();
+                for &w in &win_refs[..w_len] {
+                    PlasticCayleyState::step_state_readonly(&params, state.kappa, state.max_in, w, &mut u_ro, &mut b_ro);
+                }
+                let l0 = out_b[0] + fast_dot(&out_w[0..d], &b_ro);
+                let l1 = out_b[1] + fast_dot(&out_w[d..2 * d], &b_ro);
+                let pc = usize::from(l1 > l0);
+                let pg = gru.predict_k_ahead_readonly(&win_refs[..w_len]);
                 if t >= 1000 {
                     n_eval += 1;
                     if pc == ys[t] { hc += 1; }
@@ -493,7 +587,7 @@ fn run_diag1_axis3b_repeat_prev() {
         let mut ssm_accs = Vec::new();
         let mut gru_matched_accs = Vec::new();
         for seed in 1..=5u64 {
-            let mut ssm = SelectiveSsmBank::new(4, 18, 4, seed ^ 0x55AA);
+            let mut ssm = SelectiveSsmBank::new_supervised(4, 18, 4, seed ^ 0x55AA);
             let mut gru_m = GruPerStepBank::new_supervised(4, 32, 4, k_lag + 2, seed ^ 0x6400);
             gru_m.gru.lr = 0.006;
             let mut rng_s = splitmix64(seed ^ 0x3B_1100 + k_lag as u64);

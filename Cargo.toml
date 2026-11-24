@@ -1,6 +1,6 @@
 [package]
 name = "micro_continual_core"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 authors = ["Adrian Aleksandrovich İşmuhanov", "Sofia Sidorenko"]
 license = "PolyForm-Noncommercial-1.0.0"

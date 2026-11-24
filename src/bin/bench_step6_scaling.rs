@@ -210,6 +210,33 @@ impl CayleyBlockSupervised {
         }
         best_c
     }
+
+    fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        let mut u_ro = self.state.u.clone();
+        let mut b_ro = self.state.b.clone();
+        for &raw_x in window {
+            PlasticCayleyState::step_state_readonly(
+                &self.params,
+                self.state.kappa,
+                self.state.max_in,
+                raw_x,
+                &mut u_ro,
+                &mut b_ro,
+            );
+        }
+        let d = self.params.dim();
+        let mut best_c = 0usize;
+        let mut best_l = f32::NEG_INFINITY;
+        for c in 0..self.num_classes {
+            let off = c * d;
+            let lg = self.out_b[c] + fast_dot(&self.out_w[off..off + d], &b_ro);
+            if lg > best_l {
+                best_l = lg;
+                best_c = c;
+            }
+        }
+        best_c
+    }
 }
 
 // ============================================================================
@@ -373,6 +400,68 @@ impl DeepCayleyStack {
                     rtrl_lr,
                     trace_decay,
                 );
+            }
+        }
+        best_c
+    }
+
+    fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        let depth = self.layers.len();
+        let inv_sqrt_d = 1.0_f32 / (depth.max(1) as f32).sqrt();
+        let mut u_ro: Vec<Vec<f32>> = self.layers.iter().map(|l| l.state.u.clone()).collect();
+        let mut b_ro: Vec<Vec<f32>> = self.layers.iter().map(|l| l.state.b.clone()).collect();
+        let mut bridge_buf = vec![0.0_f32; self.bridge_dim];
+        let mut in_buf = vec![0.0_f32; self.raw_dim + self.bridge_dim];
+
+        for &raw_x in window {
+            for l in 0..depth {
+                let blk = &self.layers[l];
+                if l == 0 {
+                    PlasticCayleyState::step_state_readonly(
+                        &blk.params,
+                        blk.state.kappa,
+                        blk.state.max_in,
+                        raw_x,
+                        &mut u_ro[0],
+                        &mut b_ro[0],
+                    );
+                } else {
+                    Self::extract_bridge(&b_ro[l - 1], &mut bridge_buf);
+                    in_buf.fill(0.0);
+                    for i in 0..self.raw_dim.min(raw_x.len()) {
+                        in_buf[i] = raw_x[i];
+                    }
+                    for i in 0..self.bridge_dim {
+                        in_buf[self.raw_dim + i] = bridge_buf[i];
+                    }
+                    PlasticCayleyState::step_state_readonly(
+                        &blk.params,
+                        blk.state.kappa,
+                        blk.state.max_in,
+                        &in_buf,
+                        &mut u_ro[l],
+                        &mut b_ro[l],
+                    );
+                }
+            }
+        }
+
+        let mut cum_logits = vec![0.0_f32; self.num_classes];
+        for l in 0..depth {
+            let blk = &self.layers[l];
+            let d = blk.params.dim();
+            for c in 0..self.num_classes {
+                let off = c * d;
+                let lg = blk.out_b[c] + fast_dot(&blk.out_w[off..off + d], &b_ro[l]);
+                cum_logits[c] += inv_sqrt_d * lg;
+            }
+        }
+        let mut best_c = 0usize;
+        let mut best_l = f32::NEG_INFINITY;
+        for c in 0..self.num_classes {
+            if cum_logits[c] > best_l {
+                best_l = cum_logits[c];
+                best_c = c;
             }
         }
         best_c
@@ -942,7 +1031,7 @@ fn run_axis1_width(sink: &mut usize) {
         let d = s * 3;
         let units = d / 2; // 2*units == d
         let mut cay = CayleyBlockSupervised::new(s, d_in, nc, 0.65, 1, 0.85, 77 + s as u64);
-        let mut ssm = SelectiveSsmBank::new(d_in, units, nc, 77 + s as u64);
+        let mut ssm = SelectiveSsmBank::new_supervised(d_in, units, nc, 77 + s as u64);
         let mut lru = OnlineLruStream::new(d_in, units, nc, 77 + s as u64);
         let mut gru = GruPerStepBank::new_supervised(d_in, d, nc, 1, 77 + s as u64);
 
@@ -1151,14 +1240,26 @@ fn run_axis1_width(sink: &mut usize) {
             }
             rp_accs.push(eval_h as f64 * 100.0 / eval_n.max(1) as f64);
 
-            // Lorenz-63 K=8 (online 3500 steps, score on last 2000)
+            // Lorenz-63 K=8 (strictly causal delayed-label online 3500 steps, score on last 2000)
             let xs = generate_lorenz63(3500, 8, seed);
             let mut cay_l = CayleyBlockSupervised::new(s, 1, 2, 0.65, 1, 0.90, seed ^ 0x1B_6308);
+            let mut obs_hist: Vec<[f32; 1]> = Vec::with_capacity(3500);
             let (mut l_h, mut l_n) = (0usize, 0usize);
             for t in 0..3500usize {
-                let x = [xs[t]];
+                obs_hist.push([xs[t]]);
+                if t >= 8 {
+                    let s_idx = t - 8;
+                    let y_s = usize::from(xs[t] >= 0.0);
+                    let _ = cay_l.step_and_learn(&obs_hist[s_idx], Some(y_s), 0.08, 0.015, 0.3);
+                }
+                let win_start = if t >= 8 { t - 7 } else { 0 };
+                let w_len = t + 1 - win_start;
+                let mut win_refs: [&[f32]; 8] = [&[]; 8];
+                for (wi, idx) in (win_start..=t).enumerate() {
+                    win_refs[wi] = &obs_hist[idx];
+                }
+                let pred = cay_l.predict_k_ahead_readonly(&win_refs[..w_len]);
                 let y = usize::from(xs[t + 8] >= 0.0);
-                let pred = cay_l.step_and_learn(&x, Some(y), 0.08, 0.015, 0.3);
                 if t >= 1500 {
                     l_n += 1;
                     if pred == y { l_h += 1; }
@@ -1354,9 +1455,10 @@ fn run_axis2_depth() {
             d2_all.push(ah as f64 * 100.0 / an as f64);
             d2_deep.push(dh as f64 * 100.0 / dn.max(1) as f64);
 
-            // 2C: Lorenz-96 (N=16 variables, observe 8 even channels, predict sign(x_{0, t+6}), 4000 steps)
+            // 2C: Lorenz-96 (N=16 variables, observe 8 even channels, strictly causal delayed-label K=6, 4000 steps)
             let traj = generate_lorenz96(16, 4000, 6, seed);
             let (mut lh, mut ln) = (0usize, 0usize);
+            let mut obs_hist: Vec<[f32; 8]> = Vec::with_capacity(4000);
             let t0 = Instant::now();
             if is_gru {
                 let mut gru = GruPerStepBank::new_supervised(8, spl, 2, 4, seed ^ 0x2C_9600);
@@ -1366,8 +1468,20 @@ fn run_axis2_depth() {
                         traj[t][0], traj[t][2], traj[t][4], traj[t][6],
                         traj[t][8], traj[t][10], traj[t][12], traj[t][14],
                     ];
+                    obs_hist.push(obs);
+                    if t >= 6 {
+                        let s_idx = t - 6;
+                        let y_s = usize::from(traj[t][0] >= 0.0);
+                        let _ = gru.step_and_learn_supervised(&obs_hist[s_idx], Some(y_s));
+                    }
+                    let win_start = if t >= 6 { t - 5 } else { 0 };
+                    let w_len = t + 1 - win_start;
+                    let mut win_refs: [&[f32]; 6] = [&[]; 6];
+                    for (wi, idx) in (win_start..=t).enumerate() {
+                        win_refs[wi] = &obs_hist[idx];
+                    }
+                    let pred = gru.predict_k_ahead_readonly(&win_refs[..w_len]);
                     let y = usize::from(traj[t + 6][0] >= 0.0);
-                    let pred = gru.step_and_learn_supervised(&obs, Some(y));
                     if t >= 1500 {
                         ln += 1;
                         if pred == y { lh += 1; }
@@ -1381,8 +1495,20 @@ fn run_axis2_depth() {
                         traj[t][0], traj[t][2], traj[t][4], traj[t][6],
                         traj[t][8], traj[t][10], traj[t][12], traj[t][14],
                     ];
+                    obs_hist.push(obs);
+                    if t >= 6 {
+                        let s_idx = t - 6;
+                        let y_s = usize::from(traj[t][0] >= 0.0);
+                        let _ = net.step_and_learn(&obs_hist[s_idx], Some(y_s), 0.06, 0.014, 0.25);
+                    }
+                    let win_start = if t >= 6 { t - 5 } else { 0 };
+                    let w_len = t + 1 - win_start;
+                    let mut win_refs: [&[f32]; 6] = [&[]; 6];
+                    for (wi, idx) in (win_start..=t).enumerate() {
+                        win_refs[wi] = &obs_hist[idx];
+                    }
+                    let pred = net.predict_k_ahead_readonly(&win_refs[..w_len]);
                     let y = usize::from(traj[t + 6][0] >= 0.0);
-                    let pred = net.step_and_learn(&obs, Some(y), 0.06, 0.014, 0.25);
                     if t >= 1500 {
                         ln += 1;
                         if pred == y { lh += 1; }
@@ -1408,10 +1534,10 @@ fn run_axis2_depth() {
 // ============================================================================
 fn run_axis3_horizon() {
     println!("\n============================================================================================");
-    println!("AXIS 3A: A_5 <= SO(3) Ultra-Long Horizon Extrapolation (Train strictly L<=8 -> Eval L=6..500, 5 seeds)");
+    println!("AXIS 3A: A_5 <= SO(3) Ultra-Long Horizon Extrapolation (Train strictly L<=8 -> Eval L=6..500, 10 seeds)");
     println!("============================================================================================");
     let a5 = PermGroup::a5();
-    let seeds: [u64; 5] = [1, 2, 3, 4, 5];
+    let seeds: Vec<u64> = (1..=10).collect();
     let horizons = [6usize, 12, 18, 30, 50, 100, 200, 500];
 
     #[derive(Clone, Copy)]
@@ -1433,10 +1559,10 @@ fn run_axis3_horizon() {
     ];
 
     println!(
-        "{:<34} | {:<7} | {:<7} | {:<7} | {:<7} | {:<7} | {:<7} | {:<7} | {:<7}",
+        "{:<34} | {:<12} | {:<12} | {:<12} | {:<12} | {:<12} | {:<12} | {:<12} | {:<12}",
         "Model (60-elem Exact %)", "L=6", "L=12", "L=18", "L=30", "L=50", "L=100", "L=200", "L=500"
     );
-    println!("{}", "-".repeat(110));
+    println!("{}", "-".repeat(154));
 
     let mut max_sphere_err_500 = 0.0_f64;
     let mut max_orth_err_500 = 0.0_f64;
@@ -1550,7 +1676,7 @@ fn run_axis3_horizon() {
                     }
                 }
                 H3Model::SelectiveSsm => {
-                    let mut ssm = SelectiveSsmBank::new(4, 18, 60, seed);
+                    let mut ssm = SelectiveSsmBank::new_supervised(4, 18, 60, seed);
                     ssm.enable_input_clamp = false;
                     for ep in 0..4000usize {
                         let len = 1 + (ep % 8);
@@ -1611,17 +1737,21 @@ fn run_axis3_horizon() {
                 }
             }
         }
+        let fmt = |v: &[f64]| {
+            let (m, s) = mean_sd(v);
+            format!("{:5.1}±{:4.1}%", m, s)
+        };
         println!(
-            "{:<34} | {:5.1}%  | {:5.1}%  | {:5.1}%  | {:5.1}%  | {:5.1}%  | {:5.1}%  | {:5.1}%  | {:5.1}%",
+            "{:<34} | {:<12} | {:<12} | {:<12} | {:<12} | {:<12} | {:<12} | {:<12} | {:<12}",
             name,
-            mean_sd(&h_accs[0]).0,
-            mean_sd(&h_accs[1]).0,
-            mean_sd(&h_accs[2]).0,
-            mean_sd(&h_accs[3]).0,
-            mean_sd(&h_accs[4]).0,
-            mean_sd(&h_accs[5]).0,
-            mean_sd(&h_accs[6]).0,
-            mean_sd(&h_accs[7]).0,
+            fmt(&h_accs[0]),
+            fmt(&h_accs[1]),
+            fmt(&h_accs[2]),
+            fmt(&h_accs[3]),
+            fmt(&h_accs[4]),
+            fmt(&h_accs[5]),
+            fmt(&h_accs[6]),
+            fmt(&h_accs[7]),
         );
     }
 
@@ -1631,17 +1761,18 @@ fn run_axis3_horizon() {
     );
 
     // Axis 3B: RepeatPrevious Deep Delay Horizon Scaling K in {2, 4, 8, 12, 16, 24}
+    let seeds_3b: [u64; 5] = [1, 2, 3, 4, 5];
     println!("\n============================================================================================");
     println!("AXIS 3B: RepeatPrevious Deep Delay Horizon Scaling (K in 2..24, 5 seeds, 0% exp vs Transc.)");
     println!("============================================================================================");
     println!(
-        "{:<7} | {:<13} | {:<13} | {:<13} | {:<13} | {:<13} | {:<9}",
-        "Delay K", "3D Cayley b=1", "2D Rat.(36D)", "Alg.Sel.(36D)", "Sel-SSM (36D)", "GRU (H=32)", "2D RAM"
+        "{:<7} | {:<13} | {:<13} | {:<13} | {:<13} | {:<14} | {:<9}",
+        "Delay K", "3D Cayley b=1", "2D Rat.(36D)", "Alg.Sel.(36D)", "Sel-SSM (36D)", "GRU(H32,BPTT4)", "2D RAM"
     );
-    println!("{}", "-".repeat(100));
+    println!("{}", "-".repeat(101));
 
     for &k_lag in &[2usize, 4, 8, 12, 16, 24] {
-        let s_cay = (k_lag * 2).max(16);
+        let s_cay = 12usize;
         let mut cay_v = Vec::new();
         let mut c2d_v = Vec::new();
         let mut asc_v = Vec::new();
@@ -1650,12 +1781,12 @@ fn run_axis3_horizon() {
         let mut c2d_ram = 0.0;
         let ep_len = k_lag + 20;
 
-        for &seed in &seeds {
+        for &seed in &seeds_3b {
             let mut cay = CayleyBlockSupervised::new(s_cay, 4, 4, 0.65, 1, 0.38, seed ^ (k_lag as u64));
             let mut c2d = AlgebraicSelectiveCayley::new(4, 18, 4, false, seed ^ (k_lag as u64));
             c2d_ram = c2d.memory_footprint_bytes() as f64 / 1024.0;
             let mut asc = AlgebraicSelectiveCayley::new(4, 18, 4, true, seed ^ (k_lag as u64));
-            let mut ssm = SelectiveSsmBank::new(4, 18, 4, seed ^ (k_lag as u64));
+            let mut ssm = SelectiveSsmBank::new_supervised(4, 18, 4, seed ^ (k_lag as u64));
             ssm.enable_input_clamp = true;
             let mut gru = GruPerStepBank::new_supervised(4, 32, 4, 4, seed ^ (k_lag as u64));
 
@@ -1760,14 +1891,25 @@ fn run_axis4_input_and_regimes() {
                 obs_stream.push(ch);
             }
 
-            // 1. Direct Cayley-RTRL (S=16, полный d_in)
+            // 1. Direct Cayley-RTRL (S=16, полный d_in, strictly causal delayed-label K=4)
             let mut cay_d = CayleyBlockSupervised::new(16, d_in, 2, 0.65, 1, 0.85, seed ^ 0x4A_001);
             ram_dir = cay_d.memory_footprint_bytes() as f64 / 1024.0;
             let (mut hd, mut nd) = (0usize, 0usize);
             let t0 = Instant::now();
             for t in 0..2500usize {
+                if t >= 4 {
+                    let s_idx = t - 4;
+                    let y_s = usize::from(traj[t][0] >= 0.0);
+                    let _ = cay_d.step_and_learn(&obs_stream[s_idx], Some(y_s), 0.06, 0.012, 0.2);
+                }
+                let win_start = if t >= 4 { t - 3 } else { 0 };
+                let w_len = t + 1 - win_start;
+                let mut win_refs: [&[f32]; 4] = [&[]; 4];
+                for (wi, idx) in (win_start..=t).enumerate() {
+                    win_refs[wi] = &obs_stream[idx];
+                }
+                let pred = cay_d.predict_k_ahead_readonly(&win_refs[..w_len]);
                 let y = usize::from(traj[t + 4][0] >= 0.0);
-                let pred = cay_d.step_and_learn(&obs_stream[t], Some(y), 0.06, 0.012, 0.2);
                 if t >= 1000 { nd += 1; if pred == y { hd += 1; } }
             }
             lat_dir.push((t0.elapsed().as_nanos() as f64 / 1000.0) / 2500.0);
@@ -1789,6 +1931,7 @@ fn run_axis4_input_and_regimes() {
             let mut cay_p = CayleyBlockSupervised::new(16, r_bot, 2, 0.65, 1, 0.85, seed ^ 0x4A_002);
             ram_prj = (cay_p.memory_footprint_bytes() + d_in * 16) as f64 / 1024.0;
             let mut proj_buf = [0.0_f32; 8];
+            let mut proj_hist: Vec<[f32; 8]> = Vec::with_capacity(2500);
             let (mut hp, mut np) = (0usize, 0usize);
             let t1 = Instant::now();
             for t in 0..2500usize {
@@ -1800,21 +1943,44 @@ fn run_axis4_input_and_regimes() {
                     proj_buf[b1] += s1 * v;
                     proj_buf[b2] += s2 * v;
                 }
+                proj_hist.push(proj_buf);
+                if t >= 4 {
+                    let s_idx = t - 4;
+                    let y_s = usize::from(traj[t][0] >= 0.0);
+                    let _ = cay_p.step_and_learn(&proj_hist[s_idx], Some(y_s), 0.06, 0.012, 0.2);
+                }
+                let win_start = if t >= 4 { t - 3 } else { 0 };
+                let w_len = t + 1 - win_start;
+                let mut win_refs: [&[f32]; 4] = [&[]; 4];
+                for (wi, idx) in (win_start..=t).enumerate() {
+                    win_refs[wi] = &proj_hist[idx];
+                }
+                let pred = cay_p.predict_k_ahead_readonly(&win_refs[..w_len]);
                 let y = usize::from(traj[t + 4][0] >= 0.0);
-                let pred = cay_p.step_and_learn(&proj_buf, Some(y), 0.06, 0.012, 0.2);
                 if t >= 1000 { np += 1; if pred == y { hp += 1; } }
             }
             lat_prj.push((t1.elapsed().as_nanos() as f64 / 1000.0) / 2500.0);
             acc_prj.push(hp as f64 * 100.0 / np as f64);
 
-            // 3. Online Per-Step Supervised GRU (H=32, BPTT4)
+            // 3. Online Per-Step Supervised GRU (H=32, BPTT4, strictly causal delayed-label K=4)
             let mut gru = GruPerStepBank::new_supervised(d_in, 32, 2, 4, seed ^ 0x4A_003);
             ram_gru = gru.memory_footprint_bytes() as f64 / 1024.0;
             let (mut hg, mut ng) = (0usize, 0usize);
             let t2 = Instant::now();
             for t in 0..2500usize {
+                if t >= 4 {
+                    let s_idx = t - 4;
+                    let y_s = usize::from(traj[t][0] >= 0.0);
+                    let _ = gru.step_and_learn_supervised(&obs_stream[s_idx], Some(y_s));
+                }
+                let win_start = if t >= 4 { t - 3 } else { 0 };
+                let w_len = t + 1 - win_start;
+                let mut win_refs: [&[f32]; 4] = [&[]; 4];
+                for (wi, idx) in (win_start..=t).enumerate() {
+                    win_refs[wi] = &obs_stream[idx];
+                }
+                let pred = gru.predict_k_ahead_readonly(&win_refs[..w_len]);
                 let y = usize::from(traj[t + 4][0] >= 0.0);
-                let pred = gru.step_and_learn_supervised(&obs_stream[t], Some(y));
                 if t >= 1000 { ng += 1; if pred == y { hg += 1; } }
             }
             lat_gru.push((t2.elapsed().as_nanos() as f64 / 1000.0) / 2500.0);
@@ -2070,7 +2236,7 @@ fn run_axis5_swarm(sink: &mut usize) {
             .map(|i| CayleyBlockSupervised::new(16, 8, 4, 0.65, 1, 0.85, 500 + i as u64))
             .collect();
         let mut ssms: Vec<SelectiveSsmBank> = (0..n_agents)
-            .map(|i| SelectiveSsmBank::new(8, 24, 4, 500 + i as u64))
+            .map(|i| SelectiveSsmBank::new_supervised(8, 24, 4, 500 + i as u64))
             .collect();
         let mut lrus: Vec<OnlineLruStream> = (0..n_agents)
             .map(|i| OnlineLruStream::new(8, 24, 4, 500 + i as u64))
@@ -2175,7 +2341,7 @@ fn run_axis5_swarm(sink: &mut usize) {
         .map(|i| CayleyBlockSupervised::new(16, 8, 4, 0.65, 1, 0.85, 9000 + i as u64))
         .collect();
     let mut ssms_mc: Vec<SelectiveSsmBank> = (0..n_swarm)
-        .map(|i| SelectiveSsmBank::new(8, 24, 4, 9000 + i as u64))
+        .map(|i| SelectiveSsmBank::new_supervised(8, 24, 4, 9000 + i as u64))
         .collect();
     let mut lrus_mc: Vec<OnlineLruStream> = (0..n_swarm)
         .map(|i| OnlineLruStream::new(8, 24, 4, 9000 + i as u64))
@@ -2268,15 +2434,47 @@ fn run_axis5_swarm(sink: &mut usize) {
     );
 }
 
+fn parse_filter_arg() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if let Some(rest) = a.strip_prefix("--filter=") {
+            return Some(rest.to_ascii_lowercase());
+        }
+        if a == "--filter" {
+            return args.next().map(|s| s.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+fn want_axis(filter: Option<&str>, tags: &str) -> bool {
+    match filter {
+        None => true,
+        Some(f) => f.is_empty() || tags.contains(f),
+    }
+}
+
 fn main() {
     let total_t0 = Instant::now();
     let mut sink = 0usize;
+    let filter = parse_filter_arg();
+    let f = filter.as_deref();
 
-    run_axis1_width(&mut sink);
-    run_axis2_depth();
-    run_axis3_horizon();
-    run_axis4_input_and_regimes();
-    run_axis5_swarm(&mut sink);
+    if want_axis(f, "axis 1 axis1 width") {
+        run_axis1_width(&mut sink);
+    }
+    if want_axis(f, "axis 2 axis2 depth") {
+        run_axis2_depth();
+    }
+    if want_axis(f, "axis 3 axis3 horizon") {
+        run_axis3_horizon();
+    }
+    if want_axis(f, "axis 4 axis4 input regimes") {
+        run_axis4_input_and_regimes();
+    }
+    if want_axis(f, "axis 5 axis5 swarm") {
+        run_axis5_swarm(&mut sink);
+    }
 
     std::hint::black_box(sink);
     println!(

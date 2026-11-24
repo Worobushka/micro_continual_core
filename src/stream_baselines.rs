@@ -588,6 +588,7 @@ impl NoChangePersistent {
 // 5. Online LRU-RTRL Stream (рекуррентный комплексный диагональный LRU + RTRL)
 // -----------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct OnlineLruStream {
     pub in_dim: usize,
     pub units: usize,
@@ -1016,6 +1017,119 @@ impl OnlineLruStream {
         let st = self.t;
         self.w.step(&self.gw_buf, lr, st);
         self.b.step(&self.gb_buf, lr, st);
+        best
+    }
+
+    pub fn predict_k_ahead_readonly(&self, window: &[&[f32]]) -> usize {
+        let m = self.units;
+        let d = self.in_dim;
+        let kap2 = self.kappa * self.kappa;
+        let mut h_re = self.h_re.clone();
+        let mut h_im = self.h_im.clone();
+        let mut y_re = self.y_re.clone();
+        let mut y_im = self.y_im.clone();
+        let mut xn_buf = self.xn_buf.clone();
+
+        for &x in window {
+            xn_buf.fill(0.0);
+            let n = d.min(x.len());
+            if !self.standardize {
+                for j in 0..n {
+                    let mut v = x[j];
+                    if self.enable_input_clamp {
+                        v = if v.is_finite() { v.clamp(-10.0, 10.0) } else { 0.0 };
+                    }
+                    xn_buf[j] = v;
+                }
+            } else {
+                for j in 0..n {
+                    let mut raw = x[j];
+                    if self.enable_input_clamp {
+                        raw = if raw.is_finite() { raw.clamp(-10.0, 10.0) } else { 0.0 };
+                    }
+                    let std = self.feat_var[j].sqrt().max(0.05);
+                    xn_buf[j] = if self.feat_count <= 2 {
+                        raw
+                    } else {
+                        (raw - self.feat_mean[j]) / std
+                    };
+                }
+            }
+
+            for j in 0..m {
+                let nu_c = self.nu[j].clamp(-5.2, 1.5);
+                let exp_nu = nu_c.exp();
+                let r = (-exp_nu).exp();
+                let th = self.theta[j];
+                let (cth, sth) = (th.cos(), th.sin());
+                let lam_r = r * cth;
+                let lam_i = r * sth;
+                let gam = (1.0 - r * r).max(1e-4).sqrt();
+
+                let hr_prev = h_re[j];
+                let hi_prev = h_im[j];
+                let lhr = lam_r * hr_prev - lam_i * hi_prev;
+                let lhi = lam_r * hi_prev + lam_i * hr_prev;
+
+                let mut ur = 0.0_f32;
+                let mut ui = 0.0_f32;
+                let off = j * d;
+                for k in 0..d {
+                    let xk = xn_buf[k];
+                    ur += self.b_re[off + k] * xk;
+                    ui += self.b_im[off + k] * xk;
+                }
+                let hr = lhr + gam * ur;
+                let hi = lhi + gam * ui;
+                h_re[j] = hr;
+                h_im[j] = hi;
+                let rho = (hr * hr + hi * hi + kap2).sqrt();
+                y_re[j] = hr / rho;
+                y_im[j] = hi / rho;
+            }
+        }
+
+        let f_dim = 2 * m + d;
+        let mut feat_buf = vec![0.0_f32; f_dim];
+        let sc = 1.0 / (m.max(1) as f32).sqrt();
+        for j in 0..m {
+            feat_buf[2 * j] = y_re[j] * sc;
+            feat_buf[2 * j + 1] = y_im[j] * sc;
+        }
+        for k in 0..d {
+            feat_buf[2 * m + k] = xn_buf[k] * 0.5;
+        }
+
+        let mut logits = vec![0.0_f32; self.num_classes];
+        let mut max_l = f32::NEG_INFINITY;
+        for c in 0..self.num_classes {
+            let off = c * f_dim;
+            let s = self.b.w[c] + crate::math::fast_dot_raw(&self.w.w[off..off + f_dim], &feat_buf);
+            logits[c] = s;
+            if s > max_l {
+                max_l = s;
+            }
+        }
+        let mut sum_e = 0.0_f32;
+        let mut probs = vec![0.0_f32; self.num_classes];
+        for c in 0..self.num_classes {
+            let e = (logits[c] - max_l).exp();
+            probs[c] = e;
+            sum_e += e;
+        }
+        if !sum_e.is_finite() || sum_e <= 0.0 {
+            return 0;
+        }
+        let inv = 1.0 / sum_e;
+        let mut best = 0usize;
+        let mut best_p = -1.0_f32;
+        for (c, &p) in probs.iter().enumerate() {
+            let pn = p * inv;
+            if pn > best_p {
+                best_p = pn;
+                best = c;
+            }
+        }
         best
     }
 }

@@ -12,3 +12,6 @@ context.txt
 CMAPSSData/
 *.zip
 logs/
+*.jsonl
+__pycache__/
+crates/axiom_zero/Cargo.lock

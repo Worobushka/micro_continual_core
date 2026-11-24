@@ -302,6 +302,85 @@ impl PlasticCayleyState {
         let _ = total_set(&mut self.u, idx, flipped);
     }
 
+    /// Чисто чтение-ориентированный такт состояния `(u_buf, b_buf)` без мутации `&self` и без вычисления
+    /// матриц чувствительности RTRL (для каузального $K$-шагового прогноза без утечки).
+    pub fn step_state_readonly(
+        params: &PlasticCayleyParams,
+        kappa: f32,
+        max_in: usize,
+        raw_x: &[f32],
+        u_buf: &mut [f32],
+        b_buf: &mut [f32],
+    ) {
+        let s_cnt = params
+            .sectors
+            .min(total_div_usize(u_buf.len(), 3, 0))
+            .min(total_div_usize(b_buf.len(), 3, 0));
+        let m_in = max_in.min(params.max_in);
+        let x_len = raw_x.len().min(m_in);
+        let kap2 = kappa * kappa;
+
+        for s in 0..s_cnt {
+            let off = s.saturating_mul(3);
+            let a = total_get_copy(&params.alpha, s, 0.4);
+            let w = total_get_copy(&params.omega, s, 0.3);
+
+            let a2 = a * a;
+            let inv_a = total_div_unit_shifted_f32(1.0, a2);
+            let lam = sanitize_f32(0.995 * inv_a);
+
+            let w2 = w * w;
+            let inv_w = total_div_unit_shifted_f32(1.0, w2);
+
+            let ex = total_get_copy(&params.axis, off, 1.0);
+            let ey = total_get_copy(&params.axis, off + 1, 0.0);
+            let ez = total_get_copy(&params.axis, off + 2, 0.0);
+
+            let dx = total_get_copy(&params.in_dir, off, 0.0);
+            let dy = total_get_copy(&params.in_dir, off + 1, 1.0);
+            let dz = total_get_copy(&params.in_dir, off + 2, 0.0);
+
+            let ux = sanitize_bounded_f32(total_get_copy(u_buf, off, 0.0), 24.0);
+            let uy = sanitize_bounded_f32(total_get_copy(u_buf, off + 1, 0.0), 24.0);
+            let uz = sanitize_bounded_f32(total_get_copy(u_buf, off + 2, 0.0), 24.0);
+
+            let qx = ey * uz - ez * uy;
+            let qy = ez * ux - ex * uz;
+            let qz = ex * uy - ey * ux;
+
+            let rx = ey * qz - ez * qy;
+            let ry = ez * qx - ex * qz;
+            let rz = ex * qy - ey * qx;
+
+            let c1 = sanitize_f32(2.0 * w * inv_w);
+            let c2 = sanitize_f32(2.0 * w2 * inv_w);
+            let rux = sanitize_f32(ux + c1 * qx + c2 * rx);
+            let ruy = sanitize_f32(uy + c1 * qy + c2 * ry);
+            let ruz = sanitize_f32(uz + c1 * qz + c2 * rz);
+
+            let woff = s.saturating_mul(m_in);
+            let mut drive = 0.0_f32;
+            for j in 0..x_len {
+                let xj = sanitize_bounded_f32(total_get_copy(raw_x, j, 0.0), 8.0);
+                let wj = total_get_copy(&params.in_w, woff + j, 0.0);
+                drive = sanitize_f32(drive + wj * xj);
+            }
+
+            let nux = sanitize_bounded_f32(lam * rux + drive * dx, 24.0);
+            let nuy = sanitize_bounded_f32(lam * ruy + drive * dy, 24.0);
+            let nuz = sanitize_bounded_f32(lam * ruz + drive * dz, 24.0);
+            let _ = total_set(u_buf, off, nux);
+            let _ = total_set(u_buf, off + 1, nuy);
+            let _ = total_set(u_buf, off + 2, nuz);
+
+            let rho = sanitize_f32((nux * nux + nuy * nuy + nuz * nuz + kap2).sqrt()).max(kappa);
+            let inv_rho = total_div_f32(1.0, rho, 1.0);
+            let _ = total_set(b_buf, off, sanitize_f32(nux * inv_rho));
+            let _ = total_set(b_buf, off + 1, sanitize_f32(nuy * inv_rho));
+            let _ = total_set(b_buf, off + 2, sanitize_f32(nuz * inv_rho));
+        }
+    }
+
     /// Один прямой такт линейного ротора Кэли + точное обновление всех чувствительностей RTRL.
     pub fn step_forward(&mut self, params: &PlasticCayleyParams, raw_x: &[f32]) {
         let s_cnt = self.sectors.min(params.sectors);
@@ -3108,6 +3187,140 @@ impl AlgebraicSelectiveCayley {
             }
         }
         pred
+    }
+
+    /// Каузальный шаг вперёд для онлайн-регрессии (возвращает прогноз y_{t+1} до прихода факта).
+    pub fn decide_regression(&mut self, raw_x: &[f32]) -> f32 {
+        self.step_forward(raw_x);
+        self.fill_features();
+        let f_dim = self.feat.len();
+        let w_sl = self.out_w.get(0..f_dim).unwrap_or(&[]);
+        sanitize_f32(total_get_copy(&self.out_b, 0, 0.0) + fast_dot(w_sl, &self.feat))
+    }
+
+    /// Каузальное онлайн-обновление по факту y_t, пришедшему на следующем тике (использует состояние t-1).
+    pub fn learn_regression(&mut self, target: f32, readout_lr: f32, rtrl_lr: f32) {
+        let u = self.units;
+        let d = self.in_dim;
+        let f_dim = self.feat.len();
+        let sc = total_div_f32(1.0, (u as f32).sqrt(), 0.25);
+        let w_sl = self.out_w.get(0..f_dim).unwrap_or(&[]);
+        let pred = sanitize_f32(total_get_copy(&self.out_b, 0, 0.0) + fast_dot(w_sl, &self.feat));
+        let y = sanitize_bounded_f32(target, 16.0);
+        let err = sanitize_bounded_f32(sanitize_f32(y - pred), 2.5);
+
+        self.fb_re.fill(0.0);
+        self.fb_im.fill(0.0);
+        for j in 0..u {
+            let wr = total_get_copy(&self.out_w, j.saturating_mul(2), 0.0);
+            let wi = total_get_copy(&self.out_w, j.saturating_mul(2) + 1, 0.0);
+            let _ = total_set(&mut self.fb_re, j, sanitize_f32(err * wr * sc));
+            let _ = total_set(&mut self.fb_im, j, sanitize_f32(err * wi * sc));
+        }
+        if readout_lr > 0.0 {
+            for i in 0..f_dim {
+                let g = sanitize_f32(err * total_get_copy(&self.feat, i, 0.0));
+                let ov = total_get_copy(&self.v_ow, i, 0.04);
+                let nv = sanitize_f32(0.98 * ov + 0.02 * g * g).max(0.0);
+                let _ = total_set(&mut self.v_ow, i, nv);
+                let st = sanitize_bounded_f32(total_div_f32(g, (nv + 0.0025).sqrt(), 0.0), 3.0);
+                let ow = total_get_copy(&self.out_w, i, 0.0);
+                let _ = total_set(
+                    &mut self.out_w,
+                    i,
+                    sanitize_f32(ow * 0.99995 + readout_lr * st).clamp(-8.0, 8.0),
+                );
+            }
+            let ovb = total_get_copy(&self.v_ob, 0, 0.04);
+            let nvb = sanitize_f32(0.98 * ovb + 0.02 * err * err).max(0.0);
+            let _ = total_set(&mut self.v_ob, 0, nvb);
+            let stb = sanitize_bounded_f32(total_div_f32(err, (nvb + 0.0025).sqrt(), 0.0), 3.0);
+            let ob = total_get_copy(&self.out_b, 0, 0.0);
+            let _ = total_set(
+                &mut self.out_b,
+                0,
+                sanitize_f32(ob + 0.5 * readout_lr * stb).clamp(-4.0, 4.0),
+            );
+        }
+        if rtrl_lr > 0.0 {
+            for j in 0..u {
+                let yr = total_get_copy(&self.y_re, j, 0.0);
+                let yi = total_get_copy(&self.y_im, j, 0.0);
+                let gr = total_get_copy(&self.fb_re, j, 0.0);
+                let gi = total_get_copy(&self.fb_im, j, 0.0);
+                let dot = sanitize_f32(gr * yr + gi * yi);
+                let inv_rho =
+                    total_div_f32(1.0, total_get_copy(&self.rho, j, self.kappa).max(self.kappa), 1.0);
+                let fr = sanitize_f32((gr - dot * yr) * inv_rho);
+                let fi = sanitize_f32((gi - dot * yi) * inv_rho);
+
+                let ga = sanitize_f32(
+                    fr * total_get_copy(&self.p_a_re, j, 0.0)
+                        + fi * total_get_copy(&self.p_a_im, j, 0.0),
+                );
+                let nva = sanitize_f32(0.98 * total_get_copy(&self.v_alpha, j, 0.04) + 0.02 * ga * ga).max(0.0);
+                let _ = total_set(&mut self.v_alpha, j, nva);
+                let sa = sanitize_bounded_f32(total_div_f32(ga, (nva + 0.0025).sqrt(), 0.0), 3.0);
+                let oa = total_get_copy(&self.alpha, j, 0.25);
+                let _ = total_set(&mut self.alpha, j, sanitize_f32(oa + rtrl_lr * sa).clamp(0.02, 2.5));
+
+                let gw = sanitize_f32(
+                    fr * total_get_copy(&self.p_w_re, j, 0.0)
+                        + fi * total_get_copy(&self.p_w_im, j, 0.0),
+                );
+                let nvw = sanitize_f32(0.98 * total_get_copy(&self.v_omega, j, 0.04) + 0.02 * gw * gw).max(0.0);
+                let _ = total_set(&mut self.v_omega, j, nvw);
+                let sw = sanitize_bounded_f32(total_div_f32(gw, (nvw + 0.0025).sqrt(), 0.0), 3.0);
+                let ow = total_get_copy(&self.omega, j, 0.3);
+                let _ = total_set(&mut self.omega, j, sanitize_f32(ow + rtrl_lr * sw).clamp(-6.0, 6.0));
+
+                if self.selective {
+                    let gbd = sanitize_f32(
+                        fr * total_get_copy(&self.p_bd_re, j, 0.0)
+                            + fi * total_get_copy(&self.p_bd_im, j, 0.0),
+                    );
+                    let nvbd = sanitize_f32(0.98 * total_get_copy(&self.v_bd, j, 0.04) + 0.02 * gbd * gbd).max(0.0);
+                    let _ = total_set(&mut self.v_bd, j, nvbd);
+                    let sbd = sanitize_bounded_f32(total_div_f32(gbd, (nvbd + 0.0025).sqrt(), 0.0), 3.0);
+                    let obd = total_get_copy(&self.b_delta, j, 0.0);
+                    let _ = total_set(&mut self.b_delta, j, sanitize_f32(obd + rtrl_lr * sbd).clamp(-4.0, 4.0));
+                }
+
+                let off = j.saturating_mul(d);
+                for k in 0..d {
+                    if self.selective {
+                        let gwd = sanitize_f32(
+                            fr * total_get_copy(&self.p_wd_re, off + k, 0.0)
+                                + fi * total_get_copy(&self.p_wd_im, off + k, 0.0),
+                        );
+                        let nvwd = sanitize_f32(0.98 * total_get_copy(&self.v_wd, off + k, 0.04) + 0.02 * gwd * gwd).max(0.0);
+                        let _ = total_set(&mut self.v_wd, off + k, nvwd);
+                        let swd = sanitize_bounded_f32(total_div_f32(gwd, (nvwd + 0.0025).sqrt(), 0.0), 3.0);
+                        let owd = total_get_copy(&self.w_delta, off + k, 0.0);
+                        let _ = total_set(&mut self.w_delta, off + k, sanitize_f32(owd + rtrl_lr * swd).clamp(-3.0, 3.0));
+                    }
+                    let gbr = sanitize_f32(
+                        fr * total_get_copy(&self.p_br_re, off + k, 0.0)
+                            + fi * total_get_copy(&self.p_br_im, off + k, 0.0),
+                    );
+                    let nvbr = sanitize_f32(0.98 * total_get_copy(&self.v_wbr, off + k, 0.04) + 0.02 * gbr * gbr).max(0.0);
+                    let _ = total_set(&mut self.v_wbr, off + k, nvbr);
+                    let sbr = sanitize_bounded_f32(total_div_f32(gbr, (nvbr + 0.0025).sqrt(), 0.0), 3.0);
+                    let obr = total_get_copy(&self.w_bre, off + k, 0.0);
+                    let _ = total_set(&mut self.w_bre, off + k, sanitize_f32(obr + rtrl_lr * sbr).clamp(-3.0, 3.0));
+
+                    let gbi = sanitize_f32(
+                        fr * total_get_copy(&self.p_bi_re, off + k, 0.0)
+                            + fi * total_get_copy(&self.p_bi_im, off + k, 0.0),
+                    );
+                    let nvbi = sanitize_f32(0.98 * total_get_copy(&self.v_wbi, off + k, 0.04) + 0.02 * gbi * gbi).max(0.0);
+                    let _ = total_set(&mut self.v_wbi, off + k, nvbi);
+                    let sbi = sanitize_bounded_f32(total_div_f32(gbi, (nvbi + 0.0025).sqrt(), 0.0), 3.0);
+                    let obi = total_get_copy(&self.w_bim, off + k, 0.0);
+                    let _ = total_set(&mut self.w_bim, off + k, sanitize_f32(obi + rtrl_lr * sbi).clamp(-3.0, 3.0));
+                }
+            }
+        }
     }
 
     fn apply_td_rl(&mut self, td_raw: f32) {

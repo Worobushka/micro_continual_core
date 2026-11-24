@@ -109,66 +109,127 @@ impl CayleyBeliefState {
     }
 
     pub fn measure_and_update_novelty(&mut self, obs_vec: &[f32]) -> f32 {
-        self.obs_count = self.obs_count.saturating_add(1);
-        let ema_norm = fast_dot(&self.obs_ema, &self.obs_ema).sqrt();
-        let familiarity = if ema_norm > 1e-4 && self.obs_count > 8 {
-            total_div_f32(fast_dot(obs_vec, &self.obs_ema), ema_norm, 0.0).clamp(0.0, 1.0)
+        Self::measure_novelty_step(obs_vec, &mut self.obs_ema, &mut self.obs_count)
+    }
+
+    fn measure_novelty_step(obs_vec: &[f32], obs_ema: &mut [f32], obs_count: &mut u64) -> f32 {
+        *obs_count = obs_count.saturating_add(1);
+        let ema_norm = fast_dot(obs_ema, obs_ema).sqrt();
+        let familiarity = if ema_norm > 1e-4 && *obs_count > 8 {
+            total_div_f32(fast_dot(obs_vec, obs_ema), ema_norm, 0.0).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let alpha = if self.obs_count < 32 { 0.08_f32 } else { 0.025_f32 };
+        let alpha = if *obs_count < 32 { 0.08_f32 } else { 0.025_f32 };
         let keep = 1.0 - alpha;
-        for (e, &x) in self.obs_ema.iter_mut().zip(obs_vec.iter()) {
+        for (e, &x) in obs_ema.iter_mut().zip(obs_vec.iter()) {
             *e = sanitize_f32(*e * keep + alpha * x);
         }
         sanitize_f32(1.0 - familiarity).clamp(0.0, 1.0)
     }
 
-    pub fn update(&mut self, obs_vec: &[f32]) -> f32 {
-        let d = self.dim;
-        if d == 0 || obs_vec.is_empty() {
+    #[allow(clippy::too_many_arguments)]
+    fn step_state_inner(
+        dim: usize,
+        lambda: f32,
+        gamma: f32,
+        novelty_gate: f32,
+        rotor_gauge: &[f32],
+        obs_vec: &[f32],
+        state: &mut [f32],
+        obs_ema: &mut [f32],
+        obs_count: &mut u64,
+        initialized: &mut bool,
+        rot_buf: &mut [f32],
+        comm_buf: &mut [f32],
+    ) -> f32 {
+        if dim == 0 || obs_vec.is_empty() {
             return 0.0;
         }
         // Санитизируем регистр состояния на входе, включая защиту при раннем выходе по novelty_gate.
-        let state_bad = self.state.iter().any(|&v| !v.is_finite() || v.abs() > 8.0);
+        let state_bad = state.iter().any(|&v| !v.is_finite() || v.abs() > 8.0);
         if state_bad {
-            sanitize_and_normalize_unit(&mut self.state, 8.0);
+            sanitize_and_normalize_unit(state, 8.0);
         }
-        let novelty = self.measure_and_update_novelty(obs_vec);
+        let novelty = Self::measure_novelty_step(obs_vec, obs_ema, obs_count);
 
-        if !self.initialized {
-            let n = d.min(obs_vec.len());
-            self.state.fill(0.0);
+        if !*initialized {
+            let n = dim.min(obs_vec.len());
+            state.fill(0.0);
             for i in 0..n {
-                let _ = total_set(&mut self.state, i, total_get_copy(obs_vec, i, 0.0));
+                let _ = total_set(state, i, total_get_copy(obs_vec, i, 0.0));
             }
-            sanitize_and_normalize_unit(&mut self.state, 8.0);
-            self.initialized = true;
+            sanitize_and_normalize_unit(state, 8.0);
+            *initialized = true;
             return novelty;
         }
 
-        if self.novelty_gate > 0.0 && novelty < self.novelty_gate {
+        if novelty_gate > 0.0 && novelty < novelty_gate {
             return novelty;
         }
-        let eff_nov = if self.novelty_gate <= 0.0 { 1.0_f32 } else { novelty };
+        let eff_nov = if novelty_gate <= 0.0 { 1.0_f32 } else { novelty };
         // При novelty_gate <= 0 сохраняем точную унитарную норму λ² + w_x² = 1 -> эффективное затухание == λ!
-        let w_x = if self.novelty_gate <= 0.0 {
-            sanitize_f32((1.0 - self.lambda * self.lambda).max(0.04).sqrt()).clamp(0.18, 0.85)
+        let w_x = if novelty_gate <= 0.0 {
+            sanitize_f32((1.0 - lambda * lambda).max(0.04).sqrt()).clamp(0.18, 0.85)
         } else {
             sanitize_f32(eff_nov * eff_nov * 0.72).clamp(0.15, 0.85)
         };
-        cayley_rotate_sectors(&self.rotor_gauge, &self.state, &mut self.rot_buf);
-        su2_lie_bracket(&self.state, obs_vec, &mut self.comm_buf);
-        sanitize_and_normalize_unit(&mut self.comm_buf, 8.0);
+        cayley_rotate_sectors(rotor_gauge, state, rot_buf);
+        su2_lie_bracket(state, obs_vec, comm_buf);
+        sanitize_and_normalize_unit(comm_buf, 8.0);
 
-        self.state.fill(0.0);
-        fast_saxpy(&mut self.state, &self.rot_buf, self.lambda);
-        fast_saxpy(&mut self.state, obs_vec, w_x);
-        if self.gamma > 0.0 {
-            fast_saxpy(&mut self.state, &self.comm_buf, self.gamma * eff_nov);
+        state.fill(0.0);
+        fast_saxpy(state, rot_buf, lambda);
+        fast_saxpy(state, obs_vec, w_x);
+        if gamma > 0.0 {
+            fast_saxpy(state, comm_buf, gamma * eff_nov);
         }
-        sanitize_and_normalize_unit(&mut self.state, 8.0);
+        sanitize_and_normalize_unit(state, 8.0);
         novelty
+    }
+
+    pub fn update(&mut self, obs_vec: &[f32]) -> f32 {
+        Self::step_state_inner(
+            self.dim,
+            self.lambda,
+            self.gamma,
+            self.novelty_gate,
+            &self.rotor_gauge,
+            obs_vec,
+            &mut self.state,
+            &mut self.obs_ema,
+            &mut self.obs_count,
+            &mut self.initialized,
+            &mut self.rot_buf,
+            &mut self.comm_buf,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn step_state_readonly(
+        &self,
+        obs_vec: &[f32],
+        state: &mut [f32],
+        obs_ema: &mut [f32],
+        obs_count: &mut u64,
+        initialized: &mut bool,
+        rot_buf: &mut [f32],
+        comm_buf: &mut [f32],
+    ) -> f32 {
+        Self::step_state_inner(
+            self.dim,
+            self.lambda,
+            self.gamma,
+            self.novelty_gate,
+            &self.rotor_gauge,
+            obs_vec,
+            state,
+            obs_ema,
+            obs_count,
+            initialized,
+            rot_buf,
+            comm_buf,
+        )
     }
 }
 
@@ -371,7 +432,7 @@ impl PageHinkleyDetector {
             mu_bank: 0.0,
             cusum: 0.0,
             delta: sanitize_f32(delta).clamp(0.02, 0.45),
-            threshold: sanitize_f32(threshold).clamp(0.4, 1000.0),
+            threshold: sanitize_f32(threshold).clamp(0.4, 1_000_000.0),
             min_warmup: min_warmup.max(6),
             episodes_seen: 0,
             ema_alpha: 0.06,

@@ -1306,4 +1306,267 @@ mod tests {
         let p_g = lru_g.step_and_learn_regression(&seq[0], Some(target), 0.01, 0.002);
         assert!(p_g.is_finite() && !lru_g.had_nan && lru_g.total_seu_faults() >= 2);
     }
+
+    #[test]
+    fn test_ph_unclamped_high_threshold_and_single_bank_no_freeze() {
+        let mut ph_hi = PageHinkleyDetector::new(0.05, 9999.0, 4);
+        assert_eq!(ph_hi.threshold, 9999.0);
+        let ph_max = PageHinkleyDetector::new(0.05, 50_000.0, 4);
+        assert_eq!(ph_max.threshold, 50_000.0);
+        for _ in 0..50usize {
+            assert!(!ph_hi.observe(0.0));
+        }
+
+        let mut cfg = MicroCoreConfig::numeric_stream(2, 11);
+        cfg.max_regimes = 1;
+        cfg.half_sectors = 0;
+        cfg.rtrl_sectors = 6;
+        cfg.rtrl_slow_sectors = 0;
+        cfg.rtrl_max_in = 2;
+        cfg.rtrl_lr = 0.02;
+        cfg.linear_lr = 0.08;
+        cfg.ph_delta = 0.01;
+        cfg.ph_threshold = 0.1;
+        cfg.ph_warmup = 2;
+        cfg.standardize_vec = false;
+        let mut core = MicroContinualCore::new(cfg);
+        core.start_episode();
+
+        let mut w_at_30 = Vec::new();
+        for t in 0..45usize {
+            let x = [0.6_f32 - 0.1 * ((t % 3) as f32), -0.4_f32 + 0.15 * ((t % 4) as f32)];
+            let p = core.decide_vec(&x, true, false, false).get().0;
+            let _ = core.end_supervised_step(p, 1 - p);
+            if t == 30 {
+                w_at_30 = core.banks[0].rtrl_actor_w.clone();
+            }
+        }
+        assert_eq!(core.total_switches, 0);
+        assert_eq!(core.active_regime, 0);
+        assert_ne!(
+            core.banks[0].rtrl_actor_w, w_at_30,
+            "Single-bank MicroContinualCore must not freeze weights when max_regimes == 1"
+        );
+    }
+
+    #[test]
+    fn test_algebraic_selective_cayley_split_causal_regression() {
+        let mut m1 = rtrl::AlgebraicSelectiveCayley::new(3, 6, 1, true, 123);
+        let mut m2 = rtrl::AlgebraicSelectiveCayley::new(3, 6, 1, true, 123);
+        for t in 0..25usize {
+            let s = (t as f32) * 0.37;
+            let x = [s.sin() * 0.7, (s * 1.9).cos() * 0.5, 0.25 - 0.03 * (t as f32)];
+            let y = 0.4 * x[0] - 0.3 * x[1] + 0.15;
+            let p1 = m1.step_and_learn_regression(&x, Some(y), 0.015, 0.004);
+            let p2 = m2.decide_regression(&x);
+            assert_eq!(p1.to_bits(), p2.to_bits(), "step {t} prediction mismatch");
+            m2.learn_regression(y, 0.015, 0.004);
+        }
+        assert_eq!(m1.out_w, m2.out_w);
+        assert_eq!(m1.h_re, m2.h_re);
+    }
+
+    #[test]
+    fn test_readonly_k_ahead_rollout_exact_equivalence() {
+        let train_seq: [([f32; 3], usize); 6] = [
+            ([0.8, -0.2, 0.3], 0),
+            ([-0.5, 0.9, 0.1], 1),
+            ([0.2, 0.4, -0.7], 2),
+            ([0.6, -0.6, 0.5], 0),
+            ([-0.7, 0.3, 0.4], 1),
+            ([0.1, -0.2, -0.8], 2),
+        ];
+        let win_owned: [[f32; 3]; 4] = [
+            ([0.5, 0.1, -0.4]),
+            ([-0.3, 0.7, 0.2]),
+            ([0.4, -0.5, 0.6]),
+            ([-0.6, -0.2, 0.3]),
+        ];
+        let window: Vec<&[f32]> = win_owned.iter().map(|v| &v[..]).collect();
+
+        // 1. MicroContinualCore supervised (standardize_vec + delta_obs_scale + Band 0+1+2 + skip + kernels)
+        let mut cfg = MicroCoreConfig::numeric_stream(3, 55);
+        cfg.num_actions = 3;
+        cfg.standardize_vec = true;
+        cfg.delta_obs_scale = 5.0;
+        cfg.half_sectors = 8;
+        cfg.rtrl_sectors = 6;
+        cfg.rtrl_slow_sectors = 4;
+        cfg.rtrl_max_in = 6;
+        cfg.rtrl_use_skip_x = true;
+        cfg.linear_mix = 0.65;
+        cfg.linear_lr = 0.08;
+        cfg.rtrl_lr = 0.015;
+        let mut core = MicroContinualCore::new(cfg);
+        core.start_episode();
+        for &(x, y) in &train_seq {
+            let p = core.decide_vec(&x, true, false, false).get().0;
+            let _ = core.end_supervised_step(p, y);
+        }
+        let bel_before = core.belief.state.clone();
+        let r1_before = core.rtrl_state.u.clone();
+        let mu_before = core.scratch.feat_mean.clone();
+        let cnt_before = core.scratch.feat_count;
+        let ro_core = core.predict_vec_k_ahead_readonly(&window);
+        assert_eq!(core.belief.state, bel_before);
+        assert_eq!(core.rtrl_state.u, r1_before);
+        assert_eq!(core.scratch.feat_mean, mu_before);
+        assert_eq!(core.scratch.feat_count, cnt_before);
+        let mut c_clone = core.clone();
+        let mut clone_core_pred = 0usize;
+        for &w in &window {
+            clone_core_pred = c_clone.decide_vec(w, false, false, false).get().0;
+        }
+        assert_eq!(ro_core, clone_core_pred);
+        let ro0 = core.predict_vec_k_ahead_readonly(&[]);
+        assert!(ro0 < cfg.num_actions);
+
+        // 2. MicroContinualCore Actor-Critic (with RTRL & without RTRL)
+        for rtrl_sec in [4usize, 0usize] {
+            let mut ac_cfg = cfg;
+            ac_cfg.actor_critic_lr = 0.05;
+            ac_cfg.rtrl_sectors = rtrl_sec;
+            ac_cfg.rtrl_slow_sectors = 0;
+            let mut ac = MicroContinualCore::new(ac_cfg);
+            ac.start_episode();
+            for &(x, _) in &train_seq {
+                let _ = ac.decide_vec(&x, true, false, false);
+                ac.observe_step_reward(0.2);
+            }
+            let r_snap = ac.rtrl_state.u.clone();
+            let b_snap = ac.belief.state.clone();
+            let ro_ac = ac.predict_vec_k_ahead_readonly(&window);
+            assert_eq!(ac.rtrl_state.u, r_snap);
+            assert_eq!(ac.belief.state, b_snap);
+            let mut ac_c = ac.clone();
+            let mut cl_ac = 0usize;
+            for &w in &window {
+                cl_ac = ac_c.decide_vec(w, false, false, false).get().0;
+            }
+            assert_eq!(ro_ac, cl_ac);
+        }
+
+        // 3. RtrrlLruBaseline
+        let mut rl_lru = baselines::RtrrlLruBaseline::new(3, 8, 3, 7);
+        rl_lru.start_episode();
+        for &(x, _) in &train_seq {
+            let _ = rl_lru.decide_vec(&x, true, false, false);
+            rl_lru.observe_step_reward(0.1);
+        }
+        let h_snap = rl_lru.h_re.clone();
+        let ro_rl = rl_lru.predict_k_ahead_readonly(&window);
+        assert_eq!(rl_lru.h_re, h_snap);
+        let mut rl_c = rl_lru.clone();
+        let mut cl_rl = 0usize;
+        for &w in &window {
+            cl_rl = rl_c.decide_vec(w, false, false, false);
+        }
+        assert_eq!(ro_rl, cl_rl);
+
+        // 4. SelectiveSsmBank & OnlineSelectiveSsmPhBaseline
+        let mut ssm = baselines::SelectiveSsmBank::new_supervised(3, 8, 3, 17);
+        for &(x, y) in &train_seq {
+            let _ = ssm.step_and_learn_supervised(&x, Some(y), 0.05, 0.01);
+        }
+        let s_snap = ssm.h_re.clone();
+        let ro_ssm = ssm.predict_k_ahead_readonly(&window);
+        assert_eq!(ssm.h_re, s_snap);
+        let mut ssm_c = ssm.clone();
+        let mut cl_ssm = 0usize;
+        for &w in &window {
+            cl_ssm = ssm_c.step_and_learn_supervised(w, None, 0.05, 0.01);
+        }
+        assert_eq!(ro_ssm, cl_ssm);
+
+        let mut ssm_ph = baselines::OnlineSelectiveSsmPhBaseline::new(3, 8, 3, 3, 0.04, 2.2, 4, 27);
+        for &(x, y) in &train_seq {
+            let _ = ssm_ph.step_supervised(&x, y, 0.05, 0.01, true, 1);
+        }
+        let sp_snap = ssm_ph.banks[ssm_ph.active_regime()].h_re.clone();
+        let ro_sp = ssm_ph.predict_k_ahead_readonly(&window);
+        assert_eq!(ssm_ph.banks[ssm_ph.active_regime()].h_re, sp_snap);
+        let mut sp_c = ssm_ph.clone();
+        let reg_sp = sp_c.active_regime();
+        let mut cl_sp = 0usize;
+        for &w in &window {
+            cl_sp = sp_c.banks[reg_sp].step_and_learn_supervised(w, None, 0.05, 0.01);
+        }
+        assert_eq!(ro_sp, cl_sp);
+
+        // 5. DeepRtrrlLruBank & DeepRtrrlLruPhBaseline
+        let mut dlru = baselines::DeepRtrrlLruBank::new_supervised(3, 6, 4, 3, 37);
+        for &(x, y) in &train_seq {
+            let _ = dlru.step_and_learn_supervised(&x, Some(y), 0.05, 0.01);
+        }
+        let d_snap = dlru.fast.h_re.clone();
+        let ro_dl = dlru.predict_k_ahead_readonly(&window);
+        assert_eq!(dlru.fast.h_re, d_snap);
+        let mut dl_c = dlru.clone();
+        let mut cl_dl = 0usize;
+        for &w in &window {
+            cl_dl = dl_c.step_and_learn_supervised(w, None, 0.05, 0.01);
+        }
+        assert_eq!(ro_dl, cl_dl);
+
+        let mut dph = baselines::DeepRtrrlLruPhBaseline::new(3, 6, 4, 3, 3, 0.04, 2.2, 4, 47);
+        for &(x, y) in &train_seq {
+            let _ = dph.step_supervised(&x, y, 0.05, 0.01, true, 1);
+        }
+        let dp_snap = dph.banks[dph.active_regime()].fast.h_re.clone();
+        let ro_dp = dph.predict_k_ahead_readonly(&window);
+        assert_eq!(dph.banks[dph.active_regime()].fast.h_re, dp_snap);
+        let mut dp_c = dph.clone();
+        let reg_dp = dp_c.active_regime();
+        let mut cl_dp = 0usize;
+        for &w in &window {
+            cl_dp = dp_c.banks[reg_dp].step_and_learn_supervised(w, None, 0.05, 0.01);
+        }
+        assert_eq!(ro_dp, cl_dp);
+
+        // 6. GruPerStepBank & OnlineGruPerStepPhBaseline
+        let mut gru = baselines::GruPerStepBank::new_supervised(3, 8, 3, 4, 57);
+        for &(x, y) in &train_seq {
+            let _ = gru.step_and_learn_supervised(&x, Some(y));
+        }
+        let g_snap = gru.gru.h_cur.clone();
+        let ro_g = gru.predict_k_ahead_readonly(&window);
+        assert_eq!(gru.gru.h_cur, g_snap);
+        let mut gru_c = gru.clone();
+        let mut cl_g = 0usize;
+        for &w in &window {
+            cl_g = gru_c.step_and_learn_supervised(w, None);
+        }
+        assert_eq!(ro_g, cl_g);
+
+        let mut gph = baselines::OnlineGruPerStepPhBaseline::new_supervised(3, 8, 3, 3, 4, 0.04, 2.2, 4, 67);
+        for &(x, y) in &train_seq {
+            let _ = gph.step_supervised(&x, y, true, 1);
+        }
+        let gp_snap = gph.banks[gph.active_regime()].gru.h_cur.clone();
+        let ro_gp = gph.predict_k_ahead_readonly(&window);
+        assert_eq!(gph.banks[gph.active_regime()].gru.h_cur, gp_snap);
+        let mut gp_c = gph.clone();
+        let reg_gp = gp_c.active_regime();
+        let mut cl_gp = 0usize;
+        for &w in &window {
+            cl_gp = gp_c.banks[reg_gp].step_and_learn_supervised(w, None);
+        }
+        assert_eq!(ro_gp, cl_gp);
+
+        // 7. OnlineLruStream (standardize false and true)
+        for &std_flag in &[false, true] {
+            let mut lru_s = stream_baselines::OnlineLruStream::new(3, 8, 3, 77);
+            lru_s.standardize = std_flag;
+            for &(x, y) in &train_seq {
+                let _ = lru_s.predict_and_train(&x, y, true);
+            }
+            let ro_ls = lru_s.predict_k_ahead_readonly(&window);
+            let mut ls_c = lru_s.clone();
+            let mut cl_ls = 0usize;
+            for &w in &window {
+                cl_ls = ls_c.predict_and_train(w, 0, false);
+            }
+            assert_eq!(ro_ls, cl_ls);
+        }
+    }
 }

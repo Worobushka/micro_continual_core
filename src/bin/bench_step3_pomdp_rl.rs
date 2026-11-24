@@ -325,6 +325,7 @@ fn run_tmaze_alg_sel_cayley(corridor_len: usize, seed: u64) -> RlMetrics {
 
     let mut probe = AlgebraicSelectiveCayley::new(3, 16, 2, true, seed);
     probe.enable_rl_mode();
+    probe.h_re[0] = 1.25;
     probe.inject_register_bit_flip(0, 30);
     probe.inject_weight_bit_flip(0, 30);
     let _ = probe.decide_rl(&[f32::NAN, 1e28, -1e28], false);
