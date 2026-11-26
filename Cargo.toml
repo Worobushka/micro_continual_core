@@ -1,13 +1,16 @@
 [package]
 name = "micro_continual_core"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 authors = ["Adrian Aleksandrovich İşmuhanov", "Sofia Sidorenko"]
 license = "PolyForm-Noncommercial-1.0.0"
-description = "Unified Axiom-Zero continual learning & wave-rotor Cayley-RTRL micro-core (4.9-738 KB RAM; 4.9-454 KB with i8 encoder)"
+description = "Unified Axiom-Zero continual learning, O(d) parity rotors & deterministic Q8.24 engine (2.3-738 KB RAM; 4.9-454 KB f32 with i8 encoder)"
 readme = "README.md"
 homepage = "https://github.com/Worobushka/micro_continual_core"
 repository = "https://github.com/Worobushka/micro_continual_core"
+
+[features]
+strict_deterministic = []
 
 [dependencies]
 axiom_zero = { path = "crates/axiom_zero" }

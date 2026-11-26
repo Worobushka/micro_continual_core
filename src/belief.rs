@@ -11,8 +11,8 @@ use axiom_zero::{
 };
 
 use crate::math::{
-    cayley_rotate_sectors, fast_dot, fast_saxpy, rand_signed_f32, sanitize_and_normalize_unit,
-    splitmix64, su2_lie_bracket,
+    cayley_rotate_sectors, fast_dot, fast_saxpy, inv_sqrt_newton_2step_f32, inv_sqrt_newton_f32,
+    rand_signed_f32, sanitize_and_normalize_unit, splitmix64, sqrt_newton_f32, su2_lie_bracket,
 };
 
 #[derive(Clone)]
@@ -70,8 +70,7 @@ impl CayleyBeliefState {
             let x = rand_signed_f32(&mut rng);
             let y = rand_signed_f32(&mut rng);
             let z = rand_signed_f32(&mut rng);
-            let n = (x * x + y * y + z * z).sqrt().max(1e-6);
-            let sc = total_div_f32(sec_norm, n, sec_norm);
+            let sc = sanitize_f32(sec_norm * inv_sqrt_newton_f32((x * x + y * y + z * z).max(1e-12)));
             let _ = total_set(&mut rotor_gauge, sec, sanitize_f32(x * sc));
             let _ = total_set(&mut rotor_gauge, sec + 1, sanitize_f32(y * sc));
             let _ = total_set(&mut rotor_gauge, sec + 2, sanitize_f32(z * sc));
@@ -114,9 +113,9 @@ impl CayleyBeliefState {
 
     fn measure_novelty_step(obs_vec: &[f32], obs_ema: &mut [f32], obs_count: &mut u64) -> f32 {
         *obs_count = obs_count.saturating_add(1);
-        let ema_norm = fast_dot(obs_ema, obs_ema).sqrt();
-        let familiarity = if ema_norm > 1e-4 && *obs_count > 8 {
-            total_div_f32(fast_dot(obs_vec, obs_ema), ema_norm, 0.0).clamp(0.0, 1.0)
+        let ema_sq = fast_dot(obs_ema, obs_ema);
+        let familiarity = if ema_sq > 1e-8 && *obs_count > 8 {
+            sanitize_f32(fast_dot(obs_vec, obs_ema) * inv_sqrt_newton_f32(ema_sq)).clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -170,7 +169,7 @@ impl CayleyBeliefState {
         let eff_nov = if novelty_gate <= 0.0 { 1.0_f32 } else { novelty };
         // При novelty_gate <= 0 сохраняем точную унитарную норму λ² + w_x² = 1 -> эффективное затухание == λ!
         let w_x = if novelty_gate <= 0.0 {
-            sanitize_f32((1.0 - lambda * lambda).max(0.04).sqrt()).clamp(0.18, 0.85)
+            sanitize_f32(sqrt_newton_f32((1.0 - lambda * lambda).max(0.04))).clamp(0.18, 0.85)
         } else {
             sanitize_f32(eff_nov * eff_nov * 0.72).clamp(0.15, 0.85)
         };
@@ -423,6 +422,11 @@ pub struct PageHinkleyDetector {
     pub min_warmup: usize,
     pub episodes_seen: usize,
     pub ema_alpha: f32,
+    pub bartlett_enabled: bool,
+    pub var_bank: f32,
+    pub cov1_bank: f32,
+    pub prev_err: f32,
+    pub has_prev_err: bool,
 }
 
 #[axiom_zero]
@@ -436,7 +440,17 @@ impl PageHinkleyDetector {
             min_warmup: min_warmup.max(6),
             episodes_seen: 0,
             ema_alpha: 0.06,
+            bartlett_enabled: false,
+            var_bank: 0.04,
+            cov1_bank: 0.0,
+            prev_err: 0.0,
+            has_prev_err: false,
         }
+    }
+
+    pub fn with_bartlett_scaling(mut self, enabled: bool) -> Self {
+        self.bartlett_enabled = enabled;
+        self
     }
 
     pub fn reset_cusum(&mut self) {
@@ -449,28 +463,60 @@ impl PageHinkleyDetector {
 
         if self.episodes_seen == 1 {
             self.mu_bank = r;
+            self.var_bank = 0.04;
+            self.cov1_bank = 0.0;
+            self.prev_err = 0.0;
+            self.has_prev_err = false;
             self.cusum = 0.0;
             return false;
         }
 
         if self.episodes_seen <= self.min_warmup {
             let inv_n = total_div_f32(1.0, self.episodes_seen as f32, 0.1);
-            self.mu_bank = sanitize_f32(self.mu_bank + inv_n * (r - self.mu_bank));
+            let e = r - self.mu_bank;
+            self.mu_bank = sanitize_f32(self.mu_bank + inv_n * e);
+            let d = r - self.mu_bank;
+            if self.has_prev_err {
+                self.cov1_bank = sanitize_f32(0.92 * self.cov1_bank + 0.08 * e * self.prev_err);
+            }
+            self.var_bank = sanitize_f32(0.92 * self.var_bank + 0.08 * d * d).clamp(0.0025, 0.5);
+            self.prev_err = e;
+            self.has_prev_err = true;
             self.cusum = 0.0;
             return false;
         }
 
         if self.mu_bank < 0.48 {
-            self.mu_bank = sanitize_f32(self.mu_bank + 0.08 * (r - self.mu_bank));
+            let e = r - self.mu_bank;
+            self.mu_bank = sanitize_f32(self.mu_bank + 0.08 * e);
+            self.prev_err = e;
+            self.has_prev_err = true;
             self.cusum = 0.0;
             return false;
         }
 
         let drop_sig = sanitize_f32(self.mu_bank - r - self.delta);
-        self.cusum = sanitize_f32(self.cusum + drop_sig).max(0.0);
+        if self.bartlett_enabled {
+            let rho = sanitize_f32(total_div_f32(self.cov1_bank, self.var_bank.max(1e-4), 0.0)).clamp(-0.8, 0.8);
+            let kappa = total_div_f32(1.0 + rho, (1.0 - rho).max(0.2), 1.0).clamp(0.111, 9.0);
+            let lrv = sanitize_f32(self.var_bank * kappa).clamp(0.0025, 4.5);
+            let inv_sig = inv_sqrt_newton_2step_f32(lrv);
+            let scaled = sanitize_f32(drop_sig * inv_sig * 0.25);
+            self.cusum = sanitize_f32(self.cusum + scaled).max(0.0);
+        } else {
+            self.cusum = sanitize_f32(self.cusum + drop_sig).max(0.0);
+        }
 
-        if self.cusum < self.threshold * 0.35 {
-            self.mu_bank = sanitize_f32(self.mu_bank + self.ema_alpha * (r - self.mu_bank));
+        // Freeze-Variance rule: замораживаем оценки среднего, дисперсии и автокорреляции при cusum > 0!
+        if self.cusum <= 1e-6 {
+            let e = r - self.mu_bank;
+            self.mu_bank = sanitize_f32(self.mu_bank + self.ema_alpha * e);
+            if self.has_prev_err {
+                self.cov1_bank = sanitize_f32(0.95 * self.cov1_bank + 0.05 * e * self.prev_err);
+            }
+            self.var_bank = sanitize_f32(0.95 * self.var_bank + 0.05 * e * e).clamp(0.0025, 0.5);
+            self.prev_err = e;
+            self.has_prev_err = true;
         }
 
         self.cusum >= self.threshold

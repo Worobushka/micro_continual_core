@@ -10,7 +10,7 @@ use axiom_zero::{
     total_rem_usize, total_set,
 };
 
-use crate::math::{fast_dot, kerr_competition_into, sanitize_and_normalize_unit};
+use crate::math::{fast_dot, kerr_competition_into, sanitize_and_normalize_unit, sqrt_newton_f32};
 
 #[derive(Clone)]
 pub struct KerrKernelBank {
@@ -113,7 +113,7 @@ impl KerrKernelBank {
             *d = (sanitize_f32(v) * inv).round().clamp(-127.0, 127.0) as i8;
         }
         let sem_sl = src.get(0..half_dim).unwrap_or(&[]);
-        let sem_norm = fast_dot(sem_sl, sem_sl).sqrt().max(1e-4);
+        let sem_norm = sqrt_newton_f32(fast_dot(sem_sl, sem_sl)).max(1e-4);
         (sc, sem_norm)
     }
 
@@ -179,7 +179,7 @@ impl KerrKernelBank {
             return 0.0;
         }
         let q_sem = query.get(0..self.half_dim).unwrap_or(&[]);
-        let q_sem_norm = fast_dot(q_sem, q_sem).sqrt().max(1e-4);
+        let q_sem_norm = sqrt_newton_f32(fast_dot(q_sem, q_sem)).max(1e-4);
 
         let mut max_sim = 0.0_f32;
         let mut max_full = 0.0_f32;
@@ -255,7 +255,7 @@ impl KerrKernelBank {
             return 0.0;
         }
         let q_sem = query.get(0..self.half_dim).unwrap_or(&[]);
-        let q_sem_norm = fast_dot(q_sem, q_sem).sqrt().max(1e-4);
+        let q_sem_norm = sqrt_newton_f32(fast_dot(q_sem, q_sem)).max(1e-4);
 
         let mut max_sim = 0.0_f32;
         for sl in 0..n {
@@ -332,7 +332,7 @@ impl KerrKernelBank {
         let tgt = sanitize_bounded_f32(target_q, 3.0);
         let sw = sanitize_f32(step_weight).clamp(0.05, 1.0);
         let q_sem = key.get(0..self.half_dim).unwrap_or(&[]);
-        let q_sem_norm = fast_dot(q_sem, q_sem).sqrt().max(1e-4);
+        let q_sem_norm = sqrt_newton_f32(fast_dot(q_sem, q_sem)).max(1e-4);
 
         let mut best_slot = 0usize;
         let mut best_sim = -1.0_f32;

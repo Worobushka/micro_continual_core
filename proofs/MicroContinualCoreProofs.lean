@@ -2796,6 +2796,3516 @@ theorem step115_selective_cayley_contraction_and_deriv (delta a w : Balance) (hd
          ⟨bal_poly_eq env_w e_cos_L.1 e_cos_R.1 p_cos_re,
           bal_poly_eq env_w e_cos_L.2 e_cos_R.2 p_cos_eps⟩⟩
 
+
+-- =============================================================================
+-- ЭТАП XXIX. ВЕРИФИКАЦИЯ v0.5.0: O(4) ДЛЯ S_5, MASTER EQUATION, RMSNORM И Q8.24
+-- (Шаги 116–124; строго 0 аксиом на Balance / DualBalance / Vec4 / Vec5)
+-- =============================================================================
+
+theorem bal_mul_ge_ge {x y : Balance} (hx : BalGeZero x) (hy : BalGeZero y) :
+    BalGeZero (balance_mul x y) := by
+  cases hx with
+  | inl hxz =>
+    exact Or.inl (step24_balance_trans (bal_mul_congr hxz (step24_balance_refl y)) (bal_zero_mul y))
+  | inr hxgt => exact bal_mul_gt_ge hxgt hy
+
+theorem bal_le_trans {x y z : Balance} (hxy : BalLe x y) (hyz : BalLe y z) :
+    BalLe x z := by
+  dsimp [BalLe] at *
+  let env : Nat → Balance := fun | 0 => x | 1 => y | 2 => z | _ => bzero
+  have heq := bal_poly_eq env
+    (.add (.sub (.var 1) (.var 0)) (.sub (.var 2) (.var 1)))
+    (.sub (.var 2) (.var 0)) rfl
+  exact bal_ge_zero_of_equiv heq (bal_add_ge_ge hxy hyz)
+
+theorem bal_le_add_congr {a b c d : Balance} (hab : BalLe a b) (hcd : BalLe c d) :
+    BalLe (balance_add a c) (balance_add b d) := by
+  dsimp [BalLe] at *
+  let env : Nat → Balance := fun | 0 => a | 1 => b | 2 => c | 3 => d | _ => bzero
+  have heq := bal_poly_eq env
+    (.add (.sub (.var 1) (.var 0)) (.sub (.var 3) (.var 2)))
+    (.sub (.add (.var 1) (.var 3)) (.add (.var 0) (.var 2))) rfl
+  exact bal_ge_zero_of_equiv heq (bal_add_ge_ge hab hcd)
+
+theorem bal_neg_gt_zero {x : Balance} (hlt : x.fwd < x.bwd) :
+    BalGtZero (balance_neg x) := by
+  dsimp [BalGtZero, balance_neg]
+  exact hlt
+
+theorem bal_equiv_bzero_of_eq {x : Balance} (h : x.fwd = x.bwd) : BalanceEquiv x bzero :=
+  congrArg PosNat.succ h
+
+theorem bal_mul_gt_zero_eq_zero {k x : Balance} (hk : BalGtZero k)
+    (h : BalanceEquiv (balance_mul k x) bzero) : BalanceEquiv x bzero := by
+  cases trichotomy x.fwd x.bwd with
+  | inl heq => exact bal_equiv_bzero_of_eq heq
+  | inr hne =>
+    cases hne with
+    | inl hlt =>
+      have hkn := bal_mul_gt_gt hk (bal_neg_gt_zero hlt)
+      have hkn0 : BalanceEquiv (balance_mul k (balance_neg x)) bzero :=
+        step24_balance_trans (bal_mul_neg k x)
+          (step24_balance_trans (bal_neg_congr h) bal_neg_zero)
+      exact False.elim (bal_gt_zero_ne_zero hkn hkn0)
+    | inr hgt =>
+      exact False.elim (bal_gt_zero_ne_zero (bal_mul_gt_gt hk hgt) h)
+
+theorem bal_ge_zero_of_double_ge {x : Balance} (h2 : BalGeZero (balance_mul (balOfNat 2) x)) :
+    BalGeZero x := by
+  cases trichotomy x.fwd x.bwd with
+  | inl eqx => exact Or.inl (bal_equiv_bzero_of_eq eqx)
+  | inr hne =>
+    cases hne with
+    | inl ltx =>
+      have h2n : BalGtZero (balance_neg (balance_mul (balOfNat 2) x)) :=
+        bal_gt_zero_of_equiv (bal_mul_neg (balOfNat 2) x)
+          (bal_mul_gt_gt (balOfNat_succ_gt_zero 1) (bal_neg_gt_zero ltx))
+      cases h2 with
+      | inl hz =>
+        exact False.elim (bal_gt_zero_ne_zero h2n
+          (step24_balance_trans (bal_neg_congr hz) bal_neg_zero))
+      | inr hgt =>
+        exact False.elim (bal_gt_zero_ne_zero (bal_add_gt_ge hgt (Or.inr h2n)) (bal_add_neg _))
+    | inr gtx => exact Or.inr gtx
+
+theorem bal_abs_le_sq_le {x B : Balance}
+    (hlo : BalLe (balance_neg B) x) (hhi : BalLe x B) :
+    BalLe (bsq x) (bsq B) := by
+  dsimp [BalLe] at *
+  let env : Nat → Balance := fun | 0 => x | 1 => B | _ => bzero
+  have hsum : BalanceEquiv (balance_sub x (balance_neg B)) (balance_add B x) :=
+    bal_poly_eq env (.sub (.var 0) (.neg (.var 1))) (.add (.var 1) (.var 0)) rfl
+  have hplus := bal_ge_zero_of_equiv hsum hlo
+  have hprod := bal_mul_ge_ge hhi hplus
+  have hdiff : BalanceEquiv (balance_mul (balance_sub B x) (balance_add B x))
+                            (balance_sub (bsq B) (bsq x)) :=
+    bal_poly_eq env (.mul (.sub (.var 1) (.var 0)) (.add (.var 1) (.var 0)))
+      (.sub (.mul (.var 1) (.var 1)) (.mul (.var 0) (.var 0))) rfl
+  exact bal_ge_zero_of_equiv hdiff hprod
+
+theorem bal_two_mul_add_mul (a x : Balance) :
+    BalanceEquiv (balance_add (balance_mul (balOfNat 2) a) (balance_mul (balOfNat 2) x))
+                 (balance_mul (balOfNat 2) (balance_add a x)) := by
+  let env : Nat → Balance := fun | 0 => a | 1 => x | _ => bzero
+  exact bal_poly_eq env (.add (.mul (.nat 2) (.var 0)) (.mul (.nat 2) (.var 1)))
+    (.mul (.nat 2) (.add (.var 0) (.var 1))) rfl
+
+-- ----- 4D Векторы, кватернионы, Хаусхолдер и det4 -----
+
+structure Vec4 where
+  w : Balance
+  x : Balance
+  y : Balance
+  z : Balance
+
+def Vec4Equiv (u v : Vec4) : Prop :=
+  BalanceEquiv u.w v.w ∧ BalanceEquiv u.x v.x ∧ BalanceEquiv u.y v.y ∧ BalanceEquiv u.z v.z
+
+def vec4_zero : Vec4 := ⟨bzero, bzero, bzero, bzero⟩
+def vec4_add (u v : Vec4) : Vec4 :=
+  ⟨balance_add u.w v.w, balance_add u.x v.x, balance_add u.y v.y, balance_add u.z v.z⟩
+def vec4_sub (u v : Vec4) : Vec4 :=
+  ⟨balance_sub u.w v.w, balance_sub u.x v.x, balance_sub u.y v.y, balance_sub u.z v.z⟩
+def vec4_scale (s : Balance) (u : Vec4) : Vec4 :=
+  ⟨balance_mul s u.w, balance_mul s u.x, balance_mul s u.y, balance_mul s u.z⟩
+def dot4 (u v : Vec4) : Balance :=
+  balance_add (balance_add (balance_mul u.w v.w) (balance_mul u.x v.x))
+              (balance_add (balance_mul u.y v.y) (balance_mul u.z v.z))
+
+theorem dot4_self_ge_zero (u : Vec4) : BalGeZero (dot4 u u) :=
+  bal_add_ge_ge (bal_add_ge_ge (bal_sq_ge_zero u.w) (bal_sq_ge_zero u.x))
+                (bal_add_ge_ge (bal_sq_ge_zero u.y) (bal_sq_ge_zero u.z))
+
+theorem dot4_congr {u1 u2 v1 v2 : Vec4} (hu : Vec4Equiv u1 u2) (hv : Vec4Equiv v1 v2) :
+    BalanceEquiv (dot4 u1 v1) (dot4 u2 v2) :=
+  step25_balance_add_congr
+    (step25_balance_add_congr (bal_mul_congr hu.1 hv.1) (bal_mul_congr hu.2.1 hv.2.1))
+    (step25_balance_add_congr (bal_mul_congr hu.2.2.1 hv.2.2.1) (bal_mul_congr hu.2.2.2 hv.2.2.2))
+
+theorem dot4_comm (u v : Vec4) : BalanceEquiv (dot4 u v) (dot4 v u) :=
+  step25_balance_add_congr
+    (step25_balance_add_congr (bal_mul_comm u.w v.w) (bal_mul_comm u.x v.x))
+    (step25_balance_add_congr (bal_mul_comm u.y v.y) (bal_mul_comm u.z v.z))
+
+private theorem dot4_lincomb2_sq_scalar (a b u v : Balance) :
+    BalanceEquiv (bsq (balance_add (balance_mul a u) (balance_mul b v)))
+      (balance_add (balance_add (balance_mul (bsq a) (bsq u)) (balance_mul (bsq b) (bsq v)))
+                   (balance_mul (balance_mul (balOfNat 2) (balance_mul a b)) (balance_mul u v))) := by
+  let env : Nat → Balance := fun | 0 => a | 1 => b | 2 => u | 3 => v | _ => bzero
+  exact bal_poly_eq env
+    (.mul (.add (.mul (.var 0) (.var 2)) (.mul (.var 1) (.var 3)))
+          (.add (.mul (.var 0) (.var 2)) (.mul (.var 1) (.var 3))))
+    (.add (.add (.mul (.mul (.var 0) (.var 0)) (.mul (.var 2) (.var 2)))
+                (.mul (.mul (.var 1) (.var 1)) (.mul (.var 3) (.var 3))))
+          (.mul (.mul (.nat 2) (.mul (.var 0) (.var 1))) (.mul (.var 2) (.var 3)))) rfl
+
+private theorem dot4_sub2_sq_scalar (a b u v : Balance) :
+    BalanceEquiv (bsq (balance_sub (balance_mul a u) (balance_mul b v)))
+      (balance_add (balance_sub (balance_mul (bsq a) (bsq u))
+                                (balance_mul (balance_mul (balOfNat 2) (balance_mul a b)) (balance_mul u v)))
+                   (balance_mul (bsq b) (bsq v))) := by
+  let env : Nat → Balance := fun | 0 => a | 1 => b | 2 => u | 3 => v | _ => bzero
+  exact bal_poly_eq env
+    (.mul (.sub (.mul (.var 0) (.var 2)) (.mul (.var 1) (.var 3)))
+          (.sub (.mul (.var 0) (.var 2)) (.mul (.var 1) (.var 3))))
+    (.add (.sub (.mul (.mul (.var 0) (.var 0)) (.mul (.var 2) (.var 2)))
+                (.mul (.mul (.nat 2) (.mul (.var 0) (.var 1))) (.mul (.var 2) (.var 3))))
+          (.mul (.mul (.var 1) (.var 1)) (.mul (.var 3) (.var 3)))) rfl
+
+theorem dot4_lincomb2_sq (a b : Balance) (u v : Vec4) :
+    let w := vec4_add (vec4_scale a u) (vec4_scale b v)
+    BalanceEquiv (dot4 w w)
+      (balance_add (balance_add (balance_mul (bsq a) (dot4 u u)) (balance_mul (bsq b) (dot4 v v)))
+                   (balance_mul (balance_mul (balOfNat 2) (balance_mul a b)) (dot4 u v))) := by
+  dsimp only
+  have hw := dot4_lincomb2_sq_scalar a b u.w v.w
+  have hx := dot4_lincomb2_sq_scalar a b u.x v.x
+  have hy := dot4_lincomb2_sq_scalar a b u.y v.y
+  have hz := dot4_lincomb2_sq_scalar a b u.z v.z
+  have hsum := step25_balance_add_congr (step25_balance_add_congr hw hx) (step25_balance_add_congr hy hz)
+  have hre : ∀ (p0 q0 r0 p1 q1 r1 p2 q2 r2 p3 q3 r3 : Balance),
+      BalanceEquiv
+        (balance_add (balance_add (balance_add (balance_add p0 q0) r0) (balance_add (balance_add p1 q1) r1))
+                     (balance_add (balance_add (balance_add p2 q2) r2) (balance_add (balance_add p3 q3) r3)))
+        (balance_add (balance_add (balance_add (balance_add p0 p1) (balance_add p2 p3))
+                                  (balance_add (balance_add q0 q1) (balance_add q2 q3)))
+                     (balance_add (balance_add r0 r1) (balance_add r2 r3))) := by
+    intro p0 q0 r0 p1 q1 r1 p2 q2 r2 p3 q3 r3
+    let env : Nat → Balance := fun
+      | 0 => p0 | 1 => q0 | 2 => r0 | 3 => p1 | 4 => q1 | 5 => r1
+      | 6 => p2 | 7 => q2 | 8 => r2 | 9 => p3 | 10 => q3 | 11 => r3 | _ => bzero
+    exact bal_poly_eq env
+      (.add (.add (.add (.add (.var 0) (.var 1)) (.var 2)) (.add (.add (.var 3) (.var 4)) (.var 5)))
+            (.add (.add (.add (.var 6) (.var 7)) (.var 8)) (.add (.add (.var 9) (.var 10)) (.var 11))))
+      (.add (.add (.add (.add (.var 0) (.var 3)) (.add (.var 6) (.var 9)))
+                  (.add (.add (.var 1) (.var 4)) (.add (.var 7) (.var 10))))
+            (.add (.add (.var 2) (.var 5)) (.add (.var 8) (.var 11)))) rfl
+  let c1 := bsq a; let c2 := bsq b; let c3 := balance_mul (balOfNat 2) (balance_mul a b)
+  have hfac : ∀ (k d0 d1 d2 d3 : Balance),
+      BalanceEquiv
+        (balance_add (balance_add (balance_mul k d0) (balance_mul k d1))
+                     (balance_add (balance_mul k d2) (balance_mul k d3)))
+        (balance_mul k (balance_add (balance_add d0 d1) (balance_add d2 d3))) := by
+    intro k d0 d1 d2 d3
+    let env : Nat → Balance := fun | 0 => k | 1 => d0 | 2 => d1 | 3 => d2 | 4 => d3 | _ => bzero
+    exact bal_poly_eq env
+      (.add (.add (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 2)))
+            (.add (.mul (.var 0) (.var 3)) (.mul (.var 0) (.var 4))))
+      (.mul (.var 0) (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4)))) rfl
+  have s1 := hre
+    (balance_mul c1 (bsq u.w)) (balance_mul c2 (bsq v.w)) (balance_mul c3 (balance_mul u.w v.w))
+    (balance_mul c1 (bsq u.x)) (balance_mul c2 (bsq v.x)) (balance_mul c3 (balance_mul u.x v.x))
+    (balance_mul c1 (bsq u.y)) (balance_mul c2 (bsq v.y)) (balance_mul c3 (balance_mul u.y v.y))
+    (balance_mul c1 (bsq u.z)) (balance_mul c2 (bsq v.z)) (balance_mul c3 (balance_mul u.z v.z))
+  have s2 := step25_balance_add_congr
+    (step25_balance_add_congr (hfac c1 (bsq u.w) (bsq u.x) (bsq u.y) (bsq u.z))
+                              (hfac c2 (bsq v.w) (bsq v.x) (bsq v.y) (bsq v.z)))
+    (hfac c3 (balance_mul u.w v.w) (balance_mul u.x v.x) (balance_mul u.y v.y) (balance_mul u.z v.z))
+  exact step24_balance_trans hsum (step24_balance_trans s1 s2)
+
+theorem dot4_sub2_sq (a b : Balance) (u v : Vec4) :
+    let w := vec4_sub (vec4_scale a u) (vec4_scale b v)
+    BalanceEquiv (dot4 w w)
+      (balance_add (balance_sub (balance_mul (bsq a) (dot4 u u))
+                                (balance_mul (balance_mul (balOfNat 2) (balance_mul a b)) (dot4 u v)))
+                   (balance_mul (bsq b) (dot4 v v))) := by
+  dsimp only
+  have c_w := dot4_sub2_sq_scalar a b u.w v.w
+  have c_x := dot4_sub2_sq_scalar a b u.x v.x
+  have c_y := dot4_sub2_sq_scalar a b u.y v.y
+  have c_z := dot4_sub2_sq_scalar a b u.z v.z
+  have hsum := step25_balance_add_congr (step25_balance_add_congr c_w c_x) (step25_balance_add_congr c_y c_z)
+  have hre : ∀ (p0 m0 q0 p1 m1 q1 p2 m2 q2 p3 m3 q3 : Balance),
+      BalanceEquiv
+        (balance_add (balance_add (balance_add (balance_sub p0 m0) q0) (balance_add (balance_sub p1 m1) q1))
+                     (balance_add (balance_add (balance_sub p2 m2) q2) (balance_add (balance_sub p3 m3) q3)))
+        (balance_add (balance_sub (balance_add (balance_add p0 p1) (balance_add p2 p3))
+                                  (balance_add (balance_add m0 m1) (balance_add m2 m3)))
+                     (balance_add (balance_add q0 q1) (balance_add q2 q3))) := by
+    intro p0 m0 q0 p1 m1 q1 p2 m2 q2 p3 m3 q3
+    let env : Nat → Balance := fun
+      | 0 => p0 | 1 => m0 | 2 => q0 | 3 => p1 | 4 => m1 | 5 => q1
+      | 6 => p2 | 7 => m2 | 8 => q2 | 9 => p3 | 10 => m3 | 11 => q3 | _ => bzero
+    exact bal_poly_eq env
+      (.add (.add (.add (.sub (.var 0) (.var 1)) (.var 2)) (.add (.sub (.var 3) (.var 4)) (.var 5)))
+            (.add (.add (.sub (.var 6) (.var 7)) (.var 8)) (.add (.sub (.var 9) (.var 10)) (.var 11))))
+      (.add (.sub (.add (.add (.var 0) (.var 3)) (.add (.var 6) (.var 9)))
+                  (.add (.add (.var 1) (.var 4)) (.add (.var 7) (.var 10))))
+            (.add (.add (.var 2) (.var 5)) (.add (.var 8) (.var 11)))) rfl
+  let c1 := bsq a; let c2 := bsq b; let c3 := balance_mul (balOfNat 2) (balance_mul a b)
+  have hfac : ∀ (k d0 d1 d2 d3 : Balance),
+      BalanceEquiv
+        (balance_add (balance_add (balance_mul k d0) (balance_mul k d1))
+                     (balance_add (balance_mul k d2) (balance_mul k d3)))
+        (balance_mul k (balance_add (balance_add d0 d1) (balance_add d2 d3))) := by
+    intro k d0 d1 d2 d3
+    let env : Nat → Balance := fun | 0 => k | 1 => d0 | 2 => d1 | 3 => d2 | 4 => d3 | _ => bzero
+    exact bal_poly_eq env
+      (.add (.add (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 2)))
+            (.add (.mul (.var 0) (.var 3)) (.mul (.var 0) (.var 4))))
+      (.mul (.var 0) (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4)))) rfl
+  have s1 := hre
+    (balance_mul c1 (bsq u.w)) (balance_mul c3 (balance_mul u.w v.w)) (balance_mul c2 (bsq v.w))
+    (balance_mul c1 (bsq u.x)) (balance_mul c3 (balance_mul u.x v.x)) (balance_mul c2 (bsq v.x))
+    (balance_mul c1 (bsq u.y)) (balance_mul c3 (balance_mul u.y v.y)) (balance_mul c2 (bsq v.y))
+    (balance_mul c1 (bsq u.z)) (balance_mul c3 (balance_mul u.z v.z)) (balance_mul c2 (bsq v.z))
+  have s2 := step25_balance_add_congr
+    (bal_sub_congr (hfac c1 (bsq u.w) (bsq u.x) (bsq u.y) (bsq u.z))
+                   (hfac c3 (balance_mul u.w v.w) (balance_mul u.x v.x) (balance_mul u.y v.y) (balance_mul u.z v.z)))
+    (hfac c2 (bsq v.w) (bsq v.x) (bsq v.y) (bsq v.z))
+  exact step24_balance_trans hsum (step24_balance_trans s1 s2)
+
+-- Кватернионное произведение, стереографическая карта и определитель 4x4
+def qmul (p q : Vec4) : Vec4 :=
+  ⟨balance_sub (balance_sub (balance_mul p.w q.w) (balance_mul p.x q.x))
+               (balance_add (balance_mul p.y q.y) (balance_mul p.z q.z)),
+   balance_sub (balance_add (balance_mul p.w q.x) (balance_mul p.x q.w))
+               (balance_sub (balance_mul p.z q.y) (balance_mul p.y q.z)),
+   balance_sub (balance_add (balance_mul p.w q.y) (balance_mul p.y q.w))
+               (balance_sub (balance_mul p.x q.z) (balance_mul p.z q.x)),
+   balance_sub (balance_add (balance_mul p.w q.z) (balance_mul p.z q.w))
+               (balance_sub (balance_mul p.y q.x) (balance_mul p.x q.y))⟩
+
+def q_stereo (g : Vec3) : Vec4 :=
+  ⟨balance_sub bone (dot3 g g),
+   balance_mul (balOfNat 2) g.x,
+   balance_mul (balOfNat 2) g.y,
+   balance_mul (balOfNat 2) g.z⟩
+
+def det4 (c1 c2 c3 c4 : Vec4) : Balance :=
+  let t1 : Vec3 := ⟨c1.x, c1.y, c1.z⟩
+  let t2 : Vec3 := ⟨c2.x, c2.y, c2.z⟩
+  let t3 : Vec3 := ⟨c3.x, c3.y, c3.z⟩
+  let t4 : Vec3 := ⟨c4.x, c4.y, c4.z⟩
+  balance_sub
+    (balance_add (balance_mul c1.w (det3 t2 t3 t4)) (balance_mul c3.w (det3 t1 t2 t4)))
+    (balance_add (balance_mul c2.w (det3 t1 t3 t4)) (balance_mul c4.w (det3 t1 t2 t3)))
+
+private def bDot4E (u v : BExpr × BExpr × BExpr × BExpr) : BExpr :=
+  .add (.add (.mul u.1 v.1) (.mul u.2.1 v.2.1))
+       (.add (.mul u.2.2.1 v.2.2.1) (.mul u.2.2.2 v.2.2.2))
+
+private def bQmulE (p q : BExpr × BExpr × BExpr × BExpr) : BExpr × BExpr × BExpr × BExpr :=
+  (.sub (.sub (.mul p.1 q.1) (.mul p.2.1 q.2.1)) (.add (.mul p.2.2.1 q.2.2.1) (.mul p.2.2.2 q.2.2.2)),
+   .sub (.add (.mul p.1 q.2.1) (.mul p.2.1 q.1)) (.sub (.mul p.2.2.2 q.2.2.1) (.mul p.2.2.1 q.2.2.2)),
+   .sub (.add (.mul p.1 q.2.2.1) (.mul p.2.2.1 q.1)) (.sub (.mul p.2.1 q.2.2.2) (.mul p.2.2.2 q.2.1)),
+   .sub (.add (.mul p.1 q.2.2.2) (.mul p.2.2.2 q.1)) (.sub (.mul p.2.2.1 q.2.1) (.mul p.2.1 q.2.2.1)))
+
+private def bDet4E (c1 c2 c3 c4 : BExpr × BExpr × BExpr × BExpr) : BExpr :=
+  let t1 := (c1.2.1, c1.2.2.1, c1.2.2.2)
+  let t2 := (c2.2.1, c2.2.2.1, c2.2.2.2)
+  let t3 := (c3.2.1, c3.2.2.1, c3.2.2.2)
+  let t4 := (c4.2.1, c4.2.2.1, c4.2.2.2)
+  let d3 (a b c : BExpr × BExpr × BExpr) := vDotE a (vCrossE b c)
+  .sub (.add (.mul c1.1 (d3 t2 t3 t4)) (.mul c3.1 (d3 t1 t2 t4)))
+       (.add (.mul c2.1 (d3 t1 t3 t4)) (.mul c4.1 (d3 t1 t2 t3)))
+
+private def e_qnorm_L : BExpr :=
+  let ep := (.var 0, .var 1, .var 2, .var 3)
+  let eq := (.var 4, .var 5, .var 6, .var 7)
+  let pq := bQmulE ep eq
+  bDot4E pq pq
+
+private def e_qnorm_R : BExpr :=
+  let ep := (.var 0, .var 1, .var 2, .var 3)
+  let eq := (.var 4, .var 5, .var 6, .var 7)
+  .mul (bDot4E ep ep) (bDot4E eq eq)
+
+private theorem p_qnorm_eq : e_qnorm_L.norm = e_qnorm_R.norm := rfl
+
+private def e_stereo_L : BExpr :=
+  let r := .var 0
+  let s1 := .sub .one r
+  .add (.mul s1 s1) (.mul (.nat 4) r)
+
+private def e_stereo_R : BExpr :=
+  let d := .add .one (.var 0)
+  .mul d d
+
+private theorem p_stereo_eq : e_stereo_L.norm = e_stereo_R.norm := rfl
+
+private def e_eq4 : BExpr × BExpr × BExpr × BExpr := (.var 0, .var 1, .var 2, .var 3)
+private def e_det4_qL : BExpr :=
+  bDet4E (bQmulE e_eq4 (.one, .zero, .zero, .zero))
+         (bQmulE e_eq4 (.zero, .one, .zero, .zero))
+         (bQmulE e_eq4 (.zero, .zero, .one, .zero))
+         (bQmulE e_eq4 (.zero, .zero, .zero, .one))
+
+private def e_det4_qR : BExpr :=
+  bDet4E (bQmulE (.one, .zero, .zero, .zero) e_eq4)
+         (bQmulE (.zero, .one, .zero, .zero) e_eq4)
+         (bQmulE (.zero, .zero, .one, .zero) e_eq4)
+         (bQmulE (.zero, .zero, .zero, .one) e_eq4)
+
+private def e_qnorm4_sq : BExpr :=
+  let nn := bDot4E e_eq4 e_eq4
+  .mul nn nn
+
+private theorem p_det4_qL : e_det4_qL.norm = e_qnorm4_sq.norm := rfl
+private theorem p_det4_qR : e_det4_qR.norm = e_qnorm4_sq.norm := rfl
+
+private def e_q2 : BExpr := .add (.sub (.nat 2) (.mul (.nat 2) (.var 0))) (.mul (.var 0) (.var 0))
+private def e_q2_d : BExpr × BExpr :=
+  dAddE (dAddE (.nat 2, .zero) (dMulE (.neg (.nat 2), .zero) (.var 0, .one))) (dMulE (.var 0, .one) (.var 0, .one))
+private def e_s116_L : BExpr × BExpr := dMulE e_q2_d (.mul (.nat 2) e_q2, .mul (.nat 4) (.sub .one (.var 0)))
+private def e_s116_R : BExpr × BExpr := dMulE (.mul e_q2 e_q2, .zero) (.nat 2, .zero)
+private def e_q20 : BExpr := .add (.sub (.nat 2) (.mul (.nat 2) .zero)) (.mul .zero .zero)
+private theorem p_s116_id : e_q2.norm = (BExpr.add .one (.mul (.sub (.var 0) .one) (.sub (.var 0) .one))).norm := rfl
+private theorem p_s116_sub : (BExpr.mul (.sub (.var 0) .one) (.sub (.var 0) .one)).norm = (BExpr.sub e_q2 .one).norm := rfl
+private theorem p_s116_re : e_s116_L.1.norm = e_s116_R.1.norm := rfl
+private theorem p_s116_eps : e_s116_L.2.norm = e_s116_R.2.norm := rfl
+private theorem p_s116_c0 : e_q20.norm = (BExpr.nat 2).norm := rfl
+private theorem p_s116_c1 : (BExpr.mul (.nat 4) (.sub .one .zero)).norm = (BExpr.mul e_q20 e_q20).norm := rfl
+
+theorem step116_rational_pos_gate_c1_and_bounds (z : Balance) :
+    let q2 := balance_add (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) z)) (bsq z)
+    let zd := dual_var z
+    let q2_d := dual_add
+      (dual_add (dual_const (balOfNat 2)) (dual_mul (dual_const (balance_neg (balOfNat 2))) zd))
+      (dual_mul zd zd)
+    let q2_zero := balance_add (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) bzero)) (bsq bzero)
+    BalanceEquiv q2 (balance_add bone (bsq (balance_sub z bone))) ∧
+    BalLe bone q2 ∧
+    BalGtZero q2 ∧
+    DualEquiv
+      (dual_mul q2_d ⟨balance_mul (balOfNat 2) q2, balance_mul (balOfNat 4) (balance_sub bone z)⟩)
+      (dual_mul (dual_const (bsq q2)) (dual_const (balOfNat 2))) ∧
+    BalanceEquiv q2_zero (balOfNat 2) ∧
+    BalanceEquiv (balance_mul (balOfNat 4) (balance_sub bone bzero)) (bsq q2_zero) := by
+  dsimp only [dual_var, dual_const, dual_mul, dual_add, DualEquiv, bsq]
+  let env : Nat → Balance := fun | 0 => z | _ => bzero
+  have hq_id := bal_poly_eq env e_q2 _ p_s116_id
+  have hq_sub := bal_poly_eq env _ (BExpr.sub e_q2 .one) p_s116_sub
+  have hq_gt : BalGtZero (balance_add (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) z)) (balance_mul z z)) :=
+    bal_gt_zero_of_equiv (step24_balance_symm hq_id) (bal_one_add_sq_gt_zero (balance_sub z bone))
+  exact ⟨hq_id, bal_ge_zero_of_equiv hq_sub (bal_sq_ge_zero (balance_sub z bone)), hq_gt,
+         ⟨bal_poly_eq env e_s116_L.1 e_s116_R.1 p_s116_re,
+          bal_poly_eq env e_s116_L.2 e_s116_R.2 p_s116_eps⟩,
+         bal_poly_eq env e_q20 (.nat 2) p_s116_c0,
+         bal_poly_eq env _ (BExpr.mul e_q20 e_q20) p_s116_c1⟩
+
+/-- ШАГ 117. Рациональные кватернионы и двойной ротор SO(4) без `sqrt` и обращения матриц:
+    1. Стереографический кватернион `q_stereo(g) = (1 - ||g||², 2g)` имеет точную норму `(1 + ||g||²)² > 0`.
+    2. Мультипликативность Эйлера `||p * q||² ~ ||p||² · ||q||²`.
+    3. Двойной ротор `u' = q_stereo(gL) * u * q_stereo(gR)` точно сохраняет 4D-норму
+       `||u'||² ~ ((1 + ||gL||²)(1 + ||gR||²))² · ||u||²`.
+    4. Матрицы левого и правого кватернионного умножения имеют `det₄(L(q)) ~ det₄(R(q)) ~ (||q||²)² > 0`
+       (`det = +1`, строго внутри `SO(4)`). -/
+theorem step117_rational_quat_and_so4_double_rotor (gL gR : Vec3) (u : Vec4) :
+    let dL := balance_add bone (dot3 gL gL)
+    let dR := balance_add bone (dot3 gR gR)
+    let qL := q_stereo gL
+    let qR := q_stereo gR
+    let u' := qmul qL (qmul u qR)
+    let e1 : Vec4 := ⟨bone, bzero, bzero, bzero⟩
+    let e2 : Vec4 := ⟨bzero, bone, bzero, bzero⟩
+    let e3 : Vec4 := ⟨bzero, bzero, bone, bzero⟩
+    let e4 : Vec4 := ⟨bzero, bzero, bzero, bone⟩
+    BalGtZero dL ∧ BalGtZero dR ∧
+    BalanceEquiv (dot4 qL qL) (bsq dL) ∧
+    BalanceEquiv (dot4 qR qR) (bsq dR) ∧
+    BalanceEquiv (dot4 u' u') (balance_mul (bsq (balance_mul dL dR)) (dot4 u u)) ∧
+    BalanceEquiv (det4 (qmul qL e1) (qmul qL e2) (qmul qL e3) (qmul qL e4)) (bsq (dot4 qL qL)) ∧
+    BalanceEquiv (det4 (qmul e1 qR) (qmul e2 qR) (qmul e3 qR) (qmul e4 qR)) (bsq (dot4 qR qR)) := by
+  dsimp only
+  have hdL := bal_add_gt_ge bone_gt_zero (dot3_self_ge_zero gL)
+  have hdR := bal_add_gt_ge bone_gt_zero (dot3_self_ge_zero gR)
+  have hstereo : ∀ (g : Vec3), BalanceEquiv (dot4 (q_stereo g) (q_stereo g)) (bsq (balance_add bone (dot3 g g))) := by
+    intro g
+    let env : Nat → Balance := fun | 0 => dot3 g g | 1 => g.x | 2 => g.y | 3 => g.z | _ => bzero
+    have h4dot : BalanceEquiv
+        (dot4 (q_stereo g) (q_stereo g))
+        (balance_add (bsq (balance_sub bone (dot3 g g))) (balance_mul (balOfNat 4) (dot3 g g))) := by
+      let env4 : Nat → Balance := fun | 0 => dot3 g g | 1 => g.x | 2 => g.y | 3 => g.z | _ => bzero
+      exact bal_poly_eq env4
+        (.add (.add (.mul (.sub .one (.var 0)) (.sub .one (.var 0))) (.mul (.mul (.nat 2) (.var 1)) (.mul (.nat 2) (.var 1))))
+              (.add (.mul (.mul (.nat 2) (.var 2)) (.mul (.nat 2) (.var 2))) (.mul (.mul (.nat 2) (.var 3)) (.mul (.nat 2) (.var 3)))))
+        (.add (.mul (.sub .one (.var 0)) (.sub .one (.var 0)))
+              (.mul (.nat 4) (.add (.add (.mul (.var 1) (.var 1)) (.mul (.var 2) (.var 2))) (.mul (.var 3) (.var 3))))) rfl
+    exact step24_balance_trans h4dot (bal_poly_eq env e_stereo_L e_stereo_R p_stereo_eq)
+  have hqnorm : ∀ (p q : Vec4), BalanceEquiv (dot4 (qmul p q) (qmul p q)) (balance_mul (dot4 p p) (dot4 q q)) := by
+    intro p q
+    let env : Nat → Balance := fun
+      | 0 => p.w | 1 => p.x | 2 => p.y | 3 => p.z
+      | 4 => q.w | 5 => q.x | 6 => q.y | 7 => q.z | _ => bzero
+    exact bal_poly_eq env e_qnorm_L e_qnorm_R p_qnorm_eq
+  have hsqL := hstereo gL
+  have hsqR := hstereo gR
+  have huR := hqnorm u (q_stereo gR)
+  have huLR := step24_balance_trans (hqnorm (q_stereo gL) (qmul u (q_stereo gR)))
+    (bal_mul_congr hsqL (step24_balance_trans huR (bal_mul_congr (step24_balance_refl _) hsqR)))
+  let envS : Nat → Balance := fun | 0 => balance_add bone (dot3 gL gL) | 1 => balance_add bone (dot3 gR gR) | 2 => dot4 u u | _ => bzero
+  have hrearr := bal_poly_eq envS
+    (.mul (.mul (.var 0) (.var 0)) (.mul (.var 2) (.mul (.var 1) (.var 1))))
+    (.mul (.mul (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 1))) (.var 2)) rfl
+  let envL : Nat → Balance := fun | 0 => (q_stereo gL).w | 1 => (q_stereo gL).x | 2 => (q_stereo gL).y | 3 => (q_stereo gL).z | _ => bzero
+  let envR : Nat → Balance := fun | 0 => (q_stereo gR).w | 1 => (q_stereo gR).x | 2 => (q_stereo gR).y | 3 => (q_stereo gR).z | _ => bzero
+  exact ⟨hdL, hdR, hsqL, hsqR, step24_balance_trans huLR hrearr,
+         bal_poly_eq envL e_det4_qL e_qnorm4_sq p_det4_qL,
+         bal_poly_eq envR e_det4_qR e_qnorm4_sq p_det4_qR⟩
+
+-- Целочисленная форма гейтированного 4D-отражения Хаусхолдера H_{p/q}(v) u
+-- до деления на q · D, где D = ||v||² + eps:
+-- h_num = (q·D)·u - p·(v·u)·v
+def householder4_num (D p q : Balance) (v u : Vec4) : Vec4 :=
+  vec4_sub (vec4_scale (balance_mul q D) u) (vec4_scale (balance_mul p (dot4 v u)) v)
+
+private def e_hcol (vv : BExpr) (v : BExpr × BExpr × BExpr × BExpr) (c : BExpr × BExpr × BExpr × BExpr) :
+    BExpr × BExpr × BExpr × BExpr :=
+  let s := .mul (.nat 2) (bDot4E v c)
+  (.sub (.mul vv c.1) (.mul s v.1),
+   .sub (.mul vv c.2.1) (.mul s v.2.1),
+   .sub (.mul vv c.2.2.1) (.mul s v.2.2.1),
+   .sub (.mul vv c.2.2.2) (.mul s v.2.2.2))
+
+private def e_det4_h2_gen_L : BExpr :=
+  let eD := BExpr.var 4
+  let ev := e_eq4
+  let ec1 := e_hcol eD ev (.one, .zero, .zero, .zero)
+  let ec2 := e_hcol eD ev (.zero, .one, .zero, .zero)
+  let ec3 := e_hcol eD ev (.zero, .zero, .one, .zero)
+  let ec4 := e_hcol eD ev (.zero, .zero, .zero, .one)
+  bDet4E ec1 ec2 ec3 ec4
+
+private def e_det4_h2_gen_R : BExpr :=
+  let eD := BExpr.var 4
+  let evv := bDot4E e_eq4 e_eq4
+  .mul (.mul (.mul eD eD) eD) (.sub eD (.mul (.nat 2) evv))
+
+private theorem p_det4_h2_gen : e_det4_h2_gen_L.norm = e_det4_h2_gen_R.norm := rfl
+
+private def e_sub_add_cancel_L : BExpr := .var 1
+private def e_sub_add_cancel_R : BExpr := .sub (.add (.var 0) (.var 1)) (.var 0)
+private theorem p_sub_add_cancel : e_sub_add_cancel_L.norm = e_sub_add_cancel_R.norm := rfl
+
+private def e_add_sub_cancel_L : BExpr := .var 0
+private def e_add_sub_cancel_R : BExpr := .sub (.add (.var 0) (.var 1)) (.var 1)
+private theorem p_add_sub_cancel : e_add_sub_cancel_L.norm = e_add_sub_cancel_R.norm := rfl
+
+private def e_sub_add_sub_L : BExpr := .add (.sub (.var 0) (.var 1)) (.sub (.var 2) (.var 3))
+private def e_sub_add_sub_R : BExpr := .sub (.add (.var 0) (.var 2)) (.add (.var 1) (.var 3))
+private theorem p_sub_add_sub : e_sub_add_sub_L.norm = e_sub_add_sub_R.norm := rfl
+
+private def e_mul_sum4_L : BExpr :=
+  .add (.add (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 2)))
+       (.add (.mul (.var 0) (.var 3)) (.mul (.var 0) (.var 4)))
+private def e_mul_sum4_R : BExpr :=
+  .mul (.var 0) (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4)))
+private theorem p_mul_sum4 : e_mul_sum4_L.norm = e_mul_sum4_R.norm := rfl
+
+private def e_s118_hid_L : BExpr :=
+  let ep := BExpr.var 0; let eq := BExpr.var 1; let evv := BExpr.var 2
+  let eeps := BExpr.var 3; let evu := BExpr.var 4; let euu := BExpr.var 5
+  let eD := BExpr.add evv eeps
+  let eh_sq := BExpr.add (.sub (.mul (.mul (.mul eq eD) (.mul eq eD)) euu)
+                               (.mul (.mul (.nat 2) (.mul (.mul eq eD) (.mul ep evu))) evu))
+                         (.mul (.mul (.mul ep evu) (.mul ep evu)) evv)
+  let eslack := BExpr.mul (.mul ep (.mul evu evu))
+    (.add (.mul (.sub (.mul (.nat 2) eq) ep) evv) (.mul (.mul (.nat 2) eq) eeps))
+  .add eh_sq eslack
+
+private def e_s118_hid_R : BExpr :=
+  let eq := BExpr.var 1; let evv := BExpr.var 2; let eeps := BExpr.var 3; let euu := BExpr.var 5
+  let eD := BExpr.add evv eeps
+  .mul (.mul (.mul eq eD) (.mul eq eD)) euu
+
+private theorem p_s118_hid : e_s118_hid_L.norm = e_s118_hid_R.norm := rfl
+
+private def e_s118_h2_L : BExpr :=
+  .add (.sub (.mul (.mul (.mul .one (.var 0)) (.mul .one (.var 0))) (.var 2))
+             (.mul (.mul (.nat 2) (.mul (.mul .one (.var 0)) (.mul (.nat 2) (.var 1)))) (.var 1)))
+       (.mul (.mul (.mul (.nat 2) (.var 1)) (.mul (.nat 2) (.var 1))) (.var 0))
+private def e_s118_h2_R : BExpr := .mul (.mul (.var 0) (.var 0)) (.var 2)
+private theorem p_s118_h2 : e_s118_h2_L.norm = e_s118_h2_R.norm := rfl
+
+private def e_s118_hexp_L : BExpr := .mul (.var 0) (.sub (.mul (.var 2) (.var 1)) (.mul (.var 3) (.var 0)))
+private def e_s118_hexp_R : BExpr := .sub (.mul (.var 2) (.mul (.var 0) (.var 1))) (.mul (.var 3) (.mul (.var 0) (.var 0)))
+private theorem p_s118_hexp : e_s118_hexp_L.norm = e_s118_hexp_R.norm := rfl
+
+private def e_s118_hfin_L : BExpr := .sub (.mul (.mul .one (.var 0)) (.var 1)) (.mul (.mul (.nat 2) (.var 1)) (.var 0))
+private def e_s118_hfin_R : BExpr := .neg (.mul (.var 0) (.var 1))
+private theorem p_s118_hfin : e_s118_hfin_L.norm = e_s118_hfin_R.norm := rfl
+
+private def e_s118_inv_L : BExpr :=
+  .sub (.mul (.mul .one (.var 0)) (.sub (.mul (.mul .one (.var 0)) (.var 3)) (.mul (.mul (.nat 2) (.var 1)) (.var 2))))
+       (.mul (.mul (.nat 2) (.neg (.mul (.var 0) (.var 1)))) (.var 2))
+private def e_s118_inv_R : BExpr := .mul (.mul (.var 0) (.var 0)) (.var 3)
+private theorem p_s118_inv : e_s118_inv_L.norm = e_s118_inv_R.norm := rfl
+
+private def e_s118_det_spec_L : BExpr :=
+  let d := BExpr.mul .one (.var 0)
+  .mul (.mul (.mul d d) d) (.sub d (.mul (.nat 2) (.var 0)))
+private def e_s118_det_spec_R : BExpr :=
+  .neg (.mul (.mul (.var 0) (.var 0)) (.mul (.var 0) (.var 0)))
+private theorem p_s118_det_spec : e_s118_det_spec_L.norm = e_s118_det_spec_R.norm := rfl
+
+private theorem s118_det_h2 (v : Vec4) :
+    let D0 := dot4 v v
+    BalanceEquiv (det4 (householder4_num D0 (balOfNat 2) bone v ⟨bone, bzero, bzero, bzero⟩)
+                       (householder4_num D0 (balOfNat 2) bone v ⟨bzero, bone, bzero, bzero⟩)
+                       (householder4_num D0 (balOfNat 2) bone v ⟨bzero, bzero, bone, bzero⟩)
+                       (householder4_num D0 (balOfNat 2) bone v ⟨bzero, bzero, bzero, bone⟩))
+                 (balance_neg (bsq (bsq D0))) := by
+  dsimp only
+  let vv := dot4 v v
+  let env4 : Nat → Balance := fun | 0 => v.w | 1 => v.x | 2 => v.y | 3 => v.z | 4 => balance_mul bone vv | _ => bzero
+  have hgen := bal_poly_eq env4 e_det4_h2_gen_L e_det4_h2_gen_R p_det4_h2_gen
+  have hspec := bal_poly_eq (fun | 0 => vv | _ => bzero)
+    e_s118_det_spec_L e_s118_det_spec_R p_s118_det_spec
+  exact step24_balance_trans hgen hspec
+
+/-- ШАГ 118. Гейтированное рациональное отражение Хаусхолдера в R⁴ (ключ к O(4) и S_5):
+    Для ЛЮБЫХ v, u : Vec4, eps ≥ 0 и рационального гейта beta = p/q ∈ [0, 2]:
+    1. Точное тождество неэкспансивности (BIBO при всех β ∈ [0, 2]):
+       ||h_num||² + p(v·u)²((2q - p)||v||² + 2q·eps) ~ (q·D)²·||u||², поэтому ||h_num||² ≤ (q·D)²·||u||².
+    2. При β = 2 (p=2, q=1, eps=0, D₀ = ||v||²): точная изометрия и точная инволюция H₂(H₂(u)) ~ D₀²·u.
+    3. Определитель матрицы отражения D₀·I₄ - 2vvᵀ точно равен -(D₀)⁴ (нечётная чётность det = -1!). -/
+theorem step118_gated_householder_o4_bibo_and_parity
+    (v u : Vec4) (eps p q : Balance)
+    (heps : BalGeZero eps) (hq : BalGtZero q) (hp0 : BalGeZero p)
+    (hp2 : BalLe p (balance_mul (balOfNat 2) q)) :
+    let D := balance_add (dot4 v v) eps
+    let h_num := householder4_num D p q v u
+    let slack := balance_mul (balance_mul p (bsq (dot4 v u)))
+                   (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) q) p) (dot4 v v))
+                                (balance_mul (balance_mul (balOfNat 2) q) eps))
+    let D0 := dot4 v v
+    let h2u := householder4_num D0 (balOfNat 2) bone v u
+    let h2h2u := householder4_num D0 (balOfNat 2) bone v h2u
+    BalanceEquiv (balance_add (dot4 h_num h_num) slack) (balance_mul (bsq (balance_mul q D)) (dot4 u u)) ∧
+    BalLe (dot4 h_num h_num) (balance_mul (bsq (balance_mul q D)) (dot4 u u)) ∧
+    BalanceEquiv (dot4 h2u h2u) (balance_mul (bsq D0) (dot4 u u)) ∧
+    Vec4Equiv h2h2u (vec4_scale (bsq D0) u) ∧
+    BalanceEquiv (det4 (householder4_num D0 (balOfNat 2) bone v ⟨bone, bzero, bzero, bzero⟩)
+                       (householder4_num D0 (balOfNat 2) bone v ⟨bzero, bone, bzero, bzero⟩)
+                       (householder4_num D0 (balOfNat 2) bone v ⟨bzero, bzero, bone, bzero⟩)
+                       (householder4_num D0 (balOfNat 2) bone v ⟨bzero, bzero, bzero, bone⟩))
+                 (balance_neg (bsq (bsq D0))) := by
+  dsimp only
+  let D := balance_add (dot4 v v) eps
+  let vu := dot4 v u
+  let vv := dot4 v v
+  let uu := dot4 u u
+  have hsq := dot4_sub2_sq (balance_mul q D) (balance_mul p vu) u v
+  -- Доп. сомножитель u·v ~ vu
+  have huv : BalanceEquiv (dot4 u v) vu := dot4_comm u v
+  have hsq' := step24_balance_trans hsq
+    (step25_balance_add_congr
+      (bal_sub_congr (step24_balance_refl _) (bal_mul_congr (step24_balance_refl _) huv))
+      (step24_balance_refl _))
+  let env : Nat → Balance := fun | 0 => p | 1 => q | 2 => vv | 3 => eps | 4 => vu | 5 => uu | _ => bzero
+  have hid := step24_balance_trans (step25_balance_add_congr hsq' (step24_balance_refl _))
+    (bal_poly_eq env e_s118_hid_L e_s118_hid_R p_s118_hid)
+  -- Неотрицательность slack => BalLe ||h_num||² ((q·D)²·||u||²)
+  have h2q : BalGtZero (balance_mul (balOfNat 2) q) := bal_mul_gt_gt (balOfNat_succ_gt_zero 1) hq
+  have hslack_ge : BalGeZero (balance_mul (balance_mul p (bsq vu))
+                   (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) q) p) vv)
+                                (balance_mul (balance_mul (balOfNat 2) q) eps))) :=
+    bal_mul_ge_ge (bal_mul_ge_ge hp0 (bal_sq_ge_zero vu))
+      (bal_add_ge_ge (bal_mul_ge_ge hp2 (dot4_self_ge_zero v)) (bal_mul_ge_ge (Or.inr h2q) heps))
+  have hsub_slack : BalanceEquiv
+      (balance_mul (balance_mul p (bsq vu))
+        (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) q) p) vv)
+                     (balance_mul (balance_mul (balOfNat 2) q) eps)))
+      (balance_sub (balance_mul (bsq (balance_mul q D)) uu)
+                   (dot4 (householder4_num D p q v u) (householder4_num D p q v u))) :=
+    step24_balance_trans
+      (bal_poly_eq
+        (fun | 0 => dot4 (householder4_num D p q v u) (householder4_num D p q v u)
+             | 1 => balance_mul (balance_mul p (bsq vu))
+                      (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) q) p) vv)
+                                   (balance_mul (balance_mul (balOfNat 2) q) eps))
+             | _ => bzero)
+        e_sub_add_cancel_L e_sub_add_cancel_R p_sub_add_cancel)
+      (bal_sub_congr hid (step24_balance_refl _))
+  have hbibo : BalLe (dot4 (householder4_num D p q v u) (householder4_num D p q v u))
+                     (balance_mul (bsq (balance_mul q D)) uu) :=
+    bal_ge_zero_of_equiv hsub_slack hslack_ge
+  -- Частный случай p=2, q=1, eps=0: точная изометрия H_2
+  let h2u := householder4_num vv (balOfNat 2) bone v u
+  have h2_norm : BalanceEquiv (dot4 h2u h2u) (balance_mul (bsq vv) uu) := by
+    have hsq2 := dot4_sub2_sq (balance_mul bone vv) (balance_mul (balOfNat 2) vu) u v
+    have hsq2' := step24_balance_trans hsq2
+      (step25_balance_add_congr
+        (bal_sub_congr (step24_balance_refl _) (bal_mul_congr (step24_balance_refl _) huv))
+        (step24_balance_refl _))
+    let env2 : Nat → Balance := fun | 0 => vv | 1 => vu | 2 => uu | _ => bzero
+    exact step24_balance_trans hsq2' (bal_poly_eq env2 e_s118_h2_L e_s118_h2_R p_s118_h2)
+  -- Точная инволюция H_2(H_2(u)) ~ D₀² · u: вычисляем скалярное произведение v · h2u ~ -D₀ · (v·u)
+  have hvh2u : BalanceEquiv (dot4 v h2u) (balance_neg (balance_mul vv vu)) := by
+    let s1 := balance_mul bone vv
+    let s2 := balance_mul (balOfNat 2) vu
+    have hexp : ∀ (vc uc : Balance),
+        BalanceEquiv (balance_mul vc (balance_sub (balance_mul s1 uc) (balance_mul s2 vc)))
+                     (balance_sub (balance_mul s1 (balance_mul vc uc)) (balance_mul s2 (bsq vc))) := by
+      intro vc uc
+      exact bal_poly_eq (fun | 0 => vc | 1 => uc | 2 => s1 | 3 => s2 | _ => bzero)
+        e_s118_hexp_L e_s118_hexp_R p_s118_hexp
+    have hdot := step25_balance_add_congr
+      (step25_balance_add_congr (hexp v.w u.w) (hexp v.x u.x))
+      (step25_balance_add_congr (hexp v.y u.y) (hexp v.z u.z))
+    have hre : BalanceEquiv
+        (balance_add (balance_add (balance_sub (balance_mul s1 (balance_mul v.w u.w)) (balance_mul s2 (bsq v.w)))
+                                  (balance_sub (balance_mul s1 (balance_mul v.x u.x)) (balance_mul s2 (bsq v.x))))
+                     (balance_add (balance_sub (balance_mul s1 (balance_mul v.y u.y)) (balance_mul s2 (bsq v.y)))
+                                  (balance_sub (balance_mul s1 (balance_mul v.z u.z)) (balance_mul s2 (bsq v.z)))))
+        (balance_sub (balance_mul s1 vu) (balance_mul s2 vv)) := by
+      let pw := balance_mul v.w u.w; let qw := bsq v.w
+      let px := balance_mul v.x u.x; let qx := bsq v.x
+      let py := balance_mul v.y u.y; let qy := bsq v.y
+      let pz := balance_mul v.z u.z; let qz := bsq v.z
+      have hwx := bal_poly_eq (fun | 0 => balance_mul s1 pw | 1 => balance_mul s2 qw
+                                   | 2 => balance_mul s1 px | 3 => balance_mul s2 qx | _ => bzero)
+        e_sub_add_sub_L e_sub_add_sub_R p_sub_add_sub
+      have hyz := bal_poly_eq (fun | 0 => balance_mul s1 py | 1 => balance_mul s2 qy
+                                   | 2 => balance_mul s1 pz | 3 => balance_mul s2 qz | _ => bzero)
+        e_sub_add_sub_L e_sub_add_sub_R p_sub_add_sub
+      have hall := bal_poly_eq (fun | 0 => balance_add (balance_mul s1 pw) (balance_mul s1 px)
+                                    | 1 => balance_add (balance_mul s2 qw) (balance_mul s2 qx)
+                                    | 2 => balance_add (balance_mul s1 py) (balance_mul s1 pz)
+                                    | 3 => balance_add (balance_mul s2 qy) (balance_mul s2 qz) | _ => bzero)
+        e_sub_add_sub_L e_sub_add_sub_R p_sub_add_sub
+      have hm1 := bal_poly_eq (fun | 0 => s1 | 1 => pw | 2 => px | 3 => py | 4 => pz | _ => bzero)
+        e_mul_sum4_L e_mul_sum4_R p_mul_sum4
+      have hm2 := bal_poly_eq (fun | 0 => s2 | 1 => qw | 2 => qx | 3 => qy | 4 => qz | _ => bzero)
+        e_mul_sum4_L e_mul_sum4_R p_mul_sum4
+      exact step24_balance_trans (step25_balance_add_congr hwx hyz)
+        (step24_balance_trans hall (bal_sub_congr hm1 hm2))
+    have hfin := bal_poly_eq (fun | 0 => vv | 1 => vu | _ => bzero)
+      e_s118_hfin_L e_s118_hfin_R p_s118_hfin
+    exact step24_balance_trans hdot (step24_balance_trans hre hfin)
+  have hcomp_inv : ∀ (vc uc : Balance),
+      BalanceEquiv
+        (balance_sub (balance_mul (balance_mul bone vv) (balance_sub (balance_mul (balance_mul bone vv) uc) (balance_mul (balance_mul (balOfNat 2) vu) vc)))
+                     (balance_mul (balance_mul (balOfNat 2) (dot4 v h2u)) vc))
+        (balance_mul (bsq vv) uc) := by
+    intro vc uc
+    exact step24_balance_trans
+      (bal_sub_congr (step24_balance_refl _)
+        (bal_mul_congr (bal_mul_congr (step24_balance_refl (balOfNat 2)) hvh2u) (step24_balance_refl vc)))
+      (bal_poly_eq (fun | 0 => vv | 1 => vu | 2 => vc | 3 => uc | _ => bzero)
+        e_s118_inv_L e_s118_inv_R p_s118_inv)
+  have hinv : Vec4Equiv (householder4_num vv (balOfNat 2) bone v h2u) (vec4_scale (bsq vv) u) :=
+    ⟨hcomp_inv v.w u.w, hcomp_inv v.x u.x, hcomp_inv v.y u.y, hcomp_inv v.z u.z⟩
+  exact ⟨hid, hbibo, h2_norm, hinv, s118_det_h2 v⟩
+
+-- 5D-векторы для стандартного 4D-представления S₅ на гиперплоскости sum = 0
+structure Vec5 where
+  x0 : Balance
+  x1 : Balance
+  x2 : Balance
+  x3 : Balance
+  x4 : Balance
+
+def Vec5Equiv (u v : Vec5) : Prop :=
+  BalanceEquiv u.x0 v.x0 ∧ BalanceEquiv u.x1 v.x1 ∧ BalanceEquiv u.x2 v.x2 ∧
+  BalanceEquiv u.x3 v.x3 ∧ BalanceEquiv u.x4 v.x4
+
+def vec5_zero : Vec5 := ⟨bzero, bzero, bzero, bzero, bzero⟩
+def sum5 (u : Vec5) : Balance :=
+  balance_add (balance_add (balance_add u.x0 u.x1) (balance_add u.x2 u.x3)) u.x4
+def dot5 (u v : Vec5) : Balance :=
+  balance_add
+    (balance_add (balance_add (balance_mul u.x0 v.x0) (balance_mul u.x1 v.x1))
+                 (balance_add (balance_mul u.x2 v.x2) (balance_mul u.x3 v.x3)))
+    (balance_mul u.x4 v.x4)
+
+-- Генераторы S₅: транспозиция a = (0 1) (нечётная, det = -1) и 5-цикл b = (0 1 2 3 4) (чётный, det = +1)
+def s5_a (u : Vec5) : Vec5 := ⟨u.x1, u.x0, u.x2, u.x3, u.x4⟩
+def s5_b (u : Vec5) : Vec5 := ⟨u.x1, u.x2, u.x3, u.x4, u.x0⟩
+
+/-- ШАГ 119. Теорема о неполноте K=2 отражений Хаусхолдера в R⁴ и конструктивный свидетель S₅:
+    1. Произведение ЛЮБЫХ ДВУХ отражений H(v₂)H(v₁) поточечно фиксирует всё ортогональное дополнение
+       span(v₁, v₂)⊥ (собственное значение +1 с кратностью ≥ 2).
+    2. На 4D-гиперплоскости (sum₅ = 0) стандартного представления S₅:
+       a) транспозиция `a = (0 1)` и 5-цикл `b = (0 1 2 3 4)` сохраняют гиперплоскость и 5D-норму;
+       b) выполнены законы Коксетера–Мура a² = I, b⁵ = I, (ab)⁴ = I и ab ≠ ba;
+       c) 5-цикл `b` НЕ ИМЕЕТ ни одного ненулевого неподвижного вектора на гиперплоскости sum₅ = 0 —
+          следовательно, связка двух отражений математически неспособна выразить 5-цикл S₅! -/
+theorem step119_two_reflections_fix_orth_and_s5_witness
+    (v1 v2 w : Vec4) (D1 D2 : Balance)
+    (hw1 : BalanceEquiv (dot4 v1 w) bzero)
+    (hw2 : BalanceEquiv (dot4 v2 w) bzero) :
+    Vec4Equiv (householder4_num D2 (balOfNat 2) bone v2
+                 (householder4_num D1 (balOfNat 2) bone v1 w))
+              (vec4_scale (balance_mul D2 D1) w)
+    ∧
+    (∀ u : Vec5,
+      BalanceEquiv (sum5 (s5_a u)) (sum5 u) ∧
+      BalanceEquiv (sum5 (s5_b u)) (sum5 u) ∧
+      BalanceEquiv (dot5 (s5_a u) (s5_a u)) (dot5 u u) ∧
+      BalanceEquiv (dot5 (s5_b u) (s5_b u)) (dot5 u u) ∧
+      Vec5Equiv (s5_a (s5_a u)) u ∧
+      Vec5Equiv (s5_b (s5_b (s5_b (s5_b (s5_b u))))) u ∧
+      Vec5Equiv (s5_a (s5_b (s5_a (s5_b (s5_a (s5_b (s5_a (s5_b u)))))))) u)
+    ∧
+    (Vec5Equiv (s5_a (s5_b ⟨bone, bneg_one, bzero, bzero, bzero⟩))
+               (s5_b (s5_a ⟨bone, bneg_one, bzero, bzero, bzero⟩)) → False)
+    ∧
+    (∀ x : Vec5, Vec5Equiv (s5_b x) x → BalanceEquiv (sum5 x) bzero → Vec5Equiv x vec5_zero) := by
+  have hone_fix : ∀ (v x : Vec4) (D : Balance),
+      BalanceEquiv (dot4 v x) bzero →
+      Vec4Equiv (householder4_num D (balOfNat 2) bone v x) (vec4_scale D x) := by
+    intro v x D hvx
+    have hc : ∀ (vc xc : Balance),
+        BalanceEquiv
+          (balance_sub (balance_mul (balance_mul bone D) xc)
+                       (balance_mul (balance_mul (balOfNat 2) (dot4 v x)) vc))
+          (balance_mul D xc) := by
+      intro vc xc
+      exact step24_balance_trans
+        (bal_sub_congr (bal_mul_congr (bal_one_mul D) (step24_balance_refl xc))
+          (bal_mul_congr (step24_balance_trans (bal_mul_congr (step24_balance_refl _) hvx) (bal_mul_zero _))
+                         (step24_balance_refl vc)))
+        (bal_poly_eq (fun | 0 => balance_mul D xc | 1 => vc | _ => bzero)
+          (.sub (.var 0) (.mul .zero (.var 1))) (.var 0) rfl)
+    exact ⟨hc v.w x.w, hc v.x x.x, hc v.y x.y, hc v.z x.z⟩
+  have h1 := hone_fix v1 w D1 hw1
+  have hv2_scaled : BalanceEquiv (dot4 v2 (householder4_num D1 (balOfNat 2) bone v1 w)) bzero :=
+    step24_balance_trans (dot4_congr ⟨step24_balance_refl _, step24_balance_refl _, step24_balance_refl _, step24_balance_refl _⟩ h1)
+      (by
+        let env : Nat → Balance := fun | 0 => D1 | 1 => v2.w | 2 => w.w | 3 => v2.x | 4 => w.x | 5 => v2.y | 6 => w.y | 7 => v2.z | 8 => w.z | _ => bzero
+        have hd := bal_poly_eq env
+          (.add (.add (.mul (.var 1) (.mul (.var 0) (.var 2))) (.mul (.var 3) (.mul (.var 0) (.var 4))))
+                (.add (.mul (.var 5) (.mul (.var 0) (.var 6))) (.mul (.var 7) (.mul (.var 0) (.var 8)))))
+          (.mul (.var 0) (.add (.add (.mul (.var 1) (.var 2)) (.mul (.var 3) (.var 4)))
+                               (.add (.mul (.var 5) (.var 6)) (.mul (.var 7) (.var 8))))) rfl
+        exact step24_balance_trans hd (step24_balance_trans (bal_mul_congr (step24_balance_refl D1) hw2) (bal_mul_zero D1)))
+  have h2 := hone_fix v2 (householder4_num D1 (balOfNat 2) bone v1 w) D2 hv2_scaled
+  have hcomb : Vec4Equiv (householder4_num D2 (balOfNat 2) bone v2
+                            (householder4_num D1 (balOfNat 2) bone v1 w))
+                         (vec4_scale (balance_mul D2 D1) w) := by
+    refine ⟨?_, ?_, ?_, ?_⟩
+    · exact step24_balance_trans h2.1 (step24_balance_trans (bal_mul_congr (step24_balance_refl D2) h1.1) (step24_balance_symm (bal_mul_assoc D2 D1 w.w)))
+    · exact step24_balance_trans h2.2.1 (step24_balance_trans (bal_mul_congr (step24_balance_refl D2) h1.2.1) (step24_balance_symm (bal_mul_assoc D2 D1 w.x)))
+    · exact step24_balance_trans h2.2.2.1 (step24_balance_trans (bal_mul_congr (step24_balance_refl D2) h1.2.2.1) (step24_balance_symm (bal_mul_assoc D2 D1 w.y)))
+    · exact step24_balance_trans h2.2.2.2 (step24_balance_trans (bal_mul_congr (step24_balance_refl D2) h1.2.2.2) (step24_balance_symm (bal_mul_assoc D2 D1 w.z)))
+  refine ⟨hcomb, ?_, ?_, ?_⟩
+  · intro u
+    let env : Nat → Balance := fun | 0 => u.x0 | 1 => u.x1 | 2 => u.x2 | 3 => u.x3 | 4 => u.x4 | _ => bzero
+    have hsa := bal_poly_eq env
+      (.add (.add (.add (.var 1) (.var 0)) (.add (.var 2) (.var 3))) (.var 4))
+      (.add (.add (.add (.var 0) (.var 1)) (.add (.var 2) (.var 3))) (.var 4)) rfl
+    have hsb := bal_poly_eq env
+      (.add (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4))) (.var 0))
+      (.add (.add (.add (.var 0) (.var 1)) (.add (.var 2) (.var 3))) (.var 4)) rfl
+    have hda := bal_poly_eq env
+      (.add (.add (.add (.mul (.var 1) (.var 1)) (.mul (.var 0) (.var 0)))
+                  (.add (.mul (.var 2) (.var 2)) (.mul (.var 3) (.var 3)))) (.mul (.var 4) (.var 4)))
+      (.add (.add (.add (.mul (.var 0) (.var 0)) (.mul (.var 1) (.var 1)))
+                  (.add (.mul (.var 2) (.var 2)) (.mul (.var 3) (.var 3)))) (.mul (.var 4) (.var 4))) rfl
+    have hdb := bal_poly_eq env
+      (.add (.add (.add (.mul (.var 1) (.var 1)) (.mul (.var 2) (.var 2)))
+                  (.add (.mul (.var 3) (.var 3)) (.mul (.var 4) (.var 4)))) (.mul (.var 0) (.var 0)))
+      (.add (.add (.add (.mul (.var 0) (.var 0)) (.mul (.var 1) (.var 1)))
+                  (.add (.mul (.var 2) (.var 2)) (.mul (.var 3) (.var 3)))) (.mul (.var 4) (.var 4))) rfl
+    have id5 : Vec5Equiv u u :=
+      ⟨step24_balance_refl _, step24_balance_refl _, step24_balance_refl _, step24_balance_refl _, step24_balance_refl _⟩
+    exact ⟨hsa, hsb, hda, hdb, id5, id5, id5⟩
+  · intro hne
+    -- (a(b(1,-1,0,0,0))).x0 = 0, но (b(a(1,-1,0,0,0))).x0 = 1
+    have h0 := hne.1
+    exact bal_gt_zero_ne_zero bone_gt_zero (step24_balance_symm h0)
+  · intro x hfx hsum0
+    have e01 : BalanceEquiv x.x1 x.x0 := hfx.1
+    have e12 : BalanceEquiv x.x2 x.x1 := hfx.2.1
+    have e23 : BalanceEquiv x.x3 x.x2 := hfx.2.2.1
+    have e34 : BalanceEquiv x.x4 x.x3 := hfx.2.2.2.1
+    have e20 : BalanceEquiv x.x2 x.x0 := step24_balance_trans e12 e01
+    have e30 : BalanceEquiv x.x3 x.x0 := step24_balance_trans e23 e20
+    have e40 : BalanceEquiv x.x4 x.x0 := step24_balance_trans e34 e30
+    have hs_eq : BalanceEquiv (sum5 x) (balance_mul (balOfNat 5) x.x0) :=
+      step24_balance_trans
+        (step25_balance_add_congr
+          (step25_balance_add_congr
+            (step25_balance_add_congr (step24_balance_refl x.x0) e01)
+            (step25_balance_add_congr e20 e30))
+          e40)
+        (bal_poly_eq (fun | 0 => x.x0 | _ => bzero)
+          (.add (.add (.add (.var 0) (.var 0)) (.add (.var 0) (.var 0))) (.var 0))
+          (.mul (.nat 5) (.var 0)) rfl)
+    have hx0 : BalanceEquiv x.x0 bzero :=
+      bal_mul_gt_zero_eq_zero (balOfNat_succ_gt_zero 4)
+        (step24_balance_trans (step24_balance_symm hs_eq) hsum0)
+    exact ⟨hx0,
+           step24_balance_trans e01 hx0,
+           step24_balance_trans e20 hx0,
+           step24_balance_trans e30 hx0,
+           step24_balance_trans e40 hx0⟩
+
+private def e_s120_sqdiff_L : BExpr :=
+  .add (.sub (.mul (.mul .one .one) (.var 0)) (.mul (.mul (.nat 2) (.mul .one .one)) (.var 2)))
+       (.mul (.mul .one .one) (.var 1))
+private def e_s120_sqdiff_R : BExpr := .add (.sub (.var 0) (.mul (.nat 2) (.var 2))) (.var 1)
+private theorem p_s120_sqdiff : e_s120_sqdiff_L.norm = e_s120_sqdiff_R.norm := rfl
+
+private def e_s120_P_L : BExpr :=
+  let eD := BExpr.var 0; let eg := BExpr.var 1; let edmg := BExpr.sub eD eg
+  let eq2 := BExpr.var 2; let ew2 := BExpr.var 3; let eqw := BExpr.var 4
+  let ecomb := BExpr.add (.add (.mul (.mul eg eg) eq2) (.mul (.mul edmg edmg) ew2))
+                         (.mul (.mul (.nat 2) (.mul eg edmg)) eqw)
+  .sub (.mul eD (.add (.mul eg eq2) (.mul edmg ew2))) ecomb
+
+private def e_s120_P_R : BExpr :=
+  let eD := BExpr.var 0; let eg := BExpr.var 1; let edmg := BExpr.sub eD eg
+  let eq2 := BExpr.var 2; let ew2 := BExpr.var 3; let eqw := BExpr.var 4
+  let eqwm := BExpr.add (.sub eq2 (.mul (.nat 2) eqw)) ew2
+  .mul (.mul eg edmg) eqwm
+
+private theorem p_s120_P : e_s120_P_L.norm = e_s120_P_R.norm := rfl
+
+private def e_add_sub_self_L : BExpr := .add (.var 1) (.sub (.var 0) (.var 1))
+private def e_add_sub_self_R : BExpr := .var 0
+private theorem p_add_sub_self : e_add_sub_self_L.norm = e_add_sub_self_R.norm := rfl
+
+private def e_s120_gap2_L : BExpr :=
+  .mul (.var 0) (.add (.mul (.var 1) (.sub (.var 4) (.var 2)))
+                      (.mul (.sub (.var 0) (.var 1)) (.sub (.var 4) (.var 3))))
+private def e_s120_gap2_R : BExpr :=
+  .sub (.mul (.mul (.var 0) (.var 0)) (.var 4))
+       (.mul (.var 0) (.add (.mul (.var 1) (.var 2)) (.mul (.sub (.var 0) (.var 1)) (.var 3))))
+private theorem p_s120_gap2 : e_s120_gap2_L.norm = e_s120_gap2_R.norm := rfl
+
+private def e_s120_unit_L : BExpr :=
+  .add (.add (.mul (.mul (.var 0) (.var 0)) (.var 1)) (.mul (.mul (.sub (.var 0) (.var 0)) (.sub (.var 0) (.var 0))) (.var 2)))
+       (.mul (.mul (.nat 2) (.mul (.var 0) (.sub (.var 0) (.var 0)))) (.var 3))
+private def e_s120_unit_R : BExpr := .mul (.mul (.var 0) (.var 0)) (.var 1)
+private theorem p_s120_unit : e_s120_unit_L.norm = e_s120_unit_R.norm := rfl
+
+/-- ШАГ 120. Общая теорема BIBO-устойчивости и унитарного предела для Master Equation (d ∈ {2,3,4}):
+    Для любой выпуклой комбинации `comb = γ·q + (D - γ)·w`:
+    1. Точное тождество `D·(γ·||q||² + (D - γ)·||w||²) - ||comb||² ~ γ(D - γ)||q - w||²`.
+    2. Инвариантный шар: при `0 ≤ γ ≤ D`, `||q||² ≤ R²`, `||w||² ≤ R²` всегда `||comb||² ≤ D²·R²`.
+    3. Унитарный предел (`γ = D`): `||comb||² ~ D²·||q||²` (точное сохранение нормы для A₅/S₅). -/
+theorem step120_master_equation_bibo_invariance (D gamma : Balance) (q w : Vec4) (R2 : Balance) :
+    let dmg := balance_sub D gamma
+    let comb := vec4_add (vec4_scale gamma q) (vec4_scale dmg w)
+    BalanceEquiv
+      (balance_sub (balance_mul D (balance_add (balance_mul gamma (dot4 q q)) (balance_mul dmg (dot4 w w))))
+                   (dot4 comb comb))
+      (balance_mul (balance_mul gamma dmg) (dot4 (vec4_sub q w) (vec4_sub q w)))
+    ∧
+    (BalGtZero D → BalGeZero gamma → BalLe gamma D →
+     BalLe (dot4 q q) R2 → BalLe (dot4 w w) R2 →
+     BalLe (dot4 comb comb) (balance_mul (bsq D) R2))
+    ∧
+    BalanceEquiv
+      (dot4 (vec4_add (vec4_scale D q) (vec4_scale (balance_sub D D) w))
+            (vec4_add (vec4_scale D q) (vec4_scale (balance_sub D D) w)))
+      (balance_mul (bsq D) (dot4 q q)) := by
+  dsimp only
+  let dmg := balance_sub D gamma
+  have h1 := dot4_lincomb2_sq gamma dmg q w
+  have hqw := dot4_sub2_sq bone bone q w
+  have hqw' : BalanceEquiv (dot4 (vec4_sub q w) (vec4_sub q w))
+                           (balance_add (balance_sub (dot4 q q) (balance_mul (balOfNat 2) (dot4 q w))) (dot4 w w)) := by
+    let hs := dot4_sub2_sq bone bone q w
+    have hq0 : Vec4Equiv (vec4_sub q w) (vec4_sub (vec4_scale bone q) (vec4_scale bone w)) :=
+      ⟨bal_sub_congr (step24_balance_symm (bal_one_mul _)) (step24_balance_symm (bal_one_mul _)),
+       bal_sub_congr (step24_balance_symm (bal_one_mul _)) (step24_balance_symm (bal_one_mul _)),
+       bal_sub_congr (step24_balance_symm (bal_one_mul _)) (step24_balance_symm (bal_one_mul _)),
+       bal_sub_congr (step24_balance_symm (bal_one_mul _)) (step24_balance_symm (bal_one_mul _))⟩
+    have hqnorm := dot4_congr hq0 hq0
+    let e2 : Nat → Balance := fun | 0 => dot4 q q | 1 => dot4 w w | 2 => dot4 q w | _ => bzero
+    have hs2 := bal_poly_eq e2 e_s120_sqdiff_L e_s120_sqdiff_R p_s120_sqdiff
+    exact step24_balance_trans hqnorm (step24_balance_trans hs hs2)
+  let env : Nat → Balance := fun
+    | 0 => D | 1 => gamma | 2 => dot4 q q | 3 => dot4 w w | 4 => dot4 q w | _ => bzero
+  have hconvex_id : BalanceEquiv
+      (balance_sub (balance_mul D (balance_add (balance_mul gamma (dot4 q q)) (balance_mul dmg (dot4 w w))))
+                   (dot4 (vec4_add (vec4_scale gamma q) (vec4_scale dmg w))
+                         (vec4_add (vec4_scale gamma q) (vec4_scale dmg w))))
+      (balance_mul (balance_mul gamma dmg) (dot4 (vec4_sub q w) (vec4_sub q w))) := by
+    have hL := bal_sub_congr
+      (step24_balance_refl (balance_mul D (balance_add (balance_mul gamma (dot4 q q)) (balance_mul dmg (dot4 w w)))))
+      h1
+    have hR := bal_mul_congr (step24_balance_refl (balance_mul gamma dmg)) hqw'
+    have hP := bal_poly_eq env e_s120_P_L e_s120_P_R p_s120_P
+    exact step24_balance_trans hL (step24_balance_trans hP (step24_balance_symm hR))
+  have hball : BalGtZero D → BalGeZero gamma → BalLe gamma D →
+      BalLe (dot4 q q) R2 → BalLe (dot4 w w) R2 →
+      BalLe (dot4 (vec4_add (vec4_scale gamma q) (vec4_scale dmg w))
+                  (vec4_add (vec4_scale gamma q) (vec4_scale dmg w)))
+            (balance_mul (bsq D) R2) := by
+    intro _ hg0 hgd hqr hwr
+    have hgap1 : BalGeZero
+        (balance_sub (balance_mul D (balance_add (balance_mul gamma (dot4 q q)) (balance_mul dmg (dot4 w w))))
+                     (dot4 (vec4_add (vec4_scale gamma q) (vec4_scale dmg w))
+                           (vec4_add (vec4_scale gamma q) (vec4_scale dmg w)))) :=
+      bal_ge_zero_of_equiv (step24_balance_symm hconvex_id)
+        (bal_mul_ge_ge (bal_mul_ge_ge hg0 hgd) (dot4_self_ge_zero _))
+    have hD0 : BalGeZero D :=
+      bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => D | 1 => gamma | _ => bzero)
+        e_add_sub_self_L e_add_sub_self_R p_add_sub_self) (bal_add_ge_ge hg0 hgd)
+    have hgap2 : BalGeZero
+        (balance_sub (balance_mul (bsq D) R2)
+                     (balance_mul D (balance_add (balance_mul gamma (dot4 q q)) (balance_mul dmg (dot4 w w))))) := by
+      have hterm := bal_add_ge_ge (bal_mul_ge_ge hg0 hqr) (bal_mul_ge_ge hgd hwr)
+      have hmul := bal_mul_ge_ge hD0 hterm
+      let eB : Nat → Balance := fun | 0 => D | 1 => gamma | 2 => dot4 q q | 3 => dot4 w w | 4 => R2 | _ => bzero
+      exact bal_ge_zero_of_equiv (bal_poly_eq eB e_s120_gap2_L e_s120_gap2_R p_s120_gap2) hmul
+    exact bal_le_trans hgap1 hgap2
+  have hunit : BalanceEquiv
+      (dot4 (vec4_add (vec4_scale D q) (vec4_scale (balance_sub D D) w))
+            (vec4_add (vec4_scale D q) (vec4_scale (balance_sub D D) w)))
+      (balance_mul (bsq D) (dot4 q q)) := by
+    have hs := dot4_lincomb2_sq D (balance_sub D D) q w
+    let eu : Nat → Balance := fun | 0 => D | 1 => dot4 q q | 2 => dot4 w w | 3 => dot4 q w | _ => bzero
+    have hp := bal_poly_eq eu e_s120_unit_L e_s120_unit_R p_s120_unit
+    exact step24_balance_trans hs hp
+  exact ⟨hconvex_id, hball, hunit⟩
+
+/-- ШАГ 121. Точные алгебраические производные v0.5.0 через `DualBalance`:
+    1. Производная стереографического кватерниона `q(g₁ + ε, g₂, g₃)` по `g₁`:
+       знаменатель `D'(g₁) = 2g₁`, числители `q₀' = -2g₁`, `q₁' = 2`, `q₂' = 0`.
+    2. Производная гейтированного Хаусхолдера `(D·u - β·vu·v)` по гейту `β` равна `-vu·v`.
+    3. Производная локального Kerr-энергетического вентиля `z(u_r + ε, u_i) = c + a₁u_r + a₂u_i + a₃(u_r² + u_i²)`
+       по `u_r` точно равна `a₁ + 2a₃u_r` (основа O(U·d_in) RTRL!). -/
+theorem step121_dual_derivatives_o4_and_local_state_gate
+    (g1 g2 g3 D beta vu vc uc c a1 a2 a3 ur ui : Balance) :
+    let gd := dual_var g1
+    let g2d := dual_add (dual_add (dual_mul gd gd) (dual_const (bsq g2))) (dual_const (bsq g3))
+    let den_d := dual_add (dual_const bone) g2d
+    let q0_d := dual_add (dual_const bone) (dual_mul (dual_const (balance_neg bone)) g2d)
+    let q1_d := dual_mul (dual_const (balOfNat 2)) gd
+    let betad := dual_var beta
+    let h_beta_d := dual_add (dual_const (balance_mul D uc))
+      (dual_mul (dual_const (balance_neg (balance_mul vu vc))) betad)
+    let urd := dual_var ur
+    let uid := dual_const ui
+    let norm2d := dual_add (dual_mul urd urd) (dual_mul uid uid)
+    let zd := dual_add (dual_add (dual_const c) (dual_add (dual_mul (dual_const a1) urd) (dual_mul (dual_const a2) uid)))
+                       (dual_mul (dual_const a3) norm2d)
+    DualEquiv den_d ⟨balance_add bone (balance_add (bsq g1) (balance_add (bsq g2) (bsq g3))),
+                     balance_mul (balOfNat 2) g1⟩ ∧
+    DualEquiv q0_d ⟨balance_sub bone (balance_add (bsq g1) (balance_add (bsq g2) (bsq g3))),
+                    balance_neg (balance_mul (balOfNat 2) g1)⟩ ∧
+    DualEquiv q1_d ⟨balance_mul (balOfNat 2) g1, balOfNat 2⟩ ∧
+    DualEquiv h_beta_d ⟨balance_sub (balance_mul D uc) (balance_mul (balance_mul vu vc) beta),
+                        balance_neg (balance_mul vu vc)⟩ ∧
+    DualEquiv zd ⟨balance_add (balance_add c (balance_add (balance_mul a1 ur) (balance_mul a2 ui)))
+                              (balance_mul a3 (balance_add (bsq ur) (bsq ui))),
+                  balance_add a1 (balance_mul (balOfNat 2) (balance_mul a3 ur))⟩ := by
+  dsimp only [dual_var, dual_const, dual_mul, dual_add, DualEquiv, bsq]
+  let eg : Nat → Balance := fun | 0 => g1 | 1 => g2 | 2 => g3 | _ => bzero
+  let e1 := BExpr.var 0; let e2 := BExpr.var 1; let e3 := BExpr.var 2
+  have hden_re := bal_poly_eq eg (.add .one (.add (.add (.mul e1 e1) (.mul e2 e2)) (.mul e3 e3)))
+    (.add .one (.add (.mul e1 e1) (.add (.mul e2 e2) (.mul e3 e3)))) rfl
+  have hden_eps := bal_poly_eq eg
+    (.add .zero (.add (.add (.add (.mul e1 .one) (.mul .one e1)) (.nat 0)) (.nat 0)))
+    (.mul (.nat 2) e1) rfl
+  have hden_eps' : BalanceEquiv
+      (balance_add bzero (balance_add (balance_add (balance_add (balance_mul g1 bone) (balance_mul bone g1)) bzero) bzero))
+      (balance_mul (balOfNat 2) g1) :=
+    bal_poly_eq eg
+      (.add .zero (.add (.add (.add (.mul e1 .one) (.mul .one e1)) .zero) .zero))
+      (.mul (.nat 2) e1) rfl
+  have hq0_re := bal_poly_eq eg
+    (.add .one (.mul (.neg .one) (.add (.add (.mul e1 e1) (.mul e2 e2)) (.mul e3 e3))))
+    (.sub .one (.add (.mul e1 e1) (.add (.mul e2 e2) (.mul e3 e3)))) rfl
+  have hq0_eps := bal_poly_eq eg
+    (.add .zero (.add (.mul (.neg .one) (.add (.add (.add (.mul e1 .one) (.mul .one e1)) .zero) .zero))
+                      (.mul .zero (.add (.add (.mul e1 e1) (.mul e2 e2)) (.mul e3 e3)))))
+    (.neg (.mul (.nat 2) e1)) rfl
+  have hq1_eps := bal_poly_eq eg (.add (.mul (.nat 2) .one) (.mul .zero e1)) (.nat 2) rfl
+  let eh : Nat → Balance := fun | 0 => D | 1 => uc | 2 => vu | 3 => vc | 4 => beta | _ => bzero
+  have hh_re := bal_poly_eq eh
+    (.add (.mul (.var 0) (.var 1)) (.mul (.neg (.mul (.var 2) (.var 3))) (.var 4)))
+    (.sub (.mul (.var 0) (.var 1)) (.mul (.mul (.var 2) (.var 3)) (.var 4))) rfl
+  have hh_eps := bal_poly_eq eh
+    (.add .zero (.add (.mul (.neg (.mul (.var 2) (.var 3))) .one) (.mul .zero (.var 4))))
+    (.neg (.mul (.var 2) (.var 3))) rfl
+  let ez : Nat → Balance := fun | 0 => c | 1 => a1 | 2 => ur | 3 => a2 | 4 => ui | 5 => a3 | _ => bzero
+  have hz_re := step24_balance_refl
+    (balance_add (balance_add c (balance_add (balance_mul a1 ur) (balance_mul a2 ui)))
+                 (balance_mul a3 (balance_add (balance_mul ur ur) (balance_mul ui ui))))
+  have hz_eps := bal_poly_eq ez
+    (.add (.add .zero (.add (.add (.mul (.var 1) .one) (.mul .zero (.var 2)))
+                            (.add (.mul (.var 3) .zero) (.mul .zero (.var 4)))))
+          (.add (.mul (.var 5) (.add (.add (.mul (.var 2) .one) (.mul .one (.var 2)))
+                                     (.add (.mul (.var 4) .zero) (.mul .zero (.var 4)))))
+                (.mul .zero (.add (.mul (.var 2) (.var 2)) (.mul (.var 4) (.var 4))))))
+    (.add (.var 1) (.mul (.nat 2) (.mul (.var 5) (.var 2)))) rfl
+  exact ⟨⟨hden_re, hden_eps'⟩, ⟨hq0_re, hq0_eps⟩, ⟨step24_balance_refl _, hq1_eps⟩,
+         ⟨hh_re, hh_eps⟩, ⟨hz_re, hz_eps⟩⟩
+
+private def e_s122_newton_L : BExpr :=
+  let ea := BExpr.var 0; let ey := BExpr.var 1
+  let eay2 := BExpr.mul ea (.mul ey ey)
+  let eyn := BExpr.mul ey (.sub (.nat 3) eay2)
+  .sub (.nat 4) (.mul ea (.mul eyn eyn))
+
+private def e_s122_newton_R : BExpr :=
+  let ea := BExpr.var 0; let ey := BExpr.var 1
+  let eay2 := BExpr.mul ea (.mul ey ey)
+  .mul (.mul (.sub .one eay2) (.sub .one eay2)) (.sub (.nat 4) eay2)
+
+private theorem p_s122_newton : e_s122_newton_L.norm = e_s122_newton_R.norm := rfl
+
+private def e_s122_den_ge1_L : BExpr := .sub (.nat 4) (.var 0)
+private def e_s122_den_ge1_R : BExpr := .sub (.sub (.nat 5) (.var 0)) .one
+private theorem p_s122_den_ge1 : e_s122_den_ge1_L.norm = e_s122_den_ge1_R.norm := rfl
+
+private def e_s122_den_gt_L : BExpr := .add .one (.sub (.nat 4) (.var 0))
+private def e_s122_den_gt_R : BExpr := .sub (.nat 5) (.var 0)
+private theorem p_s122_den_gt : e_s122_den_gt_L.norm = e_s122_den_gt_R.norm := rfl
+
+private def e_s122_bhi_L : BExpr := .mul (.nat 10) (.sub (.nat 4) (.var 0))
+private def e_s122_bhi_R : BExpr := .sub (.mul (.nat 9) (.sub (.nat 5) (.var 0))) (.add (.nat 5) (.var 0))
+private theorem p_s122_bhi : e_s122_bhi_L.norm = e_s122_bhi_R.norm := rfl
+
+private def e_s122_blo_L : BExpr := .mul (.nat 10) (.sub (.var 0) (.neg (.nat 4)))
+private def e_s122_blo_R : BExpr := .sub (.mul (.nat 9) (.add (.nat 5) (.var 0))) (.sub (.nat 5) (.var 0))
+private theorem p_s122_blo : e_s122_blo_L.norm = e_s122_blo_R.norm := rfl
+
+/-- ШАГ 122. Тотальность и границы для RMSNorm, Newton inv-sqrt (без `.sqrt()`) и адаптивного Bartlett Page-Hinkley:
+    1. RMSNorm: при `ε > 0` и `s ≥ 0` знаменатель `s + ε ≥ ε > 0`.
+    2. 1-шаговый Ньютон `2y' = y(3 - ay²)`: точное тождество квадратичной сходимости
+       `4 - a·(y(3 - ay²))² ~ (1 - ay²)² · (4 - ay²)` и строгая положительность `y' > 0` при `y > 0, ay² < 3`.
+    3. Поправка Бартлетта `(1 + ρ)/(1 - ρ)` в масштабе `ρ = r₅/5` при `-4 ≤ r₅ ≤ 4` (`|ρ| ≤ 0.8`):
+       знаменатель `5 - r₅ ≥ 1 > 0`, и двусторонняя оценка `(5 - r₅) ≤ 9(5 + r₅)` и `(5 + r₅) ≤ 9(5 - r₅)` (`κ ∈ [1/9, 9]`). -/
+theorem step122_rmsnorm_newton_and_bartlett_ph_totality
+    (s eps a y r5 : Balance) (heps : BalGtZero eps) (hs : BalGeZero s) :
+    let den_rms := balance_add s eps
+    let ay2 := balance_mul a (bsq y)
+    let y_next2 := balance_mul y (balance_sub (balOfNat 3) ay2)
+    BalLe eps den_rms ∧ BalGtZero den_rms ∧
+    BalanceEquiv
+      (balance_sub (balOfNat 4) (balance_mul a (bsq y_next2)))
+      (balance_mul (bsq (balance_sub bone ay2)) (balance_sub (balOfNat 4) ay2)) ∧
+    (BalGtZero y → BalLt ay2 (balOfNat 3) → BalGtZero y_next2) ∧
+    (BalLe (balance_neg (balOfNat 4)) r5 → BalLe r5 (balOfNat 4) →
+      BalLe bone (balance_sub (balOfNat 5) r5) ∧
+      BalGtZero (balance_sub (balOfNat 5) r5) ∧
+      BalLe (balance_sub (balOfNat 5) r5) (balance_mul (balOfNat 9) (balance_add (balOfNat 5) r5)) ∧
+      BalLe (balance_add (balOfNat 5) r5) (balance_mul (balOfNat 9) (balance_sub (balOfNat 5) r5))) := by
+  dsimp only [bsq]
+  have hrms_le : BalLe eps (balance_add s eps) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => s | 1 => eps | _ => bzero)
+      e_add_sub_cancel_L e_add_sub_cancel_R p_add_sub_cancel) hs
+  have hrms_gt : BalGtZero (balance_add s eps) :=
+    bal_gt_zero_of_equiv (bal_add_comm eps s) (bal_add_gt_ge heps hs)
+  let envN : Nat → Balance := fun | 0 => a | 1 => y | _ => bzero
+  have hnewton := bal_poly_eq envN e_s122_newton_L e_s122_newton_R p_s122_newton
+  have hy_pos : BalGtZero y → BalLt (balance_mul a (balance_mul y y)) (balOfNat 3) →
+      BalGtZero (balance_mul y (balance_sub (balOfNat 3) (balance_mul a (balance_mul y y)))) := by
+    intro hy h3
+    exact bal_mul_gt_gt hy h3
+  have hbart : BalLe (balance_neg (balOfNat 4)) r5 → BalLe r5 (balOfNat 4) →
+      BalLe bone (balance_sub (balOfNat 5) r5) ∧
+      BalGtZero (balance_sub (balOfNat 5) r5) ∧
+      BalLe (balance_sub (balOfNat 5) r5) (balance_mul (balOfNat 9) (balance_add (balOfNat 5) r5)) ∧
+      BalLe (balance_add (balOfNat 5) r5) (balance_mul (balOfNat 9) (balance_sub (balOfNat 5) r5)) := by
+    intro hlo hhi
+    let eb : Nat → Balance := fun | 0 => r5 | _ => bzero
+    have hden_ge1 : BalLe bone (balance_sub (balOfNat 5) r5) :=
+      bal_ge_zero_of_equiv (bal_poly_eq eb e_s122_den_ge1_L e_s122_den_ge1_R p_s122_den_ge1) hhi
+    have hden_gt : BalGtZero (balance_sub (balOfNat 5) r5) :=
+      bal_gt_zero_of_equiv (bal_poly_eq eb e_s122_den_gt_L e_s122_den_gt_R p_s122_den_gt)
+        (bal_add_gt_ge bone_gt_zero hhi)
+    have hb_hi : BalLe (balance_add (balOfNat 5) r5) (balance_mul (balOfNat 9) (balance_sub (balOfNat 5) r5)) :=
+      bal_ge_zero_of_equiv (bal_poly_eq eb e_s122_bhi_L e_s122_bhi_R p_s122_bhi)
+        (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 9)) hhi)
+    have hb_lo : BalLe (balance_sub (balOfNat 5) r5) (balance_mul (balOfNat 9) (balance_add (balOfNat 5) r5)) :=
+      bal_ge_zero_of_equiv (bal_poly_eq eb e_s122_blo_L e_s122_blo_R p_s122_blo)
+        (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 9)) hlo)
+    exact ⟨hden_ge1, hden_gt, hb_lo, hb_hi⟩
+  exact ⟨hrms_le, hrms_gt, hnewton, hy_pos, hbart⟩
+
+/-- ШАГ 123. Полиномиальное отталкивание прототипов без сингулярного деления (`1/(1 - d + ε)²`):
+    Для зоны коллизии `0 ≤ μ ≤ d ≤ 1`:
+    1. `0 ≤ d - μ ≤ 1 - μ` и `0 ≤ (d - μ)² ≤ (1 - μ)²`.
+    2. Точная `DualBalance`-производная штрафа `((d + ε) - μ)²` равна `2(d - μ)`,
+       и жёстко ограничена сверху `2(1 - μ)` без единого деления. -/
+theorem step123_poly_repulsion_bounded (d mu : Balance)
+    (_hmu : BalGeZero mu) (hd_ge : BalLe mu d) (hd_le : BalLe d bone) :
+    let ex := balance_sub d mu
+    let om := balance_sub bone mu
+    let xd := dual_add (dual_var d) (dual_const (balance_neg mu))
+    BalGeZero ex ∧
+    BalLe ex om ∧
+    BalGeZero (bsq ex) ∧
+    BalLe (bsq ex) (bsq om) ∧
+    DualEquiv (dual_mul xd xd) ⟨bsq ex, balance_mul (balOfNat 2) ex⟩ ∧
+    BalGeZero (balance_mul (balOfNat 2) ex) ∧
+    BalLe (balance_mul (balOfNat 2) ex) (balance_mul (balOfNat 2) om) := by
+  dsimp only [dual_add, dual_var, dual_const, dual_mul, DualEquiv, bsq]
+  let env : Nat → Balance := fun | 0 => d | 1 => mu | _ => bzero
+  have hex_ge : BalGeZero (balance_sub d mu) := hd_ge
+  have hex_le_om : BalLe (balance_sub d mu) (balance_sub bone mu) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq env (.sub .one (.var 0)) (.sub (.sub .one (.var 1)) (.sub (.var 0) (.var 1))) rfl)
+      hd_le
+  have hneg_om_le_ex : BalLe (balance_neg (balance_sub bone mu)) (balance_sub d mu) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq env (.add (.mul (.nat 2) (.sub (.var 0) (.var 1))) (.sub .one (.var 0)))
+        (.sub (.sub (.var 0) (.var 1)) (.neg (.sub .one (.var 1)))) rfl)
+      (bal_add_ge_ge (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) hex_ge) hd_le)
+  have hsq_ge : BalGeZero (balance_mul (balance_sub d mu) (balance_sub d mu)) :=
+    bal_sq_ge_zero (balance_sub d mu)
+  have hsq_le : BalLe (bsq (balance_sub d mu)) (bsq (balance_sub bone mu)) :=
+    bal_abs_le_sq_le hneg_om_le_ex hex_le_om
+  have hd_re := bal_poly_eq env
+    (.mul (.add (.var 0) (.neg (.var 1))) (.add (.var 0) (.neg (.var 1))))
+    (.mul (.sub (.var 0) (.var 1)) (.sub (.var 0) (.var 1))) rfl
+  have hd_eps := bal_poly_eq env
+    (.add (.mul (.add (.var 0) (.neg (.var 1))) (.add .one .zero))
+          (.mul (.add .one .zero) (.add (.var 0) (.neg (.var 1)))))
+    (.mul (.nat 2) (.sub (.var 0) (.var 1))) rfl
+  have h2ex_ge := bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) hex_ge
+  have h2ex_le : BalLe (balance_mul (balOfNat 2) (balance_sub d mu)) (balance_mul (balOfNat 2) (balance_sub bone mu)) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq env (.mul (.nat 2) (.sub .one (.var 0)))
+        (.sub (.mul (.nat 2) (.sub .one (.var 1))) (.mul (.nat 2) (.sub (.var 0) (.var 1)))) rfl)
+      (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) hd_le)
+  exact ⟨hex_ge, hex_le_om, hsq_ge, hsq_le, ⟨hd_re, hd_eps⟩, h2ex_ge, h2ex_le⟩
+
+private def e_sum3_L : BExpr := .add (.add (.var 0) (.var 0)) (.var 0)
+private def e_sum3_R : BExpr := .mul (.nat 3) (.var 0)
+private theorem p_sum3 : e_sum3_L.norm = e_sum3_R.norm := rfl
+
+private def e_sum4_L : BExpr := .add (.add (.var 0) (.var 0)) (.add (.var 0) (.var 0))
+private def e_sum4_R : BExpr := .mul (.nat 4) (.var 0)
+private theorem p_sum4 : e_sum4_L.norm = e_sum4_R.norm := rfl
+
+private def e_sub_self_zero_L : BExpr := .sub (.var 0) (.var 0)
+private theorem p_sub_self_zero : e_sub_self_zero_L.norm = BExpr.zero.norm := rfl
+
+private def e_drift1_L : BExpr := .sub (.mul (.add (.var 0) (.var 1)) (.add (.var 0) (.var 1))) (.mul (.var 0) (.var 0))
+private def e_drift1_R : BExpr := .add (.mul (.nat 2) (.mul (.var 0) (.var 1))) (.mul (.var 1) (.var 1))
+private theorem p_drift1 : e_drift1_L.norm = e_drift1_R.norm := rfl
+
+private theorem drift1_sq (a b : Balance) :
+    BalanceEquiv (balance_sub (bsq (balance_add a b)) (bsq a))
+                 (balance_add (balance_mul (balOfNat 2) (balance_mul a b)) (bsq b)) :=
+  bal_poly_eq (fun | 0 => a | 1 => b | _ => bzero) e_drift1_L e_drift1_R p_drift1
+
+private def e_add_add_swap_L : BExpr := .add (.add (.var 0) (.var 1)) (.add (.var 2) (.var 3))
+private def e_add_add_swap_R : BExpr := .add (.add (.var 0) (.var 2)) (.add (.var 1) (.var 3))
+private theorem p_add_add_swap : e_add_add_swap_L.norm = e_add_add_swap_R.norm := rfl
+
+private def e_sub_neg_eq_add_L : BExpr := .sub (.var 1) (.neg (.var 0))
+private def e_sub_neg_eq_add_R : BExpr := .add (.var 0) (.var 1)
+private theorem p_sub_neg_eq_add : e_sub_neg_eq_add_L.norm = e_sub_neg_eq_add_R.norm := rfl
+
+private def e_sub_add_double_L : BExpr := .add (.sub (.var 0) (.var 1)) (.add (.var 0) (.var 1))
+private def e_sub_add_double_R : BExpr := .mul (.nat 2) (.var 0)
+private theorem p_sub_add_double : e_sub_add_double_L.norm = e_sub_add_double_R.norm := rfl
+
+private def e_sub_zero_R : BExpr := .sub (.var 0) .zero
+private theorem p_sub_zero : (BExpr.var 0).norm = e_sub_zero_R.norm := rfl
+
+private def e_zero_sub_neg_R : BExpr := .sub .zero (.neg (.var 0))
+private theorem p_zero_sub_neg : (BExpr.var 0).norm = e_zero_sub_neg_R.norm := rfl
+
+private def e_one_add_L : BExpr := .add .one (.var 0)
+private def e_one_sub_neg_R : BExpr := .sub .one (.neg (.var 0))
+private theorem p_one_add_eq_sub_neg : e_one_add_L.norm = e_one_sub_neg_R.norm := rfl
+
+private def e_s124_hhi_neg_L : BExpr :=
+  .add (.mul (.neg (.var 0)) (.add (.var 1) (.var 2))) (.mul (.sub .one (.neg (.var 0))) (.var 1))
+private def e_s124_hhi_neg_R : BExpr := .sub (.var 1) (.mul (.var 2) (.var 0))
+private theorem p_s124_hhi_neg : e_s124_hhi_neg_L.norm = e_s124_hhi_neg_R.norm := rfl
+
+private def e_s124_hlo_neg_L : BExpr :=
+  .add (.mul (.neg (.var 0)) (.sub (.var 1) (.var 2))) (.mul (.sub .one (.neg (.var 0))) (.var 1))
+private def e_s124_hlo_neg_R : BExpr := .sub (.mul (.var 2) (.var 0)) (.neg (.var 1))
+private theorem p_s124_hlo_neg : e_s124_hlo_neg_L.norm = e_s124_hlo_neg_R.norm := rfl
+
+private def e_s124_hhi_pos_L : BExpr :=
+  .add (.mul (.var 0) (.sub (.var 1) (.var 2))) (.mul (.sub .one (.var 0)) (.var 1))
+private def e_s124_hhi_pos_R : BExpr := .sub (.var 1) (.mul (.var 2) (.var 0))
+private theorem p_s124_hhi_pos : e_s124_hhi_pos_L.norm = e_s124_hhi_pos_R.norm := rfl
+
+private def e_s124_hlo_pos_L : BExpr :=
+  .add (.mul (.var 0) (.add (.var 1) (.var 2))) (.mul (.sub .one (.var 0)) (.var 1))
+private def e_s124_hlo_pos_R : BExpr := .sub (.mul (.var 2) (.var 0)) (.neg (.var 1))
+private theorem p_s124_hlo_pos : e_s124_hlo_pos_L.norm = e_s124_hlo_pos_R.norm := rfl
+
+private def e_s124_hue_lo_L : BExpr :=
+  .sub (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4)))
+       (.add (.add (.neg (.var 0)) (.neg (.var 0))) (.add (.neg (.var 0)) (.neg (.var 0))))
+private def e_s124_hue_lo_R : BExpr :=
+  .sub (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4))) (.neg (.mul (.nat 4) (.var 0)))
+private theorem p_s124_hue_lo : e_s124_hue_lo_L.norm = e_s124_hue_lo_R.norm := rfl
+
+private def e_s124_hue_hi_L : BExpr :=
+  .sub (.add (.add (.var 0) (.var 0)) (.add (.var 0) (.var 0)))
+       (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4)))
+private def e_s124_hue_hi_R : BExpr :=
+  .sub (.mul (.nat 4) (.var 0)) (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4)))
+private theorem p_s124_hue_hi : e_s124_hue_hi_L.norm = e_s124_hue_hi_R.norm := rfl
+
+private def e_s124_hee_le4_L : BExpr :=
+  .sub (.add (.add (.mul .one .one) (.mul .one .one)) (.add (.mul .one .one) (.mul .one .one))) (.var 0)
+private def e_s124_hee_le4_R : BExpr := .sub (.nat 4) (.var 0)
+private theorem p_s124_hee_le4 : e_s124_hee_le4_L.norm = e_s124_hee_le4_R.norm := rfl
+
+private def e_s124_drift_lo_L : BExpr :=
+  .add (.mul (.nat 2) (.sub (.var 0) (.neg (.mul (.nat 4) (.var 1))))) (.var 2)
+private def e_s124_drift_lo_R : BExpr :=
+  .sub (.add (.mul (.nat 2) (.var 0)) (.var 2)) (.neg (.mul (.nat 8) (.var 1)))
+private theorem p_s124_drift_lo : e_s124_drift_lo_L.norm = e_s124_drift_lo_R.norm := rfl
+
+private def e_s124_drift_hi_L : BExpr :=
+  .add (.mul (.nat 2) (.sub (.mul (.nat 4) (.var 1)) (.var 0))) (.sub (.nat 4) (.var 2))
+private def e_s124_drift_hi_R : BExpr :=
+  .sub (.add (.mul (.nat 8) (.var 1)) (.nat 4)) (.add (.mul (.nat 2) (.var 0)) (.var 2))
+private theorem p_s124_drift_hi : e_s124_drift_hi_L.norm = e_s124_drift_hi_R.norm := rfl
+
+/-- ШАГ 124. Параметрические оценки Fixed-Point (Q8.24 / без FPU и для ZKML):
+    1. При компонентных границах `|g_i| ≤ B`, `|v_i| ≤ B` и масштабе `S > 0`:
+       `0 ≤ ||g||² ≤ 3B²`, `0 ≤ ||v||² ≤ 4B²`, а масштабированный знаменатель
+       `S² ≤ S² + ||g||² ≤ S² + 3B²` строго положителен и гарантированно не переполняется.
+    2. Ошибка дрейфа нормы после округления `u_tilde = u + e` при `|u_i| ≤ U` и `|e_i| ≤ 1`:
+       `||u + e||² - ||u||² ~ 2(u·e) + ||e||²`, причём `-(8U) ≤ ||u + e||² - ||u||² ≤ 8U + 4`. -/
+theorem step124_fixed_point_bounds_and_norm_drift
+    (S B U : Balance) (g : Vec3) (v u e : Vec4)
+    (hS : BalGtZero S)
+    (hgx1 : BalLe (balance_neg B) g.x) (hgx2 : BalLe g.x B)
+    (hgy1 : BalLe (balance_neg B) g.y) (hgy2 : BalLe g.y B)
+    (hgz1 : BalLe (balance_neg B) g.z) (hgz2 : BalLe g.z B)
+    (hvw1 : BalLe (balance_neg B) v.w) (hvw2 : BalLe v.w B)
+    (hvx1 : BalLe (balance_neg B) v.x) (hvx2 : BalLe v.x B)
+    (hvy1 : BalLe (balance_neg B) v.y) (hvy2 : BalLe v.y B)
+    (hvz1 : BalLe (balance_neg B) v.z) (hvz2 : BalLe v.z B)
+    (huw1 : BalLe (balance_neg U) u.w) (huw2 : BalLe u.w U)
+    (hux1 : BalLe (balance_neg U) u.x) (hux2 : BalLe u.x U)
+    (huy1 : BalLe (balance_neg U) u.y) (huy2 : BalLe u.y U)
+    (huz1 : BalLe (balance_neg U) u.z) (huz2 : BalLe u.z U)
+    (hew1 : BalLe (balance_neg bone) e.w) (hew2 : BalLe e.w bone)
+    (hex1 : BalLe (balance_neg bone) e.x) (hex2 : BalLe e.x bone)
+    (hey1 : BalLe (balance_neg bone) e.y) (hey2 : BalLe e.y bone)
+    (hez1 : BalLe (balance_neg bone) e.z) (hez2 : BalLe e.z bone) :
+    let d3g := dot3 g g
+    let d4v := dot4 v v
+    let denS := balance_add (bsq S) d3g
+    let drift := balance_sub (dot4 (vec4_add u e) (vec4_add u e)) (dot4 u u)
+    BalGeZero d3g ∧ BalLe d3g (balance_mul (balOfNat 3) (bsq B)) ∧
+    BalGeZero d4v ∧ BalLe d4v (balance_mul (balOfNat 4) (bsq B)) ∧
+    BalGtZero denS ∧ BalLe (bsq S) denS ∧ BalLe denS (balance_add (bsq S) (balance_mul (balOfNat 3) (bsq B))) ∧
+    BalanceEquiv drift (balance_add (balance_mul (balOfNat 2) (dot4 u e)) (dot4 e e)) ∧
+    BalLe (balance_neg (balance_mul (balOfNat 8) U)) drift ∧
+    BalLe drift (balance_add (balance_mul (balOfNat 8) U) (balOfNat 4)) := by
+  dsimp only
+  have hg_le : BalLe (dot3 g g) (balance_mul (balOfNat 3) (bsq B)) := by
+    have sx := bal_abs_le_sq_le hgx1 hgx2
+    have sy := bal_abs_le_sq_le hgy1 hgy2
+    have sz := bal_abs_le_sq_le hgz1 hgz2
+    have hsum := bal_le_add_congr (bal_le_add_congr sx sy) sz
+    let eB : Nat → Balance := fun | 0 => bsq B | _ => bzero
+    have h3 : BalanceEquiv (balance_add (balance_add (bsq B) (bsq B)) (bsq B)) (balance_mul (balOfNat 3) (bsq B)) :=
+      bal_poly_eq eB e_sum3_L e_sum3_R p_sum3
+    dsimp [BalLe] at *
+    exact bal_ge_zero_of_equiv
+      (bal_sub_congr h3 (step24_balance_refl (dot3 g g))) hsum
+  have hv_le : BalLe (dot4 v v) (balance_mul (balOfNat 4) (bsq B)) := by
+    have sw := bal_abs_le_sq_le hvw1 hvw2
+    have sx := bal_abs_le_sq_le hvx1 hvx2
+    have sy := bal_abs_le_sq_le hvy1 hvy2
+    have sz := bal_abs_le_sq_le hvz1 hvz2
+    have hsum := bal_le_add_congr (bal_le_add_congr sw sx) (bal_le_add_congr sy sz)
+    let eB : Nat → Balance := fun | 0 => bsq B | _ => bzero
+    have h4 : BalanceEquiv (balance_add (balance_add (bsq B) (bsq B)) (balance_add (bsq B) (bsq B)))
+                           (balance_mul (balOfNat 4) (bsq B)) :=
+      bal_poly_eq eB e_sum4_L e_sum4_R p_sum4
+    dsimp [BalLe] at *
+    exact bal_ge_zero_of_equiv
+      (bal_sub_congr h4 (step24_balance_refl (dot4 v v))) hsum
+  have hS2 : BalGtZero (bsq S) := bal_mul_gt_gt hS hS
+  have hden_gt : BalGtZero (balance_add (bsq S) (dot3 g g)) :=
+    bal_add_gt_ge hS2 (dot3_self_ge_zero g)
+  have hden_ge : BalLe (bsq S) (balance_add (bsq S) (dot3 g g)) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq (fun | 0 => bsq S | 1 => dot3 g g | _ => bzero)
+        e_sub_add_cancel_L e_sub_add_cancel_R p_sub_add_cancel)
+      (dot3_self_ge_zero g)
+  have hden_le : BalLe (balance_add (bsq S) (dot3 g g)) (balance_add (bsq S) (balance_mul (balOfNat 3) (bsq B))) :=
+    bal_le_add_congr (Or.inl (bal_poly_eq (fun | 0 => bsq S | _ => bzero) e_sub_self_zero_L .zero p_sub_self_zero)) hg_le
+  -- Оценка дрейфа нормы |u_i| ≤ U, |e_i| ≤ 1 => -8U ≤ 2(u·e) + ||e||² ≤ 8U + 4
+  have hdrift_eq : BalanceEquiv
+      (balance_sub (dot4 (vec4_add u e) (vec4_add u e)) (dot4 u u))
+      (balance_add (balance_mul (balOfNat 2) (dot4 u e)) (dot4 e e)) := by
+    let sw := bsq (balance_add u.w e.w); let aw := bsq u.w
+    let sx := bsq (balance_add u.x e.x); let ax := bsq u.x
+    let sy := bsq (balance_add u.y e.y); let ay := bsq u.y
+    let sz := bsq (balance_add u.z e.z); let az := bsq u.z
+    let pw := balance_mul u.w e.w; let qw := bsq e.w
+    let px := balance_mul u.x e.x; let qx := bsq e.x
+    let py := balance_mul u.y e.y; let qy := bsq e.y
+    let pz := balance_mul u.z e.z; let qz := bsq e.z
+    have htop := step24_balance_symm (bal_poly_eq
+      (fun | 0 => balance_add sw sx | 1 => balance_add aw ax
+           | 2 => balance_add sy sz | 3 => balance_add ay az | _ => bzero)
+      e_sub_add_sub_L e_sub_add_sub_R p_sub_add_sub)
+    have hwx := step24_balance_symm (bal_poly_eq
+      (fun | 0 => sw | 1 => aw | 2 => sx | 3 => ax | _ => bzero)
+      e_sub_add_sub_L e_sub_add_sub_R p_sub_add_sub)
+    have hyz := step24_balance_symm (bal_poly_eq
+      (fun | 0 => sy | 1 => ay | 2 => sz | 3 => az | _ => bzero)
+      e_sub_add_sub_L e_sub_add_sub_R p_sub_add_sub)
+    have hsplit := step24_balance_trans htop (step25_balance_add_congr hwx hyz)
+    have hd1 := step25_balance_add_congr
+      (step25_balance_add_congr (drift1_sq u.w e.w) (drift1_sq u.x e.x))
+      (step25_balance_add_congr (drift1_sq u.y e.y) (drift1_sq u.z e.z))
+    have hs1 := bal_poly_eq
+      (fun | 0 => balance_mul (balOfNat 2) pw | 1 => qw | 2 => balance_mul (balOfNat 2) px | 3 => qx | _ => bzero)
+      e_add_add_swap_L e_add_add_swap_R p_add_add_swap
+    have hs2 := bal_poly_eq
+      (fun | 0 => balance_mul (balOfNat 2) py | 1 => qy | 2 => balance_mul (balOfNat 2) pz | 3 => qz | _ => bzero)
+      e_add_add_swap_L e_add_add_swap_R p_add_add_swap
+    have hs3 := bal_poly_eq
+      (fun | 0 => balance_add (balance_mul (balOfNat 2) pw) (balance_mul (balOfNat 2) px) | 1 => balance_add qw qx
+           | 2 => balance_add (balance_mul (balOfNat 2) py) (balance_mul (balOfNat 2) pz) | 3 => balance_add qy qz | _ => bzero)
+      e_add_add_swap_L e_add_add_swap_R p_add_add_swap
+    have hm2 := bal_poly_eq (fun | 0 => balOfNat 2 | 1 => pw | 2 => px | 3 => py | 4 => pz | _ => bzero)
+      e_mul_sum4_L e_mul_sum4_R p_mul_sum4
+    have hrearr := step24_balance_trans (step25_balance_add_congr hs1 hs2)
+      (step24_balance_trans hs3 (step25_balance_add_congr hm2 (step24_balance_refl (dot4 e e))))
+    exact step24_balance_trans hsplit (step24_balance_trans hd1 hrearr)
+  -- Скалярная оценка: -U ≤ uc ≤ U ∧ -1 ≤ ec ≤ 1 ⇒ -U ≤ uc·ec ≤ U
+  have hmul1 : ∀ (uc ec : Balance),
+      BalLe (balance_neg U) uc → BalLe uc U → BalLe (balance_neg bone) ec → BalLe ec bone →
+      BalLe (balance_neg U) (balance_mul uc ec) ∧ BalLe (balance_mul uc ec) U := by
+    intro uc ec hu1 hu2 he1 he2
+    have hep : BalGeZero (balance_add bone ec) :=
+      bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => bone | 1 => ec | _ => bzero)
+        e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) he1
+    have hem : BalGeZero (balance_sub bone ec) := he2
+    have hup : BalGeZero (balance_add U uc) :=
+      bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => U | 1 => uc | _ => bzero)
+        e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) hu1
+    have hum : BalGeZero (balance_sub U uc) := hu2
+    have hU0 : BalGeZero U :=
+      bal_ge_zero_of_double_ge
+        (bal_ge_zero_of_equiv
+          (bal_poly_eq (fun | 0 => U | 1 => uc | _ => bzero)
+            e_sub_add_double_L e_sub_add_double_R p_sub_add_double)
+          (bal_add_ge_ge hum hup))
+    cases trichotomy ec.fwd ec.bwd with
+    | inl hez =>
+      have he0 : BalanceEquiv ec bzero := bal_equiv_bzero_of_eq hez
+      have h0 : BalanceEquiv (balance_mul uc ec) bzero :=
+        step24_balance_trans (bal_mul_congr (step24_balance_refl uc) he0) (bal_mul_zero uc)
+      have hU_hi : BalLe (balance_mul uc ec) U :=
+        bal_ge_zero_of_equiv
+          (step24_balance_trans
+            (bal_poly_eq (fun | 0 => U | _ => bzero) (.var 0) e_sub_zero_R p_sub_zero)
+            (bal_sub_congr (step24_balance_refl U) (step24_balance_symm h0))) hU0
+      have hU_lo : BalLe (balance_neg U) (balance_mul uc ec) :=
+        bal_ge_zero_of_equiv
+          (step24_balance_trans
+            (bal_poly_eq (fun | 0 => U | _ => bzero) (.var 0) e_zero_sub_neg_R p_zero_sub_neg)
+            (bal_sub_congr (step24_balance_symm h0) (step24_balance_refl _))) hU0
+      exact ⟨hU_lo, hU_hi⟩
+    | inr hene =>
+      cases hene with
+      | inl helt =>
+        have hnec_gt : BalGtZero (balance_neg ec) := bal_neg_gt_zero helt
+        have h1m_ge : BalGeZero (balance_sub bone (balance_neg ec)) :=
+          bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => ec | _ => bzero)
+            e_one_add_L e_one_sub_neg_R p_one_add_eq_sub_neg) hep
+        have hhi := bal_add_ge_ge (bal_mul_gt_ge hnec_gt hup) (bal_mul_ge_ge h1m_ge hU0)
+        have hhi_eq : BalanceEquiv
+            (balance_add (balance_mul (balance_neg ec) (balance_add U uc))
+                         (balance_mul (balance_sub bone (balance_neg ec)) U))
+            (balance_sub U (balance_mul uc ec)) :=
+          bal_poly_eq (fun | 0 => ec | 1 => U | 2 => uc | _ => bzero)
+            e_s124_hhi_neg_L e_s124_hhi_neg_R p_s124_hhi_neg
+        have hlo := bal_add_ge_ge (bal_mul_gt_ge hnec_gt hum) (bal_mul_ge_ge h1m_ge hU0)
+        have hlo_eq : BalanceEquiv
+            (balance_add (balance_mul (balance_neg ec) (balance_sub U uc))
+                         (balance_mul (balance_sub bone (balance_neg ec)) U))
+            (balance_sub (balance_mul uc ec) (balance_neg U)) :=
+          bal_poly_eq (fun | 0 => ec | 1 => U | 2 => uc | _ => bzero)
+            e_s124_hlo_neg_L e_s124_hlo_neg_R p_s124_hlo_neg
+        exact ⟨bal_ge_zero_of_equiv hlo_eq hlo, bal_ge_zero_of_equiv hhi_eq hhi⟩
+      | inr hegt =>
+        have hhi := bal_add_ge_ge (bal_mul_gt_ge hegt hum) (bal_mul_ge_ge hem hU0)
+        have hhi_eq : BalanceEquiv
+            (balance_add (balance_mul ec (balance_sub U uc)) (balance_mul (balance_sub bone ec) U))
+            (balance_sub U (balance_mul uc ec)) :=
+          bal_poly_eq (fun | 0 => ec | 1 => U | 2 => uc | _ => bzero)
+            e_s124_hhi_pos_L e_s124_hhi_pos_R p_s124_hhi_pos
+        have hlo := bal_add_ge_ge (bal_mul_gt_ge hegt hup) (bal_mul_ge_ge hem hU0)
+        have hlo_eq : BalanceEquiv
+            (balance_add (balance_mul ec (balance_add U uc)) (balance_mul (balance_sub bone ec) U))
+            (balance_sub (balance_mul uc ec) (balance_neg U)) :=
+          bal_poly_eq (fun | 0 => ec | 1 => U | 2 => uc | _ => bzero)
+            e_s124_hlo_pos_L e_s124_hlo_pos_R p_s124_hlo_pos
+        exact ⟨bal_ge_zero_of_equiv hlo_eq hlo, bal_ge_zero_of_equiv hhi_eq hhi⟩
+  have pmw := hmul1 u.w e.w huw1 huw2 hew1 hew2
+  have pmx := hmul1 u.x e.x hux1 hux2 hex1 hex2
+  have pmy := hmul1 u.y e.y huy1 huy2 hey1 hey2
+  have pmz := hmul1 u.z e.z huz1 huz2 hez1 hez2
+  have hue_lo : BalLe (balance_neg (balance_mul (balOfNat 4) U)) (dot4 u e) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq (fun | 0 => U | 1 => balance_mul u.w e.w | 2 => balance_mul u.x e.x
+                        | 3 => balance_mul u.y e.y | 4 => balance_mul u.z e.z | _ => bzero)
+        e_s124_hue_lo_L e_s124_hue_lo_R p_s124_hue_lo)
+      (bal_le_add_congr (bal_le_add_congr pmw.1 pmx.1) (bal_le_add_congr pmy.1 pmz.1))
+  have hue_hi : BalLe (dot4 u e) (balance_mul (balOfNat 4) U) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq (fun | 0 => U | 1 => balance_mul u.w e.w | 2 => balance_mul u.x e.x
+                        | 3 => balance_mul u.y e.y | 4 => balance_mul u.z e.z | _ => bzero)
+        e_s124_hue_hi_L e_s124_hue_hi_R p_s124_hue_hi)
+      (bal_le_add_congr (bal_le_add_congr pmw.2 pmx.2) (bal_le_add_congr pmy.2 pmz.2))
+  have hee_le4 : BalLe (dot4 e e) (balOfNat 4) := by
+    have sew := bal_abs_le_sq_le hew1 hew2
+    have sex := bal_abs_le_sq_le hex1 hex2
+    have sey := bal_abs_le_sq_le hey1 hey2
+    have sez := bal_abs_le_sq_le hez1 hez2
+    exact bal_ge_zero_of_equiv
+      (bal_poly_eq (fun | 0 => dot4 e e | _ => bzero)
+        e_s124_hee_le4_L e_s124_hee_le4_R p_s124_hee_le4)
+      (bal_le_add_congr (bal_le_add_congr sew sex) (bal_le_add_congr sey sez))
+  have hdrift_lo : BalLe (balance_neg (balance_mul (balOfNat 8) U))
+                         (balance_sub (dot4 (vec4_add u e) (vec4_add u e)) (dot4 u u)) := by
+    have h2hue := bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) hue_lo
+    have hlo_2e := bal_add_ge_ge h2hue (dot4_self_ge_zero e)
+    have hlo_eq : BalanceEquiv
+        (balance_add (balance_mul (balOfNat 2) (balance_sub (dot4 u e) (balance_neg (balance_mul (balOfNat 4) U))))
+                     (dot4 e e))
+        (balance_sub (balance_add (balance_mul (balOfNat 2) (dot4 u e)) (dot4 e e))
+                     (balance_neg (balance_mul (balOfNat 8) U))) :=
+      bal_poly_eq (fun | 0 => dot4 u e | 1 => U | 2 => dot4 e e | _ => bzero)
+        e_s124_drift_lo_L e_s124_drift_lo_R p_s124_drift_lo
+    exact bal_ge_zero_of_equiv
+      (step24_balance_trans hlo_eq (bal_sub_congr (step24_balance_symm hdrift_eq) (step24_balance_refl _)))
+      hlo_2e
+  have hdrift_hi : BalLe (balance_sub (dot4 (vec4_add u e) (vec4_add u e)) (dot4 u u))
+                         (balance_add (balance_mul (balOfNat 8) U) (balOfNat 4)) := by
+    have h2hue := bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) hue_hi
+    have hhi_2e := bal_add_ge_ge h2hue hee_le4
+    have hhi_eq : BalanceEquiv
+        (balance_add (balance_mul (balOfNat 2) (balance_sub (balance_mul (balOfNat 4) U) (dot4 u e)))
+                     (balance_sub (balOfNat 4) (dot4 e e)))
+        (balance_sub (balance_add (balance_mul (balOfNat 8) U) (balOfNat 4))
+                     (balance_add (balance_mul (balOfNat 2) (dot4 u e)) (dot4 e e))) :=
+      bal_poly_eq (fun | 0 => dot4 u e | 1 => U | 2 => dot4 e e | _ => bzero)
+        e_s124_drift_hi_L e_s124_drift_hi_R p_s124_drift_hi
+    exact bal_ge_zero_of_equiv
+      (step24_balance_trans hhi_eq (bal_sub_congr (step24_balance_refl _) (step24_balance_symm hdrift_eq)))
+      hhi_2e
+  exact ⟨dot3_self_ge_zero g, hg_le, dot4_self_ge_zero v, hv_le, hden_gt, hden_ge, hden_le,
+         hdrift_eq, hdrift_lo, hdrift_hi⟩
+
+
+-- =============================================================================
+-- ЭТАП XXX. ВЕРИФИКАЦИЯ v0.5.0: АДАПТИВНОЕ O(d) (S_6 ≤ O(5)), АВТОНОМИЯ PILLAR 5,
+-- ВКЛАДКА SO(2) ⊂ SO(3) ⊂ SO(4) ⊂ O(4), ВЫХОД ИЗ СЕДЛА β=0 И ГРАНИЦЫ Q8.24
+-- (Шаги 125–128; строго 0 аксиом)
+-- =============================================================================
+
+theorem bal_le_refl (x : Balance) : BalLe x x :=
+  Or.inl (bal_poly_eq (fun | 0 => x | _ => bzero) e_sub_self_zero_L .zero p_sub_self_zero)
+
+theorem bal_le_of_equiv_left {x x' y : Balance} (hx : BalanceEquiv x x') (hle : BalLe x y) :
+    BalLe x' y :=
+  bal_ge_zero_of_equiv (bal_sub_congr (step24_balance_refl y) hx) hle
+
+theorem bal_le_of_equiv_right {x y y' : Balance} (hy : BalanceEquiv y y') (hle : BalLe x y) :
+    BalLe x y' :=
+  bal_ge_zero_of_equiv (bal_sub_congr hy (step24_balance_refl x)) hle
+
+private def e_s125_mul_sub_L : BExpr := .mul (.var 0) (.sub (.var 2) (.var 1))
+private def e_s125_mul_sub_R : BExpr := .sub (.mul (.var 0) (.var 2)) (.mul (.var 0) (.var 1))
+private theorem p_s125_mul_sub : e_s125_mul_sub_L.norm = e_s125_mul_sub_R.norm := rfl
+
+theorem bal_le_mul_nonneg_left {c a b : Balance} (hc : BalGeZero c) (hab : BalLe a b) :
+    BalLe (balance_mul c a) (balance_mul c b) :=
+  bal_ge_zero_of_equiv
+    (bal_poly_eq (fun | 0 => c | 1 => a | 2 => b | _ => bzero) e_s125_mul_sub_L e_s125_mul_sub_R p_s125_mul_sub)
+    (bal_mul_ge_ge hc hab)
+
+-- ----- Векторы произвольной размерности Vec n для AdaptiveO(d) и IDBD -----
+
+def Vec : Nat → Type
+  | 0 => Unit
+  | n + 1 => Balance × Vec n
+
+def VecEquiv : {n : Nat} → Vec n → Vec n → Prop
+  | 0, _, _ => True
+  | _ + 1, (a, u), (b, v) => BalanceEquiv a b ∧ VecEquiv u v
+
+def vec_zero : (n : Nat) → Vec n
+  | 0 => ()
+  | n + 1 => (bzero, vec_zero n)
+
+def vec_add : {n : Nat} → Vec n → Vec n → Vec n
+  | 0, _, _ => ()
+  | _ + 1, (a, u), (b, v) => (balance_add a b, vec_add u v)
+
+def vec_sub : {n : Nat} → Vec n → Vec n → Vec n
+  | 0, _, _ => ()
+  | _ + 1, (a, u), (b, v) => (balance_sub a b, vec_sub u v)
+
+def vec_scale : {n : Nat} → Balance → Vec n → Vec n
+  | 0, _, _ => ()
+  | _ + 1, s, (a, u) => (balance_mul s a, vec_scale s u)
+
+def vdot : {n : Nat} → Vec n → Vec n → Balance
+  | 0, _, _ => bzero
+  | _ + 1, (a, u), (b, v) => balance_add (balance_mul a b) (vdot u v)
+
+def vec_snoc : {n : Nat} → Vec n → Balance → Vec (n + 1)
+  | 0, _, x => (x, ())
+  | _ + 1, (a, u), x => (a, vec_snoc u x)
+
+def vec_embed {n : Nat} (u : Vec n) : Vec (n + 1) :=
+  vec_snoc u bzero
+
+theorem vec_equiv_refl : {n : Nat} → (u : Vec n) → VecEquiv u u
+  | 0, () => trivial
+  | _ + 1, (a, u) => ⟨step24_balance_refl a, vec_equiv_refl u⟩
+
+theorem vec_equiv_symm : {n : Nat} → {u v : Vec n} → VecEquiv u v → VecEquiv v u
+  | 0, (), (), _ => trivial
+  | _ + 1, (_, _), (_, _), ⟨hab, huv⟩ => ⟨step24_balance_symm hab, vec_equiv_symm huv⟩
+
+theorem vec_equiv_trans : {n : Nat} → {u v w : Vec n} → VecEquiv u v → VecEquiv v w → VecEquiv u w
+  | 0, (), (), (), _, _ => trivial
+  | _ + 1, (_, _), (_, _), (_, _), ⟨h1a, h1u⟩, ⟨h2a, h2u⟩ =>
+    ⟨step24_balance_trans h1a h2a, vec_equiv_trans h1u h2u⟩
+
+theorem vec_add_congr : {n : Nat} → {u1 u2 v1 v2 : Vec n} →
+    VecEquiv u1 u2 → VecEquiv v1 v2 → VecEquiv (vec_add u1 v1) (vec_add u2 v2)
+  | 0, (), (), (), (), _, _ => trivial
+  | _ + 1, (_, _), (_, _), (_, _), (_, _), ⟨h1a, h1u⟩, ⟨h2a, h2u⟩ =>
+    ⟨step25_balance_add_congr h1a h2a, vec_add_congr h1u h2u⟩
+
+theorem vec_sub_congr : {n : Nat} → {u1 u2 v1 v2 : Vec n} →
+    VecEquiv u1 u2 → VecEquiv v1 v2 → VecEquiv (vec_sub u1 v1) (vec_sub u2 v2)
+  | 0, (), (), (), (), _, _ => trivial
+  | _ + 1, (_, _), (_, _), (_, _), (_, _), ⟨h1a, h1u⟩, ⟨h2a, h2u⟩ =>
+    ⟨bal_sub_congr h1a h2a, vec_sub_congr h1u h2u⟩
+
+theorem vec_scale_congr : {n : Nat} → {s1 s2 : Balance} → {u1 u2 : Vec n} →
+    BalanceEquiv s1 s2 → VecEquiv u1 u2 → VecEquiv (vec_scale s1 u1) (vec_scale s2 u2)
+  | 0, _, _, (), (), _, _ => trivial
+  | _ + 1, _, _, (_, _), (_, _), hs, ⟨ha, hu⟩ =>
+    ⟨bal_mul_congr hs ha, vec_scale_congr hs hu⟩
+
+theorem vdot_comm : {n : Nat} → (u v : Vec n) → BalanceEquiv (vdot u v) (vdot v u)
+  | 0, (), () => step24_balance_refl bzero
+  | _ + 1, (a, u), (b, v) => step25_balance_add_congr (bal_mul_comm a b) (vdot_comm u v)
+
+theorem vdot_self_ge_zero : {n : Nat} → (u : Vec n) → BalGeZero (vdot u u)
+  | 0, () => Or.inl (step24_balance_refl bzero)
+  | _ + 1, (a, u) => bal_add_ge_ge (bal_sq_ge_zero a) (vdot_self_ge_zero u)
+
+theorem vdot_congr : {n : Nat} → {u1 u2 v1 v2 : Vec n} →
+    VecEquiv u1 u2 → VecEquiv v1 v2 → BalanceEquiv (vdot u1 v1) (vdot u2 v2)
+  | 0, (), (), (), (), _, _ => step24_balance_refl bzero
+  | _ + 1, (_, _), (_, _), (_, _), (_, _), ⟨h1a, h1u⟩, ⟨h2a, h2u⟩ =>
+    step25_balance_add_congr (bal_mul_congr h1a h2a) (vdot_congr h1u h2u)
+
+private def e_s125_zero3_R : BExpr :=
+  .add (.sub (.mul (.var 0) .zero) (.mul (.var 1) .zero)) (.mul (.var 2) .zero)
+private theorem p_s125_zero3 : BExpr.zero.norm = e_s125_zero3_R.norm := rfl
+
+private def e_s125_zero3add_R : BExpr :=
+  .add (.add (.mul (.var 0) .zero) (.mul (.var 2) .zero)) (.mul (.var 1) .zero)
+private theorem p_s125_zero3add : BExpr.zero.norm = e_s125_zero3add_R.norm := rfl
+
+private def e_s125_sub_step_L : BExpr :=
+  .add (.add (.sub (.var 0) (.var 1)) (.var 2)) (.add (.sub (.var 3) (.var 4)) (.var 5))
+private def e_s125_sub_step_R : BExpr :=
+  .add (.sub (.add (.var 0) (.var 3)) (.add (.var 1) (.var 4))) (.add (.var 2) (.var 5))
+private theorem p_s125_sub_step : e_s125_sub_step_L.norm = e_s125_sub_step_R.norm := rfl
+
+private def e_s125_add_step_L : BExpr :=
+  .add (.add (.add (.var 0) (.var 2)) (.var 1)) (.add (.add (.var 3) (.var 5)) (.var 4))
+private def e_s125_add_step_R : BExpr :=
+  .add (.add (.add (.var 0) (.var 3)) (.add (.var 2) (.var 5))) (.add (.var 1) (.var 4))
+private theorem p_s125_add_step : e_s125_add_step_L.norm = e_s125_add_step_R.norm := rfl
+
+theorem vdot_sub2_sq : {n : Nat} → (a b : Balance) → (u v : Vec n) →
+    let w := vec_sub (vec_scale a u) (vec_scale b v)
+    BalanceEquiv (vdot w w)
+      (balance_add (balance_sub (balance_mul (bsq a) (vdot u u))
+                                (balance_mul (balance_mul (balOfNat 2) (balance_mul a b)) (vdot u v)))
+                   (balance_mul (bsq b) (vdot v v)))
+  | 0, a, b, (), () =>
+    bal_poly_eq (fun | 0 => bsq a | 1 => balance_mul (balOfNat 2) (balance_mul a b) | 2 => bsq b | _ => bzero)
+      .zero e_s125_zero3_R p_s125_zero3
+  | _ + 1, a, b, (uh, ut), (vh, vt) => by
+    dsimp [vec_scale, vec_sub, vdot]
+    have hhd := dot4_sub2_sq_scalar a b uh vh
+    have htl := vdot_sub2_sq a b ut vt
+    have hsum := step25_balance_add_congr hhd htl
+    let c1 := bsq a; let c2 := bsq b; let c3 := balance_mul (balOfNat 2) (balance_mul a b)
+    let p0 := balance_mul c1 (bsq uh); let m0 := balance_mul c3 (balance_mul uh vh); let q0 := balance_mul c2 (bsq vh)
+    let p1 := balance_mul c1 (vdot ut ut); let m1 := balance_mul c3 (vdot ut vt); let q1 := balance_mul c2 (vdot vt vt)
+    have hre := bal_poly_eq (fun | 0 => p0 | 1 => m0 | 2 => q0 | 3 => p1 | 4 => m1 | 5 => q1 | _ => bzero)
+      e_s125_sub_step_L e_s125_sub_step_R p_s125_sub_step
+    have hfac := step25_balance_add_congr
+      (bal_sub_congr
+        (step24_balance_symm (bal_left_distrib c1 (bsq uh) (vdot ut ut)))
+        (step24_balance_symm (bal_left_distrib c3 (balance_mul uh vh) (vdot ut vt))))
+      (step24_balance_symm (bal_left_distrib c2 (bsq vh) (vdot vt vt)))
+    exact step24_balance_trans hsum (step24_balance_trans hre hfac)
+
+theorem vdot_lincomb2_sq : {n : Nat} → (a b : Balance) → (u v : Vec n) →
+    let w := vec_add (vec_scale a u) (vec_scale b v)
+    BalanceEquiv (vdot w w)
+      (balance_add (balance_add (balance_mul (bsq a) (vdot u u)) (balance_mul (bsq b) (vdot v v)))
+                   (balance_mul (balance_mul (balOfNat 2) (balance_mul a b)) (vdot u v)))
+  | 0, a, b, (), () =>
+    bal_poly_eq (fun | 0 => bsq a | 1 => balance_mul (balOfNat 2) (balance_mul a b) | 2 => bsq b | _ => bzero)
+      .zero e_s125_zero3add_R p_s125_zero3add
+  | _ + 1, a, b, (uh, ut), (vh, vt) => by
+    dsimp [vec_scale, vec_add, vdot]
+    have hhd := dot4_lincomb2_sq_scalar a b uh vh
+    have htl := vdot_lincomb2_sq a b ut vt
+    have hsum := step25_balance_add_congr hhd htl
+    let c1 := bsq a; let c2 := bsq b; let c3 := balance_mul (balOfNat 2) (balance_mul a b)
+    let p0 := balance_mul c1 (bsq uh); let q0 := balance_mul c2 (bsq vh); let m0 := balance_mul c3 (balance_mul uh vh)
+    let p1 := balance_mul c1 (vdot ut ut); let q1 := balance_mul c2 (vdot vt vt); let m1 := balance_mul c3 (vdot ut vt)
+    have hre := bal_poly_eq (fun | 0 => p0 | 1 => m0 | 2 => q0 | 3 => p1 | 4 => m1 | 5 => q1 | _ => bzero)
+      e_s125_add_step_L e_s125_add_step_R p_s125_add_step
+    have hfac := step25_balance_add_congr
+      (step25_balance_add_congr
+        (step24_balance_symm (bal_left_distrib c1 (bsq uh) (vdot ut ut)))
+        (step24_balance_symm (bal_left_distrib c2 (bsq vh) (vdot vt vt))))
+      (step24_balance_symm (bal_left_distrib c3 (balance_mul uh vh) (vdot ut vt)))
+    exact step24_balance_trans hsum (step24_balance_trans hre hfac)
+
+theorem vdot_snoc : {n : Nat} → (u v : Vec n) → (a b : Balance) →
+    BalanceEquiv (vdot (vec_snoc u a) (vec_snoc v b)) (balance_add (vdot u v) (balance_mul a b))
+  | 0, (), (), a, b =>
+    bal_add_comm (balance_mul a b) bzero
+  | _ + 1, (uh, ut), (vh, vt), a, b =>
+    step24_balance_trans
+      (step25_balance_add_congr (step24_balance_refl (balance_mul uh vh)) (vdot_snoc ut vt a b))
+      (step24_balance_symm (bal_add_assoc (balance_mul uh vh) (vdot ut vt) (balance_mul a b)))
+
+theorem vec_scale_snoc (s : Balance) : {n : Nat} → (u : Vec n) → (a : Balance) →
+    vec_scale s (vec_snoc u a) = vec_snoc (vec_scale s u) (balance_mul s a)
+  | 0, (), _ => rfl
+  | _ + 1, (uh, ut), a => congrArg (Prod.mk (balance_mul s uh)) (vec_scale_snoc s ut a)
+
+theorem vec_sub_snoc : {n : Nat} → (u v : Vec n) → (a b : Balance) →
+    vec_sub (vec_snoc u a) (vec_snoc v b) = vec_snoc (vec_sub u v) (balance_sub a b)
+  | 0, (), (), _, _ => rfl
+  | _ + 1, (uh, ut), (vh, vt), a, b =>
+    congrArg (Prod.mk (balance_sub uh vh)) (vec_sub_snoc ut vt a b)
+
+theorem vec_snoc_congr : {n : Nat} → {u1 u2 : Vec n} → {a1 a2 : Balance} →
+    VecEquiv u1 u2 → BalanceEquiv a1 a2 → VecEquiv (vec_snoc u1 a1) (vec_snoc u2 a2)
+  | 0, (), (), _, _, _, ha => ⟨ha, trivial⟩
+  | _ + 1, (_, _), (_, _), _, _, ⟨hh, ht⟩, ha => ⟨hh, vec_snoc_congr ht ha⟩
+
+-- ----- Произвольно-размерный гейтированный Хаусхолдер и K-каскад AdaptiveO(d) -----
+
+def householderN_num {n : Nat} (D p q : Balance) (v u : Vec n) : Vec n :=
+  vec_sub (vec_scale (balance_mul q D) u) (vec_scale (balance_mul p (vdot v u)) v)
+
+theorem householderN_congr {n : Nat} {D1 D2 p1 p2 q1 q2 : Balance} {v1 v2 u1 u2 : Vec n}
+    (hD : BalanceEquiv D1 D2) (hp : BalanceEquiv p1 p2) (hq : BalanceEquiv q1 q2)
+    (hv : VecEquiv v1 v2) (hu : VecEquiv u1 u2) :
+    VecEquiv (householderN_num D1 p1 q1 v1 u1) (householderN_num D2 p2 q2 v2 u2) :=
+  vec_sub_congr
+    (vec_scale_congr (bal_mul_congr hq hD) hu)
+    (vec_scale_congr (bal_mul_congr hp (vdot_congr hv hu)) hv)
+
+structure HouseholderFactor (n : Nat) where
+  v : Vec n
+  eps : Balance
+  p : Balance
+  q : Balance
+
+def FactorValid {n : Nat} (f : HouseholderFactor n) : Prop :=
+  BalGeZero f.eps ∧ BalGtZero f.q ∧ BalGeZero f.p ∧ BalLe f.p (balance_mul (balOfNat 2) f.q)
+
+def factor_denom {n : Nat} (f : HouseholderFactor n) : Balance :=
+  balance_mul f.q (balance_add (vdot f.v f.v) f.eps)
+
+def apply_factor {n : Nat} (f : HouseholderFactor n) (u : Vec n) : Vec n :=
+  householderN_num (balance_add (vdot f.v f.v) f.eps) f.p f.q f.v u
+
+def apply_cascade {n : Nat} : List (HouseholderFactor n) → Vec n → Vec n
+  | [], u => u
+  | f :: fs, u => apply_cascade fs (apply_factor f u)
+
+def cascade_denom {n : Nat} : List (HouseholderFactor n) → Balance
+  | [] => bone
+  | f :: fs => balance_mul (cascade_denom fs) (factor_denom f)
+
+def CascadeValid {n : Nat} : List (HouseholderFactor n) → Prop
+  | [] => True
+  | f :: fs => FactorValid f ∧ CascadeValid fs
+
+def embed_factor {n : Nat} (f : HouseholderFactor n) : HouseholderFactor (n + 1) :=
+  ⟨vec_embed f.v, f.eps, f.p, f.q⟩
+
+def embed_cascade {n : Nat} : List (HouseholderFactor n) → List (HouseholderFactor (n + 1))
+  | [] => []
+  | f :: fs => embed_factor f :: embed_cascade fs
+
+theorem householderN_bibo {n : Nat} (v u : Vec n) (eps p q : Balance)
+    (heps : BalGeZero eps) (hq : BalGtZero q) (hp0 : BalGeZero p)
+    (hp2 : BalLe p (balance_mul (balOfNat 2) q)) :
+    let D := balance_add (vdot v v) eps
+    let h_num := householderN_num D p q v u
+    let slack := balance_mul (balance_mul p (bsq (vdot v u)))
+                   (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) q) p) (vdot v v))
+                                (balance_mul (balance_mul (balOfNat 2) q) eps))
+    BalanceEquiv (balance_add (vdot h_num h_num) slack) (balance_mul (bsq (balance_mul q D)) (vdot u u)) ∧
+    BalLe (vdot h_num h_num) (balance_mul (bsq (balance_mul q D)) (vdot u u)) := by
+  dsimp only
+  let D := balance_add (vdot v v) eps
+  let vu := vdot v u
+  let vv := vdot v v
+  let uu := vdot u u
+  have hsq := vdot_sub2_sq (balance_mul q D) (balance_mul p vu) u v
+  have huv : BalanceEquiv (vdot u v) vu := vdot_comm u v
+  have hsq' := step24_balance_trans hsq
+    (step25_balance_add_congr
+      (bal_sub_congr (step24_balance_refl _) (bal_mul_congr (step24_balance_refl _) huv))
+      (step24_balance_refl _))
+  let env : Nat → Balance := fun | 0 => p | 1 => q | 2 => vv | 3 => eps | 4 => vu | 5 => uu | _ => bzero
+  have hid := step24_balance_trans (step25_balance_add_congr hsq' (step24_balance_refl _))
+    (bal_poly_eq env e_s118_hid_L e_s118_hid_R p_s118_hid)
+  have h2q : BalGtZero (balance_mul (balOfNat 2) q) := bal_mul_gt_gt (balOfNat_succ_gt_zero 1) hq
+  have hslack_ge : BalGeZero (balance_mul (balance_mul p (bsq vu))
+                   (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) q) p) vv)
+                                (balance_mul (balance_mul (balOfNat 2) q) eps))) :=
+    bal_mul_ge_ge (bal_mul_ge_ge hp0 (bal_sq_ge_zero vu))
+      (bal_add_ge_ge (bal_mul_ge_ge hp2 (vdot_self_ge_zero v)) (bal_mul_ge_ge (Or.inr h2q) heps))
+  have hsub_slack : BalanceEquiv
+      (balance_mul (balance_mul p (bsq vu))
+        (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) q) p) vv)
+                     (balance_mul (balance_mul (balOfNat 2) q) eps)))
+      (balance_sub (balance_mul (bsq (balance_mul q D)) uu)
+                   (vdot (householderN_num D p q v u) (householderN_num D p q v u))) :=
+    step24_balance_trans
+      (bal_poly_eq
+        (fun | 0 => vdot (householderN_num D p q v u) (householderN_num D p q v u)
+             | 1 => balance_mul (balance_mul p (bsq vu))
+                      (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) q) p) vv)
+                                   (balance_mul (balance_mul (balOfNat 2) q) eps))
+             | _ => bzero)
+        e_sub_add_cancel_L e_sub_add_cancel_R p_sub_add_cancel)
+      (bal_sub_congr hid (step24_balance_refl _))
+  exact ⟨hid, bal_ge_zero_of_equiv hsub_slack hslack_ge⟩
+
+private def e_s125_casc_scale_L : BExpr :=
+  .mul (.mul (.var 0) (.var 0)) (.mul (.mul (.var 1) (.var 1)) (.var 2))
+private def e_s125_casc_scale_R : BExpr :=
+  .mul (.mul (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 1))) (.var 2)
+private theorem p_s125_casc_scale : e_s125_casc_scale_L.norm = e_s125_casc_scale_R.norm := rfl
+
+theorem cascade_bibo {n : Nat} : (fs : List (HouseholderFactor n)) → (u : Vec n) →
+    CascadeValid fs →
+    BalLe (vdot (apply_cascade fs u) (apply_cascade fs u))
+          (balance_mul (bsq (cascade_denom fs)) (vdot u u))
+  | [], u, _ => by
+    dsimp [apply_cascade, cascade_denom, bsq]
+    have h1 : BalanceEquiv (balance_mul (balance_mul bone bone) (vdot u u)) (vdot u u) :=
+      step24_balance_trans (bal_mul_congr (bal_one_mul bone) (step24_balance_refl _)) (bal_one_mul _)
+    exact bal_le_of_equiv_right (step24_balance_symm h1) (bal_le_refl (vdot u u))
+  | f :: fs, u, ⟨hf, hfs⟩ => by
+    dsimp [apply_cascade, cascade_denom]
+    have hstep := (householderN_bibo f.v u f.eps f.p f.q hf.1 hf.2.1 hf.2.2.1 hf.2.2.2).2
+    have htail := cascade_bibo fs (apply_factor f u) hfs
+    have hmul := bal_le_mul_nonneg_left (bal_sq_ge_zero (cascade_denom fs)) hstep
+    have hle := bal_le_trans htail hmul
+    have hnorm_eq : BalanceEquiv
+        (balance_mul (bsq (cascade_denom fs)) (balance_mul (bsq (factor_denom f)) (vdot u u)))
+        (balance_mul (bsq (balance_mul (cascade_denom fs) (factor_denom f))) (vdot u u)) :=
+      bal_poly_eq (fun | 0 => cascade_denom fs | 1 => factor_denom f | 2 => vdot u u | _ => bzero)
+        e_s125_casc_scale_L e_s125_casc_scale_R p_s125_casc_scale
+    exact bal_le_of_equiv_right hnorm_eq hle
+
+theorem apply_factor_congr {n : Nat} (f : HouseholderFactor n) {u1 u2 : Vec n} (hu : VecEquiv u1 u2) :
+    VecEquiv (apply_factor f u1) (apply_factor f u2) :=
+  householderN_congr (step24_balance_refl _) (step24_balance_refl _) (step24_balance_refl _)
+    (vec_equiv_refl f.v) hu
+
+theorem apply_cascade_congr {n : Nat} : (fs : List (HouseholderFactor n)) → {u1 u2 : Vec n} →
+    VecEquiv u1 u2 → VecEquiv (apply_cascade fs u1) (apply_cascade fs u2)
+  | [], _, _, hu => hu
+  | f :: fs, _, _, hu => apply_cascade_congr fs (apply_factor_congr f hu)
+
+private def e_s125_last_L : BExpr :=
+  .sub (.mul (.mul (.var 0) (.var 1)) (.var 2)) (.mul (.mul (.var 3) (.var 4)) .zero)
+private def e_s125_last_R : BExpr := .mul (.mul (.var 0) (.var 1)) (.var 2)
+private theorem p_s125_last : e_s125_last_L.norm = e_s125_last_R.norm := rfl
+
+theorem apply_factor_embed {n : Nat} (f : HouseholderFactor n) (u : Vec n) (c : Balance) :
+    VecEquiv (apply_factor (embed_factor f) (vec_snoc u c))
+             (vec_snoc (apply_factor f u) (balance_mul (factor_denom f) c)) := by
+  dsimp [apply_factor, embed_factor, vec_embed, householderN_num, factor_denom]
+  let D_emb := balance_add (vdot (vec_snoc f.v bzero) (vec_snoc f.v bzero)) f.eps
+  let D := balance_add (vdot f.v f.v) f.eps
+  have hvv : BalanceEquiv (vdot (vec_snoc f.v bzero) (vec_snoc f.v bzero)) (vdot f.v f.v) := by
+    have hs := vdot_snoc f.v f.v bzero bzero
+    have hz := step25_balance_add_congr (step24_balance_refl (vdot f.v f.v)) (bal_mul_zero bzero)
+    exact step24_balance_trans hs (step24_balance_trans hz (bal_add_zero (vdot f.v f.v)))
+  have hD : BalanceEquiv D_emb D := step25_balance_add_congr hvv (step24_balance_refl f.eps)
+  have hvu : BalanceEquiv (vdot (vec_snoc f.v bzero) (vec_snoc u c)) (vdot f.v u) := by
+    have hs := vdot_snoc f.v u bzero c
+    have hz := step25_balance_add_congr (step24_balance_refl (vdot f.v u)) (bal_zero_mul c)
+    exact step24_balance_trans hs (step24_balance_trans hz (bal_add_zero (vdot f.v u)))
+  rw [vec_scale_snoc, vec_scale_snoc, vec_sub_snoc]
+  have hpref' : VecEquiv
+      (vec_sub (vec_scale (balance_mul f.q D_emb) u)
+               (vec_scale (balance_mul f.p (vdot (vec_snoc f.v bzero) (vec_snoc u c))) f.v))
+      (vec_sub (vec_scale (balance_mul f.q D) u)
+               (vec_scale (balance_mul f.p (vdot f.v u)) f.v)) :=
+    vec_sub_congr
+      (vec_scale_congr (bal_mul_congr (step24_balance_refl f.q) hD) (vec_equiv_refl u))
+      (vec_scale_congr (bal_mul_congr (step24_balance_refl f.p) hvu) (vec_equiv_refl f.v))
+  have hlast : BalanceEquiv
+      (balance_sub (balance_mul (balance_mul f.q D_emb) c)
+                   (balance_mul (balance_mul f.p (vdot (vec_snoc f.v bzero) (vec_snoc u c))) bzero))
+      (balance_mul (balance_mul f.q D) c) :=
+    step24_balance_trans
+      (bal_sub_congr (bal_mul_congr (bal_mul_congr (step24_balance_refl f.q) hD) (step24_balance_refl c))
+                     (step24_balance_refl _))
+      (bal_poly_eq (fun | 0 => f.q | 1 => D | 2 => c | 3 => f.p
+                        | 4 => vdot (vec_snoc f.v bzero) (vec_snoc u c) | _ => bzero)
+        e_s125_last_L e_s125_last_R p_s125_last)
+  exact vec_snoc_congr hpref' hlast
+
+theorem apply_cascade_snoc {n : Nat} : (fs : List (HouseholderFactor n)) → (u : Vec n) → (c : Balance) →
+    VecEquiv (apply_cascade (embed_cascade fs) (vec_snoc u c))
+             (vec_snoc (apply_cascade fs u) (balance_mul (cascade_denom fs) c))
+  | [], u, c => by
+    dsimp [embed_cascade, apply_cascade, cascade_denom]
+    exact vec_snoc_congr (vec_equiv_refl u) (step24_balance_symm (bal_one_mul c))
+  | f :: fs, u, c => by
+    dsimp [embed_cascade, apply_cascade, cascade_denom]
+    have h1 := apply_factor_embed f u c
+    have h2 := apply_cascade_congr (embed_cascade fs) h1
+    have h3 := apply_cascade_snoc fs (apply_factor f u) (balance_mul (factor_denom f) c)
+    have hassoc : VecEquiv
+        (vec_snoc (apply_cascade fs (apply_factor f u))
+                  (balance_mul (cascade_denom fs) (balance_mul (factor_denom f) c)))
+        (vec_snoc (apply_cascade fs (apply_factor f u))
+                  (balance_mul (balance_mul (cascade_denom fs) (factor_denom f)) c)) :=
+      vec_snoc_congr (vec_equiv_refl _) (step24_balance_symm (bal_mul_assoc (cascade_denom fs) (factor_denom f) c))
+    exact vec_equiv_trans h2 (vec_equiv_trans h3 hassoc)
+
+theorem apply_cascade_embed {n : Nat} (fs : List (HouseholderFactor n)) (u : Vec n) :
+    VecEquiv (apply_cascade (embed_cascade fs) (vec_embed u))
+             (vec_embed (apply_cascade fs u)) := by
+  dsimp [vec_embed]
+  exact vec_equiv_trans (apply_cascade_snoc fs u bzero)
+    (vec_snoc_congr (vec_equiv_refl _) (bal_mul_zero (cascade_denom fs)))
+
+-- ----- Конструктивный свидетель S₆ ≤ O(5) на 5D-гиперплоскости sum₆ = 0 -----
+
+structure Vec6 where
+  x0 : Balance
+  x1 : Balance
+  x2 : Balance
+  x3 : Balance
+  x4 : Balance
+  x5 : Balance
+
+def Vec6Equiv (u v : Vec6) : Prop :=
+  BalanceEquiv u.x0 v.x0 ∧ BalanceEquiv u.x1 v.x1 ∧ BalanceEquiv u.x2 v.x2 ∧
+  BalanceEquiv u.x3 v.x3 ∧ BalanceEquiv u.x4 v.x4 ∧ BalanceEquiv u.x5 v.x5
+
+def vec6_zero : Vec6 := ⟨bzero, bzero, bzero, bzero, bzero, bzero⟩
+def sum6 (u : Vec6) : Balance :=
+  balance_add (balance_add (balance_add u.x0 u.x1) (balance_add u.x2 u.x3)) (balance_add u.x4 u.x5)
+def dot6 (u v : Vec6) : Balance :=
+  balance_add
+    (balance_add (balance_add (balance_mul u.x0 v.x0) (balance_mul u.x1 v.x1))
+                 (balance_add (balance_mul u.x2 v.x2) (balance_mul u.x3 v.x3)))
+    (balance_add (balance_mul u.x4 v.x4) (balance_mul u.x5 v.x5))
+
+-- Генераторы S₆: транспозиция a = (0 1) и 6-цикл b = (0 1 2 3 4 5); ab имеет порядок 5
+def s6_a (u : Vec6) : Vec6 := ⟨u.x1, u.x0, u.x2, u.x3, u.x4, u.x5⟩
+def s6_b (u : Vec6) : Vec6 := ⟨u.x1, u.x2, u.x3, u.x4, u.x5, u.x0⟩
+
+private def e_s125_sum6_base : BExpr :=
+  .add (.add (.add (.var 0) (.var 1)) (.add (.var 2) (.var 3))) (.add (.var 4) (.var 5))
+private def e_s125_sum6_a : BExpr :=
+  .add (.add (.add (.var 1) (.var 0)) (.add (.var 2) (.var 3))) (.add (.var 4) (.var 5))
+private def e_s125_sum6_b : BExpr :=
+  .add (.add (.add (.var 1) (.var 2)) (.add (.var 3) (.var 4))) (.add (.var 5) (.var 0))
+private theorem p_s125_sum6_a : e_s125_sum6_a.norm = e_s125_sum6_base.norm := rfl
+private theorem p_s125_sum6_b : e_s125_sum6_b.norm = e_s125_sum6_base.norm := rfl
+
+private def e_s125_dot6_base : BExpr :=
+  .add (.add (.add (.mul (.var 0) (.var 0)) (.mul (.var 1) (.var 1)))
+             (.add (.mul (.var 2) (.var 2)) (.mul (.var 3) (.var 3))))
+       (.add (.mul (.var 4) (.var 4)) (.mul (.var 5) (.var 5)))
+private def e_s125_dot6_a : BExpr :=
+  .add (.add (.add (.mul (.var 1) (.var 1)) (.mul (.var 0) (.var 0)))
+             (.add (.mul (.var 2) (.var 2)) (.mul (.var 3) (.var 3))))
+       (.add (.mul (.var 4) (.var 4)) (.mul (.var 5) (.var 5)))
+private def e_s125_dot6_b : BExpr :=
+  .add (.add (.add (.mul (.var 1) (.var 1)) (.mul (.var 2) (.var 2)))
+             (.add (.mul (.var 3) (.var 3)) (.mul (.var 4) (.var 4))))
+       (.add (.mul (.var 5) (.var 5)) (.mul (.var 0) (.var 0)))
+private theorem p_s125_dot6_a : e_s125_dot6_a.norm = e_s125_dot6_base.norm := rfl
+private theorem p_s125_dot6_b : e_s125_dot6_b.norm = e_s125_dot6_base.norm := rfl
+
+private def e_s125_sum6_eq_L : BExpr :=
+  .add (.add (.add (.var 0) (.var 0)) (.add (.var 0) (.var 0))) (.add (.var 0) (.var 0))
+private def e_s125_sum6_eq_R : BExpr := .mul (.nat 6) (.var 0)
+private theorem p_s125_sum6_eq : e_s125_sum6_eq_L.norm = e_s125_sum6_eq_R.norm := rfl
+
+/-- ШАГ 125. Произвольно-размерный каскад Хаусхолдера `AdaptiveO(d)` (вариант 2 Pillar 1) и свидетель S₆ ≤ O(5):
+    1. Для ЛЮБОЙ размерности `n` и ЛЮБОГО допустимого K-каскада `fs : List (HouseholderFactor n)`:
+       ||H_fs(u)||² ≤ (D_fs)² · ||u||² (безусловное BIBO-сжатие при любом активном ранге d_act).
+    2. Точное сохранение функции при вложении O(d) ↪ O(d+1) через `(u, 0)`:
+       `apply_cascade (embed_cascade fs) (vec_embed u) ~ vec_embed (apply_cascade fs u)` (нулевое забывание при повышении ранга!).
+    3. Покоординатная инвариантность нового измерения: для каждого фактора ось `d+1` лишь масштабируется знаменателем `q·D`.
+    4. Конструктивный свидетель S₆ ≤ O(5) на 5D-гиперплоскости `sum₆ = 0`:
+       a² = I, b⁶ = I, (ab)⁵ = I, ab ≠ ba, сохранение гиперплоскости и нормы, а 6-цикл `b` не имеет ненулевых неподвижных векторов. -/
+theorem step125_adaptive_od_householder_cascade_and_embedding :
+    (∀ {n : Nat} (fs : List (HouseholderFactor n)) (u : Vec n),
+      CascadeValid fs →
+      BalLe (vdot (apply_cascade fs u) (apply_cascade fs u))
+            (balance_mul (bsq (cascade_denom fs)) (vdot u u)))
+    ∧
+    (∀ {n : Nat} (fs : List (HouseholderFactor n)) (u : Vec n),
+      VecEquiv (apply_cascade (embed_cascade fs) (vec_embed u))
+               (vec_embed (apply_cascade fs u)))
+    ∧
+    (∀ {n : Nat} (f : HouseholderFactor n) (u : Vec n) (c : Balance),
+      VecEquiv (apply_factor (embed_factor f) (vec_snoc u c))
+               (vec_snoc (apply_factor f u) (balance_mul (factor_denom f) c)))
+    ∧
+    (∀ u : Vec6,
+      BalanceEquiv (sum6 (s6_a u)) (sum6 u) ∧
+      BalanceEquiv (sum6 (s6_b u)) (sum6 u) ∧
+      BalanceEquiv (dot6 (s6_a u) (s6_a u)) (dot6 u u) ∧
+      BalanceEquiv (dot6 (s6_b u) (s6_b u)) (dot6 u u) ∧
+      Vec6Equiv (s6_a (s6_a u)) u ∧
+      Vec6Equiv (s6_b (s6_b (s6_b (s6_b (s6_b (s6_b u)))))) u ∧
+      Vec6Equiv (s6_a (s6_b (s6_a (s6_b (s6_a (s6_b (s6_a (s6_b (s6_a (s6_b u)))))))))) u)
+    ∧
+    (Vec6Equiv (s6_a (s6_b ⟨bone, bneg_one, bzero, bzero, bzero, bzero⟩))
+               (s6_b (s6_a ⟨bone, bneg_one, bzero, bzero, bzero, bzero⟩)) → False)
+    ∧
+    (∀ x : Vec6, Vec6Equiv (s6_b x) x → BalanceEquiv (sum6 x) bzero → Vec6Equiv x vec6_zero) := by
+  refine ⟨fun fs u hfs => cascade_bibo fs u hfs,
+          fun fs u => apply_cascade_embed fs u,
+          fun f u c => apply_factor_embed f u c, ?_, ?_, ?_⟩
+  · intro u
+    let env : Nat → Balance := fun
+      | 0 => u.x0 | 1 => u.x1 | 2 => u.x2 | 3 => u.x3 | 4 => u.x4 | 5 => u.x5 | _ => bzero
+    have id6 : Vec6Equiv u u :=
+      ⟨step24_balance_refl _, step24_balance_refl _, step24_balance_refl _,
+       step24_balance_refl _, step24_balance_refl _, step24_balance_refl _⟩
+    exact ⟨bal_poly_eq env e_s125_sum6_a e_s125_sum6_base p_s125_sum6_a,
+           bal_poly_eq env e_s125_sum6_b e_s125_sum6_base p_s125_sum6_b,
+           bal_poly_eq env e_s125_dot6_a e_s125_dot6_base p_s125_dot6_a,
+           bal_poly_eq env e_s125_dot6_b e_s125_dot6_base p_s125_dot6_b,
+           id6, id6, id6⟩
+  · intro hne
+    -- (a(b(1,-1,0,0,0,0))).x0 = 0, но (b(a(1,-1,0,0,0,0))).x0 = 1
+    exact bal_gt_zero_ne_zero bone_gt_zero (step24_balance_symm hne.1)
+  · intro x hfx hsum0
+    have e01 : BalanceEquiv x.x1 x.x0 := hfx.1
+    have e12 : BalanceEquiv x.x2 x.x1 := hfx.2.1
+    have e23 : BalanceEquiv x.x3 x.x2 := hfx.2.2.1
+    have e34 : BalanceEquiv x.x4 x.x3 := hfx.2.2.2.1
+    have e45 : BalanceEquiv x.x5 x.x4 := hfx.2.2.2.2.1
+    have e20 : BalanceEquiv x.x2 x.x0 := step24_balance_trans e12 e01
+    have e30 : BalanceEquiv x.x3 x.x0 := step24_balance_trans e23 e20
+    have e40 : BalanceEquiv x.x4 x.x0 := step24_balance_trans e34 e30
+    have e50 : BalanceEquiv x.x5 x.x0 := step24_balance_trans e45 e40
+    have hs_eq : BalanceEquiv (sum6 x) (balance_mul (balOfNat 6) x.x0) :=
+      step24_balance_trans
+        (step25_balance_add_congr
+          (step25_balance_add_congr
+            (step25_balance_add_congr (step24_balance_refl x.x0) e01)
+            (step25_balance_add_congr e20 e30))
+          (step25_balance_add_congr e40 e50))
+        (bal_poly_eq (fun | 0 => x.x0 | _ => bzero) e_s125_sum6_eq_L e_s125_sum6_eq_R p_s125_sum6_eq)
+    have hx0 : BalanceEquiv x.x0 bzero :=
+      bal_mul_gt_zero_eq_zero (balOfNat_succ_gt_zero 5)
+        (step24_balance_trans (step24_balance_symm hs_eq) hsum0)
+    exact ⟨hx0,
+           step24_balance_trans e01 hx0,
+           step24_balance_trans e20 hx0,
+           step24_balance_trans e30 hx0,
+           step24_balance_trans e40 hx0,
+           step24_balance_trans e50 hx0⟩
+
+-- ----- ШАГ 126. Автономия Pillar 5: IDBD, безопасный ввод var+1, выпуклый предел α=0 и surprise -----
+
+private def e_s126_add_21_L : BExpr :=
+  .add (.add (.mul (.mul .one .one) (.var 0)) (.mul (.mul .one .one) (.var 1)))
+       (.mul (.mul (.nat 2) (.mul .one .one)) (.var 2))
+private def e_s126_add_21_R : BExpr :=
+  .sub (.mul (.nat 2) (.var 2)) (.neg (.add (.var 0) (.var 1)))
+private theorem p_s126_add_21 : e_s126_add_21_L.norm = e_s126_add_21_R.norm := rfl
+
+private def e_s126_sub_21_L : BExpr :=
+  .add (.sub (.mul (.mul .one .one) (.var 0)) (.mul (.mul (.nat 2) (.mul .one .one)) (.var 2)))
+       (.mul (.mul .one .one) (.var 1))
+private def e_s126_sub_21_R : BExpr :=
+  .sub (.add (.var 0) (.var 1)) (.mul (.nat 2) (.var 2))
+private theorem p_s126_sub_21 : e_s126_sub_21_L.norm = e_s126_sub_21_R.norm := rfl
+
+private def e_s126_neg_le_L : BExpr := .sub (.neg (.var 0)) (.neg (.add (.var 0) (.var 1)))
+private def e_s126_neg_le_R : BExpr := .var 1
+private theorem p_s126_neg_le : e_s126_neg_le_L.norm = e_s126_neg_le_R.norm := rfl
+
+private def e_s126_x2var_L : BExpr := .mul (.var 0) (.var 1)
+private def e_s126_x2var_R : BExpr := .sub (.mul (.var 0) (.add (.var 1) .one)) (.var 0)
+private theorem p_s126_x2var : e_s126_x2var_L.norm = e_s126_x2var_R.norm := rfl
+
+private def e_s126_d0_L : BExpr := .add .one (.mul (.var 0) (.mul .zero .zero))
+private theorem p_s126_d0 : e_s126_d0_L.norm = BExpr.one.norm := rfl
+
+private def e_s126_d0m1_L : BExpr := .sub (.add .one (.mul (.var 0) (.mul .zero .zero))) .one
+private theorem p_s126_d0m1 : e_s126_d0m1_L.norm = BExpr.zero.norm := rfl
+
+private def e_s126_comb0_L : BExpr :=
+  .add (.mul .one (.var 0)) (.mul (.sub (.add .one (.mul (.var 2) (.mul .zero .zero))) .one) (.var 1))
+private theorem p_s126_comb0 : e_s126_comb0_L.norm = (BExpr.var 0).norm := rfl
+
+private def e_s126_da_den_d : BExpr × BExpr :=
+  dAddE (.one, .zero) (dMulE (.var 1, .zero) (dMulE (.var 0, .one) (.var 0, .one)))
+private def e_s126_da_L : BExpr × BExpr :=
+  dMulE e_s126_da_den_d (.add .one (.mul (.var 1) (.mul (.var 0) (.var 0))),
+                         .neg (.mul (.nat 2) (.mul (.var 1) (.var 0))))
+private def e_s126_da_R : BExpr × BExpr :=
+  let d := BExpr.add .one (.mul (.var 1) (.mul (.var 0) (.var 0)))
+  dMulE (.mul d d, .zero) (.one, .zero)
+private theorem p_s126_da_re : e_s126_da_L.1.norm = e_s126_da_R.1.norm := rfl
+private theorem p_s126_da_eps : e_s126_da_L.2.norm = e_s126_da_R.2.norm := rfl
+
+private def e_s126_dd_den_d : BExpr × BExpr :=
+  dAddE (.one, .zero) (dMulE (.var 1, .one) (.mul (.var 0) (.var 0), .zero))
+private def e_s126_dd_L : BExpr × BExpr :=
+  dMulE e_s126_dd_den_d (.add .one (.mul (.var 1) (.mul (.var 0) (.var 0))),
+                         .neg (.mul (.var 0) (.var 0)))
+private def e_s126_dd_R : BExpr × BExpr :=
+  let d := BExpr.add .one (.mul (.var 1) (.mul (.var 0) (.var 0)))
+  dMulE (.mul d d, .zero) (.one, .zero)
+private theorem p_s126_dd_re : e_s126_dd_L.1.norm = e_s126_dd_R.1.norm := rfl
+private theorem p_s126_dd_eps : e_s126_dd_L.2.norm = e_s126_dd_R.2.norm := rfl
+
+/-- ШАГ 126. Алгебра самоопределения Pillar 5:
+    1. Рациональное IDBD-выравнивание: для ЛЮБЫХ g₁, g₂ : Vec n и ε > 0:
+       `|2(g₁·g₂)| ≤ ||g₁||² + ||g₂||² ≤ ||g₁||² + ||g₂||² + ε`, т.е. `c_t ∈ [-1/2, 1/2]`.
+    2. Универсальная безопасная входная норма: при `var ≥ 0` знаменатель `var + 1 ≥ 1 > 0`
+       и `x² ≤ x²·(var + 1)` (нет взрыва редких one-hot каналов).
+    3. Выпуклый предел Master Equation (без потолка `0.995`) + точные `DualBalance`-производные:
+       при `α = 0`: `D₀ ~ 1`, `D₀ - 1 ~ 0`, `comb₀ ~ q` и `||comb₀||² ~ ||q||²`;
+       и точные производные `λ(Δ, α) = 1 / (1 + Δ·α²)` по `α` и по `Δ`.
+    4. Тотальность surprise-отношения `ema_fast / (ema_slow + ε)` при `ε > 0`, `ema_fast, ema_slow ≥ 0`. -/
+theorem step126_pillar5_self_determination_algebra {n : Nat}
+    (g1 g2 : Vec n) (eps var x delta a ema_fast ema_slow : Balance) (q w : Vec4)
+    (heps : BalGtZero eps) (hvar : BalGeZero var) (hdelta : BalGeZero delta)
+    (hef : BalGeZero ema_fast) (hes : BalGeZero ema_slow) :
+    let S := balance_add (vdot g1 g1) (vdot g2 g2)
+    let D_idbd := balance_add S eps
+    let dot2 := balance_mul (balOfNat 2) (vdot g1 g2)
+    let D_in := balance_add var bone
+    let D_lam := balance_add bone (balance_mul delta (bsq a))
+    let D0 := balance_add bone (balance_mul delta (bsq bzero))
+    let comb0 := vec4_add (vec4_scale bone q) (vec4_scale (balance_sub D0 bone) w)
+    let ad := dual_var a
+    let den_da := dual_add (dual_const bone) (dual_mul (dual_const delta) (dual_mul ad ad))
+    let dd := dual_var delta
+    let den_dd := dual_add (dual_const bone) (dual_mul dd (dual_const (bsq a)))
+    -- 1. IDBD
+    (BalGtZero D_idbd ∧
+     BalLe (balance_neg S) dot2 ∧ BalLe dot2 S ∧
+     BalLe (balance_neg D_idbd) dot2 ∧ BalLe dot2 D_idbd)
+    ∧
+    -- 2. Безопасное масштабирование входов
+    (BalLe bone D_in ∧ BalGtZero D_in ∧ BalLe (bsq x) (balance_mul (bsq x) D_in))
+    ∧
+    -- 3. Выпуклый предел α = 0 и точные производные λ(Δ, α)
+    (BalLe bone D_lam ∧ BalGtZero D_lam ∧ BalGeZero (balance_sub D_lam bone) ∧
+     BalanceEquiv D0 bone ∧ BalanceEquiv (balance_sub D0 bone) bzero ∧
+     Vec4Equiv comb0 q ∧ BalanceEquiv (dot4 comb0 comb0) (dot4 q q) ∧
+     DualEquiv (dual_mul den_da ⟨D_lam, balance_neg (balance_mul (balOfNat 2) (balance_mul delta a))⟩)
+               (dual_mul (dual_const (bsq D_lam)) (dual_const bone)) ∧
+     DualEquiv (dual_mul den_dd ⟨D_lam, balance_neg (bsq a)⟩)
+               (dual_mul (dual_const (bsq D_lam)) (dual_const bone)))
+    ∧
+    -- 4. Surprise-исследование RL
+    (BalGeZero ema_fast ∧ BalLe eps (balance_add ema_slow eps) ∧ BalGtZero (balance_add ema_slow eps)) := by
+  dsimp only [dual_var, dual_const, dual_mul, dual_add, DualEquiv, bsq]
+  -- 1. IDBD
+  let S := balance_add (vdot g1 g1) (vdot g2 g2)
+  let D_idbd := balance_add S eps
+  let dot2 := balance_mul (balOfNat 2) (vdot g1 g2)
+  have hS_ge : BalGeZero S := bal_add_ge_ge (vdot_self_ge_zero g1) (vdot_self_ge_zero g2)
+  have hDidbd_gt : BalGtZero D_idbd := bal_gt_zero_of_equiv (bal_add_comm eps S) (bal_add_gt_ge heps hS_ge)
+  have hlin := vdot_lincomb2_sq bone bone g1 g2
+  have hsub := vdot_sub2_sq bone bone g1 g2
+  let envI : Nat → Balance := fun | 0 => vdot g1 g1 | 1 => vdot g2 g2 | 2 => vdot g1 g2 | _ => bzero
+  have hloS : BalLe (balance_neg S) dot2 :=
+    bal_ge_zero_of_equiv
+      (step24_balance_trans hlin (bal_poly_eq envI e_s126_add_21_L e_s126_add_21_R p_s126_add_21))
+      (vdot_self_ge_zero (vec_add (vec_scale bone g1) (vec_scale bone g2)))
+  have hhiS : BalLe dot2 S :=
+    bal_ge_zero_of_equiv
+      (step24_balance_trans hsub (bal_poly_eq envI e_s126_sub_21_L e_s126_sub_21_R p_s126_sub_21))
+      (vdot_self_ge_zero (vec_sub (vec_scale bone g1) (vec_scale bone g2)))
+  have hS_le_D : BalLe S D_idbd :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => S | 1 => eps | _ => bzero)
+      e_sub_add_cancel_L e_sub_add_cancel_R p_sub_add_cancel) (Or.inr heps)
+  have hnD_le_nS : BalLe (balance_neg D_idbd) (balance_neg S) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => S | 1 => eps | _ => bzero)
+      e_s126_neg_le_R e_s126_neg_le_L p_s126_neg_le) (Or.inr heps)
+  have hloD : BalLe (balance_neg D_idbd) dot2 := bal_le_trans hnD_le_nS hloS
+  have hhiD : BalLe dot2 D_idbd := bal_le_trans hhiS hS_le_D
+  -- 2. Безопасный ввод
+  have hDin_ge1 : BalLe bone (balance_add var bone) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => var | 1 => bone | _ => bzero)
+      e_add_sub_cancel_L e_add_sub_cancel_R p_add_sub_cancel) hvar
+  have hDin_gt : BalGtZero (balance_add var bone) :=
+    bal_gt_zero_of_equiv (bal_add_comm bone var) (bal_add_gt_ge bone_gt_zero hvar)
+  have hx_le : BalLe (balance_mul x x) (balance_mul (balance_mul x x) (balance_add var bone)) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => balance_mul x x | 1 => var | _ => bzero)
+      e_s126_x2var_L e_s126_x2var_R p_s126_x2var) (bal_mul_ge_ge (bal_sq_ge_zero x) hvar)
+  -- 3. Выпуклый предел и производные
+  let D_lam := balance_add bone (balance_mul delta (balance_mul a a))
+  have hda2 : BalGeZero (balance_mul delta (balance_mul a a)) :=
+    bal_mul_ge_ge hdelta (bal_sq_ge_zero a)
+  have hDlam_ge1 : BalLe bone D_lam :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => bone | 1 => balance_mul delta (balance_mul a a) | _ => bzero)
+      e_sub_add_cancel_L e_sub_add_cancel_R p_sub_add_cancel) hda2
+  have hDlam_gt : BalGtZero D_lam := bal_add_gt_ge bone_gt_zero hda2
+  have hD0_eq : BalanceEquiv (balance_add bone (balance_mul delta (balance_mul bzero bzero))) bone :=
+    bal_poly_eq (fun | 0 => delta | _ => bzero) e_s126_d0_L .one p_s126_d0
+  have hD0m1_eq : BalanceEquiv (balance_sub (balance_add bone (balance_mul delta (balance_mul bzero bzero))) bone) bzero :=
+    bal_poly_eq (fun | 0 => delta | _ => bzero) e_s126_d0m1_L .zero p_s126_d0m1
+  have hcomb_c : ∀ (qc wc : Balance),
+      BalanceEquiv (balance_add (balance_mul bone qc)
+        (balance_mul (balance_sub (balance_add bone (balance_mul delta (balance_mul bzero bzero))) bone) wc)) qc :=
+    fun qc wc => bal_poly_eq (fun | 0 => qc | 1 => wc | 2 => delta | _ => bzero)
+      e_s126_comb0_L (.var 0) p_s126_comb0
+  have hcomb_eq : Vec4Equiv (vec4_add (vec4_scale bone q)
+      (vec4_scale (balance_sub (balance_add bone (balance_mul delta (balance_mul bzero bzero))) bone) w)) q :=
+    ⟨hcomb_c q.w w.w, hcomb_c q.x w.x, hcomb_c q.y w.y, hcomb_c q.z w.z⟩
+  have hcomb_norm := dot4_congr hcomb_eq hcomb_eq
+  let envD : Nat → Balance := fun | 0 => a | 1 => delta | _ => bzero
+  have hda : DualEquiv
+      (dual_mul ⟨balance_add bone (balance_mul delta (balance_mul a a)),
+                 balance_add bzero (balance_add (balance_mul delta (balance_add (balance_mul a bone) (balance_mul bone a)))
+                                                (balance_mul bzero (balance_mul a a)))⟩
+                ⟨D_lam, balance_neg (balance_mul (balOfNat 2) (balance_mul delta a))⟩)
+      (dual_mul ⟨balance_mul D_lam D_lam, bzero⟩ ⟨bone, bzero⟩) :=
+    ⟨bal_poly_eq envD e_s126_da_L.1 e_s126_da_R.1 p_s126_da_re,
+     bal_poly_eq envD e_s126_da_L.2 e_s126_da_R.2 p_s126_da_eps⟩
+  have hdd : DualEquiv
+      (dual_mul ⟨balance_add bone (balance_mul delta (balance_mul a a)),
+                 balance_add bzero (balance_add (balance_mul delta bzero) (balance_mul bone (balance_mul a a)))⟩
+                ⟨D_lam, balance_neg (balance_mul a a)⟩)
+      (dual_mul ⟨balance_mul D_lam D_lam, bzero⟩ ⟨bone, bzero⟩) :=
+    ⟨bal_poly_eq envD e_s126_dd_L.1 e_s126_dd_R.1 p_s126_dd_re,
+     bal_poly_eq envD e_s126_dd_L.2 e_s126_dd_R.2 p_s126_dd_eps⟩
+  -- 4. Surprise
+  have hsurp_le : BalLe eps (balance_add ema_slow eps) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => ema_slow | 1 => eps | _ => bzero)
+      e_add_sub_cancel_L e_add_sub_cancel_R p_add_sub_cancel) hes
+  have hsurp_gt : BalGtZero (balance_add ema_slow eps) :=
+    bal_gt_zero_of_equiv (bal_add_comm eps ema_slow) (bal_add_gt_ge heps hes)
+  exact ⟨⟨hDidbd_gt, hloS, hhiS, hloD, hhiD⟩,
+         ⟨hDin_ge1, hDin_gt, hx_le⟩,
+         ⟨hDlam_ge1, hDlam_gt, hDlam_ge1, hD0_eq, hD0m1_eq, hcomb_eq, hcomb_norm, hda, hdd⟩,
+         ⟨hef, hsurp_le, hsurp_gt⟩⟩
+
+-- ----- ШАГ 127. Вложенная цепочка SO(2) ⊂ SO(3) ⊂ SO(4) ⊂ O(4), регуляризатор чётности и ∂H_β/∂v -----
+
+def qconj (q : Vec4) : Vec4 :=
+  ⟨q.w, balance_neg q.x, balance_neg q.y, balance_neg q.z⟩
+
+theorem qmul_congr {p1 p2 q1 q2 : Vec4} (hp : Vec4Equiv p1 p2) (hq : Vec4Equiv q1 q2) :
+    Vec4Equiv (qmul p1 q1) (qmul p2 q2) :=
+  ⟨bal_sub_congr (bal_sub_congr (bal_mul_congr hp.1 hq.1) (bal_mul_congr hp.2.1 hq.2.1))
+                 (step25_balance_add_congr (bal_mul_congr hp.2.2.1 hq.2.2.1) (bal_mul_congr hp.2.2.2 hq.2.2.2)),
+   bal_sub_congr (step25_balance_add_congr (bal_mul_congr hp.1 hq.2.1) (bal_mul_congr hp.2.1 hq.1))
+                 (bal_sub_congr (bal_mul_congr hp.2.2.2 hq.2.2.1) (bal_mul_congr hp.2.2.1 hq.2.2.2)),
+   bal_sub_congr (step25_balance_add_congr (bal_mul_congr hp.1 hq.2.2.1) (bal_mul_congr hp.2.2.1 hq.1))
+                 (bal_sub_congr (bal_mul_congr hp.2.1 hq.2.2.2) (bal_mul_congr hp.2.2.2 hq.2.1)),
+   bal_sub_congr (step25_balance_add_congr (bal_mul_congr hp.1 hq.2.2.2) (bal_mul_congr hp.2.2.2 hq.1))
+                 (bal_sub_congr (bal_mul_congr hp.2.2.1 hq.2.1) (bal_mul_congr hp.2.1 hq.2.2.1))⟩
+
+private def e_s127_dot3_neg_L : BExpr :=
+  vDotE (.neg (.var 0), .neg (.var 1), .neg (.var 2)) (.neg (.var 0), .neg (.var 1), .neg (.var 2))
+private def e_s127_dot3_neg_R : BExpr :=
+  vDotE (.var 0, .var 1, .var 2) (.var 0, .var 1, .var 2)
+private theorem p_s127_dot3_neg : e_s127_dot3_neg_L.norm = e_s127_dot3_neg_R.norm := rfl
+
+private def e_s127_two_neg_L : BExpr := .mul (.nat 2) (.neg (.var 0))
+private def e_s127_two_neg_R : BExpr := .neg (.mul (.nat 2) (.var 0))
+private theorem p_s127_two_neg : e_s127_two_neg_L.norm = e_s127_two_neg_R.norm := rfl
+
+theorem q_stereo_neg (g : Vec3) : Vec4Equiv (q_stereo (vec3_neg g)) (qconj (q_stereo g)) := by
+  let eg : Nat → Balance := fun | 0 => g.x | 1 => g.y | 2 => g.z | _ => bzero
+  have hd : BalanceEquiv (dot3 (vec3_neg g) (vec3_neg g)) (dot3 g g) :=
+    bal_poly_eq eg e_s127_dot3_neg_L e_s127_dot3_neg_R p_s127_dot3_neg
+  have h2x := bal_poly_eq (fun | 0 => g.x | _ => bzero) e_s127_two_neg_L e_s127_two_neg_R p_s127_two_neg
+  have h2y := bal_poly_eq (fun | 0 => g.y | _ => bzero) e_s127_two_neg_L e_s127_two_neg_R p_s127_two_neg
+  have h2z := bal_poly_eq (fun | 0 => g.z | _ => bzero) e_s127_two_neg_L e_s127_two_neg_R p_s127_two_neg
+  exact ⟨bal_sub_congr (step24_balance_refl bone) hd, h2x, h2y, h2z⟩
+
+private def e_s127_qconj_w_L : BExpr :=
+  let eq : BExpr × BExpr × BExpr × BExpr := (.var 0, .var 1, .var 2, .var 3)
+  let eu : BExpr × BExpr × BExpr × BExpr := (.var 4, .var 5, .var 6, .var 7)
+  let eqc : BExpr × BExpr × BExpr × BExpr := (.var 0, .neg (.var 1), .neg (.var 2), .neg (.var 3))
+  (bQmulE eq (bQmulE eu eqc)).1
+private def e_s127_qconj_w_R : BExpr :=
+  let eq : BExpr × BExpr × BExpr × BExpr := (.var 0, .var 1, .var 2, .var 3)
+  .mul (bDot4E eq eq) (.var 4)
+private theorem p_s127_qconj_w : e_s127_qconj_w_L.norm = e_s127_qconj_w_R.norm := rfl
+
+theorem qmul_conj_w (q u : Vec4) :
+    BalanceEquiv (qmul q (qmul u (qconj q))).w (balance_mul (dot4 q q) u.w) :=
+  bal_poly_eq (fun | 0 => q.w | 1 => q.x | 2 => q.y | 3 => q.z
+                   | 4 => u.w | 5 => u.x | 6 => u.y | 7 => u.z | _ => bzero)
+    e_s127_qconj_w_L e_s127_qconj_w_R p_s127_qconj_w
+
+private def e_s127_norm3_L : BExpr :=
+  .sub (.add (.add (.var 0) (.var 1)) (.add (.var 2) (.var 3))) (.var 0)
+private def e_s127_norm3_R : BExpr :=
+  .add (.add (.var 1) (.var 2)) (.var 3)
+private theorem p_s127_norm3 : e_s127_norm3_L.norm = e_s127_norm3_R.norm := rfl
+
+private def e_s127_norm3k_L : BExpr :=
+  .sub (.mul (.var 4) (.add (.add (.var 0) (.var 1)) (.add (.var 2) (.var 3)))) (.mul (.var 4) (.var 0))
+private def e_s127_norm3k_R : BExpr :=
+  .mul (.var 4) (.add (.add (.var 1) (.var 2)) (.var 3))
+private theorem p_s127_norm3k : e_s127_norm3k_L.norm = e_s127_norm3k_R.norm := rfl
+
+private def e_s127_sq2_L : BExpr := .mul (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 1))
+private def e_s127_sq2_R : BExpr := .mul (.mul (.var 0) (.var 0)) (.mul (.var 1) (.var 1))
+private theorem p_s127_sq2 : e_s127_sq2_L.norm = e_s127_sq2_R.norm := rfl
+
+private def e_s127_d3sq_L : BExpr := .mul (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 1))
+private def e_s127_d3sq_R : BExpr := .mul (.mul (.var 0) (.var 0)) (.mul (.var 1) (.var 1))
+private theorem p_s127_d3sq : e_s127_d3sq_L.norm = e_s127_d3sq_R.norm := rfl
+
+-- Общая SO(2) лемма для чисто k-кватерниона q = (a, 0, 0, b) и qbar = (a, 0, 0, -b)
+private def e_s127_qk : BExpr × BExpr × BExpr × BExpr := (.var 0, .zero, .zero, .var 1)
+private def e_s127_qkb : BExpr × BExpr × BExpr × BExpr := (.var 0, .zero, .zero, .neg (.var 1))
+private def e_s127_uk : BExpr × BExpr × BExpr × BExpr := (.var 2, .var 3, .var 4, .var 5)
+private def e_s127_u2k := bQmulE e_s127_qk (bQmulE e_s127_uk e_s127_qkb)
+private def e_s127_ab2 : BExpr := .add (.mul (.var 0) (.var 0)) (.mul (.var 1) (.var 1))
+
+private theorem p_s127_so2_w : e_s127_u2k.1.norm = (BExpr.mul e_s127_ab2 (.var 2)).norm := rfl
+private theorem p_s127_so2_z : e_s127_u2k.2.2.2.norm = (BExpr.mul e_s127_ab2 (.var 5)).norm := rfl
+private theorem p_s127_so2_xy :
+    (BExpr.add (.mul e_s127_u2k.2.1 e_s127_u2k.2.1) (.mul e_s127_u2k.2.2.1 e_s127_u2k.2.2.1)).norm =
+    (BExpr.mul (.mul e_s127_ab2 e_s127_ab2) (.add (.mul (.var 3) (.var 3)) (.mul (.var 4) (.var 4)))).norm := rfl
+
+private def e_s127_gvz_dot : BExpr :=
+  vDotE (.zero, .zero, .var 0) (.zero, .zero, .var 0)
+private theorem p_s127_gvz_dot : e_s127_gvz_dot.norm = (BExpr.mul (.var 0) (.var 0)).norm := rfl
+
+private def e_s127_reg_gap_L : BExpr := .mul (.sub (.var 1) (.var 0)) (.sub (.var 1) (.var 0))
+private def e_s127_reg_gap_R : BExpr :=
+  .sub (.mul (.var 1) (.var 1)) (.mul (.var 0) (.sub (.mul (.nat 2) (.var 1)) (.var 0)))
+private theorem p_s127_reg_gap : e_s127_reg_gap_L.norm = e_s127_reg_gap_R.norm := rfl
+
+private def e_s127_reg_b0_L : BExpr := .mul .zero (.sub (.mul (.nat 2) (.var 0)) .zero)
+private theorem p_s127_reg_b0 : e_s127_reg_b0_L.norm = BExpr.zero.norm := rfl
+
+private def e_s127_reg_b2_L : BExpr := .mul (.mul (.nat 2) (.var 0)) (.sub (.mul (.nat 2) (.var 0)) (.mul (.nat 2) (.var 0)))
+private theorem p_s127_reg_b2 : e_s127_reg_b2_L.norm = BExpr.zero.norm := rfl
+
+private def e_s127_regd_L : BExpr × BExpr :=
+  dMulE (.var 0, .one) (dAddE (.nat 2, .zero) (dMulE (.neg .one, .zero) (.var 0, .one)))
+private def e_s127_regd_R : BExpr × BExpr :=
+  (.mul (.var 0) (.sub (.nat 2) (.var 0)), .sub (.nat 2) (.mul (.nat 2) (.var 0)))
+private theorem p_s127_regd_re : e_s127_regd_L.1.norm = e_s127_regd_R.1.norm := rfl
+private theorem p_s127_regd_eps : e_s127_regd_L.2.norm = e_s127_regd_R.2.norm := rfl
+
+private def e_s127_bderiv_lo_L : BExpr := .mul (.nat 2) (.sub (.nat 2) (.var 0))
+private def e_s127_bderiv_lo_R : BExpr := .sub (.sub (.nat 2) (.mul (.nat 2) (.var 0))) (.neg (.nat 2))
+private theorem p_s127_bderiv_lo : e_s127_bderiv_lo_L.norm = e_s127_bderiv_lo_R.norm := rfl
+
+private def e_s127_bderiv_hi_L : BExpr := .mul (.nat 2) (.var 0)
+private def e_s127_bderiv_hi_R : BExpr := .sub (.nat 2) (.sub (.nat 2) (.mul (.nat 2) (.var 0)))
+private theorem p_s127_bderiv_hi : e_s127_bderiv_hi_L.norm = e_s127_bderiv_hi_R.norm := rfl
+
+-- DualBalance для ∂H_β(v)u / ∂v_w
+private def e_s127_Dd : BExpr × BExpr :=
+  dAddE (dAddE (dAddE (dMulE (.var 0, .one) (.var 0, .one)) (.var 1, .zero))
+               (dAddE (.var 2, .zero) (.var 3, .zero)))
+        (.var 4, .zero)
+private def e_s127_vud : BExpr × BExpr :=
+  dAddE (dAddE (dMulE (.var 0, .one) (.var 5, .zero)) (.var 6, .zero))
+        (dAddE (.var 7, .zero) (.var 8, .zero))
+private def e_s127_hwd : BExpr × BExpr :=
+  dAddE (dMulE (dMulE (.var 9, .zero) e_s127_Dd) (.var 5, .zero))
+        (dMulE (.neg (.var 10), .zero) (dMulE e_s127_vud (.var 0, .one)))
+private def e_s127_hxd : BExpr × BExpr :=
+  dAddE (dMulE (dMulE (.var 9, .zero) e_s127_Dd) (.var 11, .zero))
+        (dMulE (.neg (.var 10), .zero) (dMulE e_s127_vud (.var 12, .zero)))
+
+private def e_s127_D_re : BExpr := .add (.add (.add (.mul (.var 0) (.var 0)) (.var 1)) (.add (.var 2) (.var 3))) (.var 4)
+private def e_s127_vu_re : BExpr := .add (.add (.mul (.var 0) (.var 5)) (.var 6)) (.add (.var 7) (.var 8))
+private theorem p_s127_D_re : e_s127_Dd.1.norm = e_s127_D_re.norm := rfl
+private theorem p_s127_D_eps : e_s127_Dd.2.norm = (BExpr.mul (.nat 2) (.var 0)).norm := rfl
+private theorem p_s127_vu_re : e_s127_vud.1.norm = e_s127_vu_re.norm := rfl
+private theorem p_s127_vu_eps : e_s127_vud.2.norm = (BExpr.var 5).norm := rfl
+private theorem p_s127_hw_re : e_s127_hwd.1.norm =
+    (BExpr.sub (.mul (.mul (.var 9) e_s127_D_re) (.var 5)) (.mul (.mul (.var 10) e_s127_vu_re) (.var 0))).norm := rfl
+private theorem p_s127_hw_eps : e_s127_hwd.2.norm =
+    (BExpr.sub (.mul (.mul (.nat 2) (.var 9)) (.mul (.var 0) (.var 5)))
+               (.mul (.var 10) (.add (.mul (.var 5) (.var 0)) e_s127_vu_re))).norm := rfl
+private theorem p_s127_hx_re : e_s127_hxd.1.norm =
+    (BExpr.sub (.mul (.mul (.var 9) e_s127_D_re) (.var 11)) (.mul (.mul (.var 10) e_s127_vu_re) (.var 12))).norm := rfl
+private theorem p_s127_hx_eps : e_s127_hxd.2.norm =
+    (BExpr.sub (.mul (.mul (.nat 2) (.var 9)) (.mul (.var 0) (.var 11)))
+               (.mul (.var 10) (.mul (.var 5) (.var 12)))).norm := rfl
+
+/-- ШАГ 127. Вложенная цепочка SO(2) ⊂ SO(3) ⊂ SO(4) ⊂ O(4), zero-oracle регуляризатор чётности
+    и точная RTRL-производная отражения Хаусхолдера `H_β(v)u` по нормальному вектору `v`:
+    1. `q_stereo(-g) ~ qconj(q_stereo(g))` (основа симметрично-антисимметричной параметризации `g_L = g_+ + g_-, g_R = -g_+ + g_-`).
+    2. Предел `SO(3) ⊂ SO(4)` (`g_- = 0`): `u3.w ~ (1 + ||g||²)²·u.w` (скалярная координата инвариантна)
+       и 3D-векторная норма `||u3.xyz||² ~ (1 + ||g||²)⁴·||u.xyz||²`.
+    3. Предел `SO(2) ⊂ SO(3) ⊂ SO(4)` (`g_- = 0, g_+ = (0, 0, g_z)`): `u2.w ~ d2²·u.w`, `u2.z ~ d2²·u.z`,
+       и 2D-плоская норма `u2.x² + u2.y² ~ d2⁴·(u.x² + u.y²)`.
+    4. Регуляризатор чётности `R(p, q) = p(2q - p)`: при `0 ≤ p ≤ 2q` всегда `0 ≤ R(p, q) ≤ q²`,
+       `R(0, q) ~ 0`, `R(2q, q) ~ 0`, а `DualBalance`-производная `β(2 - β)` равна `2 - 2β ∈ [-2, 2]`.
+    5. Точная `DualBalance`-производная `householder4_num` по `v.w`:
+       `∂h_w/∂v_w = 2 q v_w u_w - p (u_w v_w + v·u)` и `∂h_x/∂v_w = 2 q v_w u_x - p u_w v_x`. -/
+theorem step127_nested_so2_so3_so4_o4_parity_and_householder_v_deriv
+    (g : Vec3) (gz : Balance) (u v : Vec4) (p q eps beta : Balance)
+    (hp0 : BalGeZero p) (hp2 : BalLe p (balance_mul (balOfNat 2) q))
+    (hb0 : BalGeZero beta) (hb2 : BalLe beta (balOfNat 2)) :
+    let u3 := qmul (q_stereo g) (qmul u (q_stereo (vec3_neg g)))
+    let d3 := balance_add bone (dot3 g g)
+    let gvz : Vec3 := ⟨bzero, bzero, gz⟩
+    let u2 := qmul (q_stereo gvz) (qmul u (q_stereo (vec3_neg gvz)))
+    let d2 := balance_add bone (bsq gz)
+    let reg := balance_mul p (balance_sub (balance_mul (balOfNat 2) q) p)
+    let betad := dual_var beta
+    let regd := dual_mul betad (dual_add (dual_const (balOfNat 2))
+                                          (dual_mul (dual_const (balance_neg bone)) betad))
+    let vwd := dual_var v.w
+    let D_d := dual_add (dual_add (dual_add (dual_mul vwd vwd) (dual_const (bsq v.x)))
+                                  (dual_add (dual_const (bsq v.y)) (dual_const (bsq v.z))))
+                        (dual_const eps)
+    let vu_d := dual_add (dual_add (dual_mul vwd (dual_const u.w)) (dual_const (balance_mul v.x u.x)))
+                         (dual_add (dual_const (balance_mul v.y u.y)) (dual_const (balance_mul v.z u.z)))
+    let hw_d := dual_add (dual_mul (dual_mul (dual_const q) D_d) (dual_const u.w))
+                         (dual_mul (dual_const (balance_neg p)) (dual_mul vu_d vwd))
+    let hx_d := dual_add (dual_mul (dual_mul (dual_const q) D_d) (dual_const u.x))
+                         (dual_mul (dual_const (balance_neg p)) (dual_mul vu_d (dual_const v.x)))
+    let D_v := balance_add (dot4 v v) eps
+    let vu := dot4 v u
+    -- 1. Сопряжение
+    Vec4Equiv (q_stereo (vec3_neg g)) (qconj (q_stereo g))
+    ∧
+    -- 2. Вкладка SO(3) ⊂ SO(4)
+    (BalanceEquiv u3.w (balance_mul (bsq d3) u.w) ∧
+     BalanceEquiv (balance_add (balance_add (bsq u3.x) (bsq u3.y)) (bsq u3.z))
+                  (balance_mul (bsq (bsq d3)) (balance_add (balance_add (bsq u.x) (bsq u.y)) (bsq u.z))))
+    ∧
+    -- 3. Вкладка SO(2) ⊂ SO(3) ⊂ SO(4)
+    (BalanceEquiv u2.w (balance_mul (bsq d2) u.w) ∧
+     BalanceEquiv u2.z (balance_mul (bsq d2) u.z) ∧
+     BalanceEquiv (balance_add (bsq u2.x) (bsq u2.y))
+                  (balance_mul (bsq (bsq d2)) (balance_add (bsq u.x) (bsq u.y))))
+    ∧
+    -- 4. Регуляризатор чётности
+    (BalGeZero reg ∧ BalLe reg (bsq q) ∧
+     BalanceEquiv (balance_mul bzero (balance_sub (balance_mul (balOfNat 2) q) bzero)) bzero ∧
+     BalanceEquiv (balance_mul (balance_mul (balOfNat 2) q)
+                    (balance_sub (balance_mul (balOfNat 2) q) (balance_mul (balOfNat 2) q))) bzero ∧
+     DualEquiv regd ⟨balance_mul beta (balance_sub (balOfNat 2) beta),
+                     balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta)⟩ ∧
+     BalLe (balance_neg (balOfNat 2)) (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta)) ∧
+     BalLe (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta)) (balOfNat 2))
+    ∧
+    -- 5. Точные DualBalance производные Хаусхолдера по v.w
+    (DualEquiv D_d ⟨D_v, balance_mul (balOfNat 2) v.w⟩ ∧
+     DualEquiv vu_d ⟨vu, u.w⟩ ∧
+     DualEquiv hw_d ⟨balance_sub (balance_mul (balance_mul q D_v) u.w) (balance_mul (balance_mul p vu) v.w),
+                     balance_sub (balance_mul (balance_mul (balOfNat 2) q) (balance_mul v.w u.w))
+                                 (balance_mul p (balance_add (balance_mul u.w v.w) vu))⟩ ∧
+     DualEquiv hx_d ⟨balance_sub (balance_mul (balance_mul q D_v) u.x) (balance_mul (balance_mul p vu) v.x),
+                     balance_sub (balance_mul (balance_mul (balOfNat 2) q) (balance_mul v.w u.x))
+                                 (balance_mul p (balance_mul u.w v.x))⟩) := by
+  dsimp only [dual_var, dual_const, dual_mul, dual_add, DualEquiv, bsq]
+  -- 1. Сопряжение
+  have hconj := q_stereo_neg g
+  -- 2. SO(3) ⊂ SO(4)
+  let qg := q_stereo g
+  let u3 := qmul qg (qmul u (q_stereo (vec3_neg g)))
+  let d3 := balance_add bone (dot3 g g)
+  have hu3_conj : Vec4Equiv u3 (qmul qg (qmul u (qconj qg))) :=
+    qmul_congr ⟨step24_balance_refl _, step24_balance_refl _, step24_balance_refl _, step24_balance_refl _⟩
+      (qmul_congr ⟨step24_balance_refl _, step24_balance_refl _, step24_balance_refl _, step24_balance_refl _⟩ hconj)
+  have hs117 := step117_rational_quat_and_so4_double_rotor g (vec3_neg g) u
+  have hqg_norm : BalanceEquiv (dot4 qg qg) (balance_mul d3 d3) := hs117.2.2.1
+  have hu3_w : BalanceEquiv u3.w (balance_mul (balance_mul d3 d3) u.w) :=
+    step24_balance_trans hu3_conj.1
+      (step24_balance_trans (qmul_conj_w qg u) (bal_mul_congr hqg_norm (step24_balance_refl u.w)))
+  have hd_neg : BalanceEquiv (balance_add bone (dot3 (vec3_neg g) (vec3_neg g))) d3 :=
+    step25_balance_add_congr (step24_balance_refl bone)
+      (bal_poly_eq (fun | 0 => g.x | 1 => g.y | 2 => g.z | _ => bzero)
+        e_s127_dot3_neg_L e_s127_dot3_neg_R p_s127_dot3_neg)
+  have hu3_tot : BalanceEquiv (dot4 u3 u3) (balance_mul (balance_mul (balance_mul d3 d3) (balance_mul d3 d3)) (dot4 u u)) :=
+    step24_balance_trans hs117.2.2.2.2.1
+      (bal_mul_congr
+        (let K := balance_mul (balance_mul d3 d3) (balance_mul d3 d3)
+         have hdd : BalanceEquiv (balance_mul d3 (balance_add bone (dot3 (vec3_neg g) (vec3_neg g))))
+                                 (balance_mul d3 d3) :=
+           bal_mul_congr (step24_balance_refl d3) hd_neg
+         step24_balance_trans (bal_mul_congr hdd hdd)
+           (bal_poly_eq (fun | 0 => d3 | 1 => d3 | _ => bzero) e_s127_d3sq_L e_s127_d3sq_R p_s127_d3sq))
+        (step24_balance_refl (dot4 u u)))
+  have hu3_wsq : BalanceEquiv (balance_mul u3.w u3.w)
+      (balance_mul (balance_mul (balance_mul d3 d3) (balance_mul d3 d3)) (balance_mul u.w u.w)) :=
+    step24_balance_trans (bal_mul_congr hu3_w hu3_w)
+      (bal_poly_eq (fun | 0 => balance_mul d3 d3 | 1 => u.w | _ => bzero) e_s127_sq2_L e_s127_sq2_R p_s127_sq2)
+  have hu3_xyz : BalanceEquiv
+      (balance_add (balance_add (balance_mul u3.x u3.x) (balance_mul u3.y u3.y)) (balance_mul u3.z u3.z))
+      (balance_mul (balance_mul (balance_mul d3 d3) (balance_mul d3 d3))
+        (balance_add (balance_add (balance_mul u.x u.x) (balance_mul u.y u.y)) (balance_mul u.z u.z))) := by
+    let K := balance_mul (balance_mul d3 d3) (balance_mul d3 d3)
+    have hs := bal_sub_congr hu3_tot hu3_wsq
+    have hL := bal_poly_eq
+      (fun | 0 => balance_mul u3.w u3.w | 1 => balance_mul u3.x u3.x
+           | 2 => balance_mul u3.y u3.y | 3 => balance_mul u3.z u3.z | _ => bzero)
+      e_s127_norm3_L e_s127_norm3_R p_s127_norm3
+    have hR := bal_poly_eq
+      (fun | 0 => balance_mul u.w u.w | 1 => balance_mul u.x u.x
+           | 2 => balance_mul u.y u.y | 3 => balance_mul u.z u.z | 4 => K | _ => bzero)
+      e_s127_norm3k_L e_s127_norm3k_R p_s127_norm3k
+    exact step24_balance_trans (step24_balance_symm hL) (step24_balance_trans hs hR)
+  -- 3. SO(2) ⊂ SO(3) ⊂ SO(4)
+  let gvz : Vec3 := ⟨bzero, bzero, gz⟩
+  let d2 := balance_add bone (balance_mul gz gz)
+  let a2 := balance_sub bone (balance_mul gz gz)
+  let b2 := balance_mul (balOfNat 2) gz
+  have hgvz_dot : BalanceEquiv (dot3 gvz gvz) (balance_mul gz gz) :=
+    bal_poly_eq (fun | 0 => gz | _ => bzero) e_s127_gvz_dot (.mul (.var 0) (.var 0)) p_s127_gvz_dot
+  have hq2_L : Vec4Equiv (q_stereo gvz) ⟨a2, bzero, bzero, b2⟩ :=
+    ⟨bal_sub_congr (step24_balance_refl bone) hgvz_dot,
+     bal_mul_zero (balOfNat 2), bal_mul_zero (balOfNat 2), step24_balance_refl b2⟩
+  have hq2_R : Vec4Equiv (q_stereo (vec3_neg gvz)) ⟨a2, bzero, bzero, balance_neg b2⟩ := by
+    have hc := q_stereo_neg gvz
+    have hc' : Vec4Equiv (qconj (q_stereo gvz)) ⟨a2, bzero, bzero, balance_neg b2⟩ :=
+      ⟨hq2_L.1, step24_balance_trans (bal_neg_congr hq2_L.2.1) bal_neg_zero,
+       step24_balance_trans (bal_neg_congr hq2_L.2.2.1) bal_neg_zero, bal_neg_congr hq2_L.2.2.2⟩
+    exact ⟨step24_balance_trans hc.1 hc'.1, step24_balance_trans hc.2.1 hc'.2.1,
+           step24_balance_trans hc.2.2.1 hc'.2.2.1, step24_balance_trans hc.2.2.2 hc'.2.2.2⟩
+  let u2k := qmul ⟨a2, bzero, bzero, b2⟩ (qmul u ⟨a2, bzero, bzero, balance_neg b2⟩)
+  have hu2_eq : Vec4Equiv (qmul (q_stereo gvz) (qmul u (q_stereo (vec3_neg gvz)))) u2k :=
+    qmul_congr hq2_L (qmul_congr ⟨step24_balance_refl _, step24_balance_refl _, step24_balance_refl _, step24_balance_refl _⟩ hq2_R)
+  have hab2_eq : BalanceEquiv (balance_add (balance_mul a2 a2) (balance_mul b2 b2)) (balance_mul d2 d2) := by
+    let env2 : Nat → Balance := fun | 0 => balance_mul gz gz | _ => bzero
+    have h4 : BalanceEquiv (balance_mul b2 b2) (balance_mul (balOfNat 4) (balance_mul gz gz)) :=
+      bal_poly_eq (fun | 0 => gz | _ => bzero)
+        (.mul (.mul (.nat 2) (.var 0)) (.mul (.nat 2) (.var 0))) (.mul (.nat 4) (.mul (.var 0) (.var 0))) rfl
+    exact step24_balance_trans (step25_balance_add_congr (step24_balance_refl _) h4)
+      (bal_poly_eq env2 e_stereo_L e_stereo_R p_stereo_eq)
+  let envk : Nat → Balance := fun | 0 => a2 | 1 => b2 | 2 => u.w | 3 => u.x | 4 => u.y | 5 => u.z | _ => bzero
+  have hu2_w : BalanceEquiv (qmul (q_stereo gvz) (qmul u (q_stereo (vec3_neg gvz)))).w
+      (balance_mul (balance_mul d2 d2) u.w) :=
+    step24_balance_trans hu2_eq.1
+      (step24_balance_trans (bal_poly_eq envk e_s127_u2k.1 (.mul e_s127_ab2 (.var 2)) p_s127_so2_w)
+        (bal_mul_congr hab2_eq (step24_balance_refl u.w)))
+  have hu2_z : BalanceEquiv (qmul (q_stereo gvz) (qmul u (q_stereo (vec3_neg gvz)))).z
+      (balance_mul (balance_mul d2 d2) u.z) :=
+    step24_balance_trans hu2_eq.2.2.2
+      (step24_balance_trans (bal_poly_eq envk e_s127_u2k.2.2.2 (.mul e_s127_ab2 (.var 5)) p_s127_so2_z)
+        (bal_mul_congr hab2_eq (step24_balance_refl u.z)))
+  have hu2_xy : BalanceEquiv
+      (balance_add (balance_mul (qmul (q_stereo gvz) (qmul u (q_stereo (vec3_neg gvz)))).x
+                                (qmul (q_stereo gvz) (qmul u (q_stereo (vec3_neg gvz)))).x)
+                   (balance_mul (qmul (q_stereo gvz) (qmul u (q_stereo (vec3_neg gvz)))).y
+                                (qmul (q_stereo gvz) (qmul u (q_stereo (vec3_neg gvz)))).y))
+      (balance_mul (balance_mul (balance_mul d2 d2) (balance_mul d2 d2))
+        (balance_add (balance_mul u.x u.x) (balance_mul u.y u.y))) :=
+    step24_balance_trans
+      (step25_balance_add_congr (bal_mul_congr hu2_eq.2.1 hu2_eq.2.1) (bal_mul_congr hu2_eq.2.2.1 hu2_eq.2.2.1))
+      (step24_balance_trans
+        (bal_poly_eq envk (.add (.mul e_s127_u2k.2.1 e_s127_u2k.2.1) (.mul e_s127_u2k.2.2.1 e_s127_u2k.2.2.1))
+          (.mul (.mul e_s127_ab2 e_s127_ab2) (.add (.mul (.var 3) (.var 3)) (.mul (.var 4) (.var 4)))) p_s127_so2_xy)
+        (bal_mul_congr (bal_mul_congr hab2_eq hab2_eq) (step24_balance_refl _)))
+  -- 4. Регуляризатор чётности
+  have hreg_ge : BalGeZero (balance_mul p (balance_sub (balance_mul (balOfNat 2) q) p)) :=
+    bal_mul_ge_ge hp0 hp2
+  have hreg_le : BalLe (balance_mul p (balance_sub (balance_mul (balOfNat 2) q) p)) (balance_mul q q) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq (fun | 0 => p | 1 => q | _ => bzero) e_s127_reg_gap_L e_s127_reg_gap_R p_s127_reg_gap)
+      (bal_sq_ge_zero (balance_sub q p))
+  have hreg_b0 := bal_poly_eq (fun | 0 => q | _ => bzero) e_s127_reg_b0_L .zero p_s127_reg_b0
+  have hreg_b2 := bal_poly_eq (fun | 0 => q | _ => bzero) e_s127_reg_b2_L .zero p_s127_reg_b2
+  have hregd_re := bal_poly_eq (fun | 0 => beta | _ => bzero) e_s127_regd_L.1 e_s127_regd_R.1 p_s127_regd_re
+  have hregd_eps := bal_poly_eq (fun | 0 => beta | _ => bzero) e_s127_regd_L.2 e_s127_regd_R.2 p_s127_regd_eps
+  have hbderiv_lo : BalLe (balance_neg (balOfNat 2)) (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta)) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq (fun | 0 => beta | _ => bzero) e_s127_bderiv_lo_L e_s127_bderiv_lo_R p_s127_bderiv_lo)
+      (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) hb2)
+  have hbderiv_hi : BalLe (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta)) (balOfNat 2) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq (fun | 0 => beta | _ => bzero) e_s127_bderiv_hi_L e_s127_bderiv_hi_R p_s127_bderiv_hi)
+      (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) hb0)
+  -- 5. DualBalance производные Хаусхолдера по v.w
+  let envH : Nat → Balance := fun
+    | 0 => v.w | 1 => balance_mul v.x v.x | 2 => balance_mul v.y v.y | 3 => balance_mul v.z v.z
+    | 4 => eps | 5 => u.w | 6 => balance_mul v.x u.x | 7 => balance_mul v.y u.y | 8 => balance_mul v.z u.z
+    | 9 => q | 10 => p | 11 => u.x | 12 => v.x | _ => bzero
+  let vwd := dual_var v.w
+  let D_d := dual_add (dual_add (dual_add (dual_mul vwd vwd) (dual_const (bsq v.x)))
+                                (dual_add (dual_const (bsq v.y)) (dual_const (bsq v.z))))
+                      (dual_const eps)
+  let vu_d := dual_add (dual_add (dual_mul vwd (dual_const u.w)) (dual_const (balance_mul v.x u.x)))
+                       (dual_add (dual_const (balance_mul v.y u.y)) (dual_const (balance_mul v.z u.z)))
+  let hw_d := dual_add (dual_mul (dual_mul (dual_const q) D_d) (dual_const u.w))
+                       (dual_mul (dual_const (balance_neg p)) (dual_mul vu_d vwd))
+  let hx_d := dual_add (dual_mul (dual_mul (dual_const q) D_d) (dual_const u.x))
+                       (dual_mul (dual_const (balance_neg p)) (dual_mul vu_d (dual_const v.x)))
+  have hD_d : DualEquiv D_d ⟨balance_add (dot4 v v) eps, balance_mul (balOfNat 2) v.w⟩ :=
+    ⟨bal_poly_eq envH e_s127_Dd.1 e_s127_D_re p_s127_D_re,
+     bal_poly_eq envH e_s127_Dd.2 (.mul (.nat 2) (.var 0)) p_s127_D_eps⟩
+  have hvu_d : DualEquiv vu_d ⟨dot4 v u, u.w⟩ :=
+    ⟨bal_poly_eq envH e_s127_vud.1 e_s127_vu_re p_s127_vu_re,
+     bal_poly_eq envH e_s127_vud.2 (.var 5) p_s127_vu_eps⟩
+  have hhw_d : DualEquiv hw_d
+      ⟨balance_sub (balance_mul (balance_mul q (balance_add (dot4 v v) eps)) u.w)
+                   (balance_mul (balance_mul p (dot4 v u)) v.w),
+       balance_sub (balance_mul (balance_mul (balOfNat 2) q) (balance_mul v.w u.w))
+                   (balance_mul p (balance_add (balance_mul u.w v.w) (dot4 v u)))⟩ :=
+    ⟨bal_poly_eq envH e_s127_hwd.1 _ p_s127_hw_re,
+     bal_poly_eq envH e_s127_hwd.2 _ p_s127_hw_eps⟩
+  have hhx_d : DualEquiv hx_d
+      ⟨balance_sub (balance_mul (balance_mul q (balance_add (dot4 v v) eps)) u.x)
+                   (balance_mul (balance_mul p (dot4 v u)) v.x),
+       balance_sub (balance_mul (balance_mul (balOfNat 2) q) (balance_mul v.w u.x))
+                   (balance_mul p (balance_mul u.w v.x))⟩ :=
+    ⟨bal_poly_eq envH e_s127_hxd.1 _ p_s127_hx_re,
+     bal_poly_eq envH e_s127_hxd.2 _ p_s127_hx_eps⟩
+  exact ⟨hconj, ⟨hu3_w, hu3_xyz⟩, ⟨hu2_w, hu2_z, hu2_xy⟩,
+         ⟨hreg_ge, hreg_le, hreg_b0, hreg_b2, ⟨hregd_re, hregd_eps⟩, hbderiv_lo, hbderiv_hi⟩,
+         ⟨hD_d, hvu_d, hhw_d, hhx_d⟩⟩
+
+-- ----- ШАГ 128. Выход из седла селективности (β = 0) и покомпонентные границы Q8.24 -----
+
+private def e_s128_mul_lo_L : BExpr :=
+  .add (.mul (.sub (.var 0) (.var 1)) (.sub (.var 2) (.var 3)))
+       (.mul (.add (.var 0) (.var 1)) (.add (.var 2) (.var 3)))
+private def e_s128_mul_lo_R : BExpr :=
+  .mul (.nat 2) (.sub (.mul (.var 1) (.var 3)) (.neg (.mul (.var 0) (.var 2))))
+private theorem p_s128_mul_lo : e_s128_mul_lo_L.norm = e_s128_mul_lo_R.norm := rfl
+
+private def e_s128_mul_hi_L : BExpr :=
+  .add (.mul (.sub (.var 0) (.var 1)) (.add (.var 2) (.var 3)))
+       (.mul (.add (.var 0) (.var 1)) (.sub (.var 2) (.var 3)))
+private def e_s128_mul_hi_R : BExpr :=
+  .mul (.nat 2) (.sub (.mul (.var 0) (.var 2)) (.mul (.var 1) (.var 3)))
+private theorem p_s128_mul_hi : e_s128_mul_hi_L.norm = e_s128_mul_hi_R.norm := rfl
+
+private def e_s128_abs_add_lo_L : BExpr := .add (.add (.var 0) (.var 2)) (.add (.var 1) (.var 3))
+private def e_s128_abs_add_lo_R : BExpr := .sub (.add (.var 2) (.var 3)) (.neg (.add (.var 0) (.var 1)))
+private theorem p_s128_abs_add_lo : e_s128_abs_add_lo_L.norm = e_s128_abs_add_lo_R.norm := rfl
+
+private def e_s128_abs_add_hi_L : BExpr := .add (.sub (.var 0) (.var 2)) (.sub (.var 1) (.var 3))
+private def e_s128_abs_add_hi_R : BExpr := .sub (.add (.var 0) (.var 1)) (.add (.var 2) (.var 3))
+private theorem p_s128_abs_add_hi : e_s128_abs_add_hi_L.norm = e_s128_abs_add_hi_R.norm := rfl
+
+private def e_s128_abs_sub_lo_L : BExpr := .add (.add (.var 0) (.var 2)) (.sub (.var 1) (.var 3))
+private def e_s128_abs_sub_lo_R : BExpr := .sub (.sub (.var 2) (.var 3)) (.neg (.add (.var 0) (.var 1)))
+private theorem p_s128_abs_sub_lo : e_s128_abs_sub_lo_L.norm = e_s128_abs_sub_lo_R.norm := rfl
+
+private def e_s128_abs_sub_hi_L : BExpr := .add (.sub (.var 0) (.var 2)) (.add (.var 1) (.var 3))
+private def e_s128_abs_sub_hi_R : BExpr := .sub (.add (.var 0) (.var 1)) (.sub (.var 2) (.var 3))
+private theorem p_s128_abs_sub_hi : e_s128_abs_sub_hi_L.norm = e_s128_abs_sub_hi_R.norm := rfl
+
+theorem bal_abs_mul_le {A B a b : Balance}
+    (ha1 : BalLe (balance_neg A) a) (ha2 : BalLe a A)
+    (hb1 : BalLe (balance_neg B) b) (hb2 : BalLe b B) :
+    BalLe (balance_neg (balance_mul A B)) (balance_mul a b) ∧
+    BalLe (balance_mul a b) (balance_mul A B) := by
+  let env : Nat → Balance := fun | 0 => A | 1 => a | 2 => B | 3 => b | _ => bzero
+  have hap : BalGeZero (balance_add A a) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => A | 1 => a | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) ha1
+  have hbp : BalGeZero (balance_add B b) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => B | 1 => b | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) hb1
+  have h2lo := bal_add_ge_ge (bal_mul_ge_ge ha2 hb2) (bal_mul_ge_ge hap hbp)
+  have hlo : BalLe (balance_neg (balance_mul A B)) (balance_mul a b) :=
+    bal_ge_zero_of_double_ge
+      (bal_ge_zero_of_equiv (bal_poly_eq env e_s128_mul_lo_L e_s128_mul_lo_R p_s128_mul_lo) h2lo)
+  have h2hi := bal_add_ge_ge (bal_mul_ge_ge ha2 hbp) (bal_mul_ge_ge hap hb2)
+  have hhi : BalLe (balance_mul a b) (balance_mul A B) :=
+    bal_ge_zero_of_double_ge
+      (bal_ge_zero_of_equiv (bal_poly_eq env e_s128_mul_hi_L e_s128_mul_hi_R p_s128_mul_hi) h2hi)
+  exact ⟨hlo, hhi⟩
+
+theorem bal_abs_add_le {A B a b : Balance}
+    (ha1 : BalLe (balance_neg A) a) (ha2 : BalLe a A)
+    (hb1 : BalLe (balance_neg B) b) (hb2 : BalLe b B) :
+    BalLe (balance_neg (balance_add A B)) (balance_add a b) ∧
+    BalLe (balance_add a b) (balance_add A B) := by
+  let env : Nat → Balance := fun | 0 => A | 1 => B | 2 => a | 3 => b | _ => bzero
+  have hap : BalGeZero (balance_add A a) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => A | 1 => a | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) ha1
+  have hbp : BalGeZero (balance_add B b) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => B | 1 => b | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) hb1
+  exact ⟨bal_ge_zero_of_equiv (bal_poly_eq env e_s128_abs_add_lo_L e_s128_abs_add_lo_R p_s128_abs_add_lo)
+           (bal_add_ge_ge hap hbp),
+         bal_ge_zero_of_equiv (bal_poly_eq env e_s128_abs_add_hi_L e_s128_abs_add_hi_R p_s128_abs_add_hi)
+           (bal_add_ge_ge ha2 hb2)⟩
+
+theorem bal_abs_sub_le {A B a b : Balance}
+    (ha1 : BalLe (balance_neg A) a) (ha2 : BalLe a A)
+    (hb1 : BalLe (balance_neg B) b) (hb2 : BalLe b B) :
+    BalLe (balance_neg (balance_add A B)) (balance_sub a b) ∧
+    BalLe (balance_sub a b) (balance_add A B) := by
+  let env : Nat → Balance := fun | 0 => A | 1 => B | 2 => a | 3 => b | _ => bzero
+  have hap : BalGeZero (balance_add A a) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => A | 1 => a | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) ha1
+  have hbp : BalGeZero (balance_add B b) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => B | 1 => b | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) hb1
+  exact ⟨bal_ge_zero_of_equiv (bal_poly_eq env e_s128_abs_sub_lo_L e_s128_abs_sub_lo_R p_s128_abs_sub_lo)
+           (bal_add_ge_ge hap hb2),
+         bal_ge_zero_of_equiv (bal_poly_eq env e_s128_abs_sub_hi_L e_s128_abs_sub_hi_R p_s128_abs_sub_hi)
+           (bal_add_ge_ge ha2 hbp)⟩
+
+private def e_s128_4M_L : BExpr := .add (.add (.var 0) (.var 0)) (.add (.var 0) (.var 0))
+private def e_s128_4M_R : BExpr := .mul (.nat 4) (.var 0)
+private theorem p_s128_4M : e_s128_4M_L.norm = e_s128_4M_R.norm := rfl
+
+private theorem bal_abs_4_bounds (M t : Balance)
+    (h1 : BalLe (balance_neg (balance_add (balance_add M M) (balance_add M M))) t)
+    (h2 : BalLe t (balance_add (balance_add M M) (balance_add M M))) :
+    BalLe (balance_neg (balance_mul (balOfNat 4) M)) t ∧ BalLe t (balance_mul (balOfNat 4) M) :=
+  have heq := bal_poly_eq (fun | 0 => M | _ => bzero) e_s128_4M_L e_s128_4M_R p_s128_4M
+  ⟨bal_le_of_equiv_left (bal_neg_congr heq) h1, bal_le_of_equiv_right heq h2⟩
+
+private def e_s128_saddle_z_re_L : BExpr := .add (.mul bzero_E (.zero)) (.mul bzero_E .zero)
+  where bzero_E : BExpr := .zero
+private def e_s128_saddle_eps_L : BExpr := .add (.mul .zero .zero) (.mul .one (.var 0))
+private theorem p_s128_saddle_eps : e_s128_saddle_eps_L.norm = (BExpr.var 0).norm := rfl
+private def e_s128_dead_eps_L : BExpr := .add (.mul .zero .zero) (.mul .one .zero)
+private theorem p_s128_dead_eps : e_s128_dead_eps_L.norm = BExpr.zero.norm := rfl
+
+/-- ШАГ 128. Выход селективности из седла при `β = 0` и точные покомпонентные границы Q8.24:
+    1. Селективное гейтирование `β_k · z_{t,k}` при `β_k = 0`:
+       `DualEquiv ((0 + ε) · (z + 0ε)) (0 + z·ε)`, т.е. при `z ≠ 0` градиент по `β_k` строго ненулевой,
+       в отличие от мёртвого седла `z = 0` (где и `∂/∂β_k ~ 0`, и `∂/∂w_Δ ~ 0`).
+    2. Покомпонентная оценка произведения кватернионов `r = qmul p q` в Q8.24:
+       если `|p_c| ≤ S` и `|q_c| ≤ S`, то `-4S² ≤ r_c ≤ 4S²` для всех 4 компонент (`w, x, y, z`).
+    3. Покомпонентная оценка `dot4 v u` в Q8.24:
+       если `|v_c| ≤ B` и `|u_c| ≤ U`, то `-4BU ≤ v·u ≤ 4BU`. -/
+theorem step128_selectivity_saddle_escape_and_q824_product_bounds
+    (z S B U : Balance) (p q v u : Vec4)
+    (hpw1 : BalLe (balance_neg S) p.w) (hpw2 : BalLe p.w S)
+    (hpx1 : BalLe (balance_neg S) p.x) (hpx2 : BalLe p.x S)
+    (hpy1 : BalLe (balance_neg S) p.y) (hpy2 : BalLe p.y S)
+    (hpz1 : BalLe (balance_neg S) p.z) (hpz2 : BalLe p.z S)
+    (hqw1 : BalLe (balance_neg S) q.w) (hqw2 : BalLe q.w S)
+    (hqx1 : BalLe (balance_neg S) q.x) (hqx2 : BalLe q.x S)
+    (hqy1 : BalLe (balance_neg S) q.y) (hqy2 : BalLe q.y S)
+    (hqz1 : BalLe (balance_neg S) q.z) (hqz2 : BalLe q.z S)
+    (hvw1 : BalLe (balance_neg B) v.w) (hvw2 : BalLe v.w B)
+    (hvx1 : BalLe (balance_neg B) v.x) (hvx2 : BalLe v.x B)
+    (hvy1 : BalLe (balance_neg B) v.y) (hvy2 : BalLe v.y B)
+    (hvz1 : BalLe (balance_neg B) v.z) (hvz2 : BalLe v.z B)
+    (huw1 : BalLe (balance_neg U) u.w) (huw2 : BalLe u.w U)
+    (hux1 : BalLe (balance_neg U) u.x) (hux2 : BalLe u.x U)
+    (huy1 : BalLe (balance_neg U) u.y) (huy2 : BalLe u.y U)
+    (huz1 : BalLe (balance_neg U) u.z) (huz2 : BalLe u.z U) :
+    let r := qmul p q
+    let M4S2 := balance_mul (balOfNat 4) (bsq S)
+    let M4BU := balance_mul (balOfNat 4) (balance_mul B U)
+    -- 1. Выход из седла при β = 0
+    (DualEquiv (dual_mul (dual_var bzero) (dual_const z)) ⟨bzero, z⟩ ∧
+     ((BalGtZero z ∨ BalLtZero z) →
+       BalanceEquiv (dual_mul (dual_var bzero) (dual_const z)).eps bzero → False) ∧
+     BalanceEquiv (dual_mul (dual_var bzero) (dual_const bzero)).eps bzero ∧
+     BalanceEquiv (dual_mul (dual_const bzero) (dual_var bzero)).eps bzero)
+    ∧
+    -- 2. Оценка компонент qmul в Q8.24: -4S² ≤ r_c ≤ 4S²
+    ((BalLe (balance_neg M4S2) r.w ∧ BalLe r.w M4S2) ∧
+     (BalLe (balance_neg M4S2) r.x ∧ BalLe r.x M4S2) ∧
+     (BalLe (balance_neg M4S2) r.y ∧ BalLe r.y M4S2) ∧
+     (BalLe (balance_neg M4S2) r.z ∧ BalLe r.z M4S2))
+    ∧
+    -- 3. Оценка dot4 v u в Q8.24: -4BU ≤ v·u ≤ 4BU
+    (BalLe (balance_neg M4BU) (dot4 v u) ∧ BalLe (dot4 v u) M4BU) := by
+  -- 1. Селективность
+  have hsd : DualEquiv (dual_mul (dual_var bzero) (dual_const z)) ⟨bzero, z⟩ :=
+    ⟨bal_poly_eq (fun | 0 => z | _ => bzero) (.mul .zero (.var 0)) .zero rfl,
+     bal_poly_eq (fun | 0 => z | _ => bzero) e_s128_saddle_eps_L (.var 0) p_s128_saddle_eps⟩
+  have hnz : (BalGtZero z ∨ BalLtZero z) →
+      BalanceEquiv (dual_mul (dual_var bzero) (dual_const z)).eps bzero → False := by
+    intro hz heq
+    have hz0 := step24_balance_trans (step24_balance_symm hsd.2) heq
+    cases hz with
+    | inl hgt => exact bal_gt_zero_ne_zero hgt hz0
+    | inr hlt =>
+      exact bal_gt_zero_ne_zero (bal_neg_gt_zero hlt)
+        (step24_balance_trans (bal_neg_congr hz0) bal_neg_zero)
+  have hdead1 : BalanceEquiv (dual_mul (dual_var bzero) (dual_const bzero)).eps bzero :=
+    bal_poly_eq (fun _ => bzero) e_s128_dead_eps_L .zero p_s128_dead_eps
+  have hdead2 : BalanceEquiv (dual_mul (dual_const bzero) (dual_var bzero)).eps bzero :=
+    bal_poly_eq (fun _ => bzero) e_s128_dead_eps_L .zero p_s128_dead_eps
+  -- 2. Покомпонентные границы qmul p q
+  let S2 := bsq S
+  have mww := bal_abs_mul_le hpw1 hpw2 hqw1 hqw2
+  have mxx := bal_abs_mul_le hpx1 hpx2 hqx1 hqx2
+  have myy := bal_abs_mul_le hpy1 hpy2 hqy1 hqy2
+  have mzz := bal_abs_mul_le hpz1 hpz2 hqz1 hqz2
+  have mwx := bal_abs_mul_le hpw1 hpw2 hqx1 hqx2
+  have mxw := bal_abs_mul_le hpx1 hpx2 hqw1 hqw2
+  have mzy := bal_abs_mul_le hpz1 hpz2 hqy1 hqy2
+  have myz := bal_abs_mul_le hpy1 hpy2 hqz1 hqz2
+  have mwy := bal_abs_mul_le hpw1 hpw2 hqy1 hqy2
+  have myw := bal_abs_mul_le hpy1 hpy2 hqw1 hqw2
+  have mxz := bal_abs_mul_le hpx1 hpx2 hqz1 hqz2
+  have mzx := bal_abs_mul_le hpz1 hpz2 hqx1 hqx2
+  have mwz := bal_abs_mul_le hpw1 hpw2 hqz1 hqz2
+  have mzw := bal_abs_mul_le hpz1 hpz2 hqw1 hqw2
+  have myx := bal_abs_mul_le hpy1 hpy2 hqx1 hqx2
+  have mxy := bal_abs_mul_le hpx1 hpx2 hqy1 hqy2
+  have rw_l := bal_abs_sub_le mww.1 mww.2 mxx.1 mxx.2
+  have rw_r := bal_abs_add_le myy.1 myy.2 mzz.1 mzz.2
+  have rw_b := bal_abs_sub_le rw_l.1 rw_l.2 rw_r.1 rw_r.2
+  have rx_l := bal_abs_add_le mwx.1 mwx.2 mxw.1 mxw.2
+  have rx_r := bal_abs_sub_le mzy.1 mzy.2 myz.1 myz.2
+  have rx_b := bal_abs_sub_le rx_l.1 rx_l.2 rx_r.1 rx_r.2
+  have ry_l := bal_abs_add_le mwy.1 mwy.2 myw.1 myw.2
+  have ry_r := bal_abs_sub_le mxz.1 mxz.2 mzx.1 mzx.2
+  have ry_b := bal_abs_sub_le ry_l.1 ry_l.2 ry_r.1 ry_r.2
+  have rz_l := bal_abs_add_le mwz.1 mwz.2 mzw.1 mzw.2
+  have rz_r := bal_abs_sub_le myx.1 myx.2 mxy.1 mxy.2
+  have rz_b := bal_abs_sub_le rz_l.1 rz_l.2 rz_r.1 rz_r.2
+  -- 3. Границы dot4 v u
+  let BU := balance_mul B U
+  have dww := bal_abs_mul_le hvw1 hvw2 huw1 huw2
+  have dxx := bal_abs_mul_le hvx1 hvx2 hux1 hux2
+  have dyy := bal_abs_mul_le hvy1 hvy2 huy1 huy2
+  have dzz := bal_abs_mul_le hvz1 hvz2 huz1 huz2
+  have dl := bal_abs_add_le dww.1 dww.2 dxx.1 dxx.2
+  have dr := bal_abs_add_le dyy.1 dyy.2 dzz.1 dzz.2
+  have db := bal_abs_add_le dl.1 dl.2 dr.1 dr.2
+  exact ⟨⟨hsd, hnz, hdead1, hdead2⟩,
+         ⟨bal_abs_4_bounds S2 _ rw_b.1 rw_b.2,
+          bal_abs_4_bounds S2 _ rx_b.1 rx_b.2,
+          bal_abs_4_bounds S2 _ ry_b.1 ry_b.2,
+          bal_abs_4_bounds S2 _ rz_b.1 rz_b.2⟩,
+         bal_abs_4_bounds BU _ db.1 db.2⟩
+
+-- ----- ШАГ 129. Защита 1/2-шагового Ньютона экспоненциальным сдвигом и водораздел β = 1 -----
+-- Переменные BExpr: 0 => q, 1 => p, 2 => y, 3 => m, 4 => beta
+private def e_s129_2qp_L : BExpr := .sub (.mul (.nat 2) (.var 0)) (.var 1)
+private def e_s129_2qp_R : BExpr := .sub (.sub (.mul (.nat 3) (.var 0)) (.var 1)) (.var 0)
+private theorem p_s129_2qp : e_s129_2qp_L.norm = e_s129_2qp_R.norm := rfl
+
+private def e_s129_t3_split_L : BExpr := .add (.var 0) (.sub (.mul (.nat 2) (.var 0)) (.var 1))
+private def e_s129_t3_split_R : BExpr := .sub (.mul (.nat 3) (.var 0)) (.var 1)
+private theorem p_s129_t3_split : e_s129_t3_split_L.norm = e_s129_t3_split_R.norm := rfl
+
+private def e_s129_ynext_ge_L : BExpr := .mul (.var 2) (.sub (.mul (.nat 2) (.var 0)) (.var 1))
+private def e_s129_ynext_ge_R : BExpr :=
+  .sub (.mul (.var 2) (.sub (.mul (.nat 3) (.var 0)) (.var 1))) (.mul (.var 2) (.var 0))
+private theorem p_s129_ynext_ge : e_s129_ynext_ge_L.norm = e_s129_ynext_ge_R.norm := rfl
+
+private def e_s129_r1_hi_L : BExpr :=
+  let eq := BExpr.var 0; let ep := BExpr.var 1
+  .mul (.mul (.sub eq ep) (.sub eq ep)) (.add (.mul (.nat 2) eq) (.sub (.mul (.nat 2) eq) ep))
+private def e_s129_r1_hi_R : BExpr :=
+  let eq := BExpr.var 0; let ep := BExpr.var 1
+  let t3 := BExpr.sub (.mul (.nat 3) eq) ep
+  .sub (.mul (.nat 4) (.mul eq (.mul eq eq))) (.mul ep (.mul t3 t3))
+private theorem p_s129_r1_hi : e_s129_r1_hi_L.norm = e_s129_r1_hi_R.norm := rfl
+
+private def e_s129_r1_lo_L : BExpr :=
+  let eq := BExpr.var 0; let ep := BExpr.var 1
+  let e2qp := BExpr.sub (.mul (.nat 2) eq) ep
+  let e2pq := BExpr.sub (.mul (.nat 2) ep) eq
+  .mul e2qp (.add (.mul (.nat 3) (.mul eq eq)) (.mul e2pq (.add (.mul (.nat 3) eq) (.mul (.nat 2) e2qp))))
+private def e_s129_r1_lo_R : BExpr :=
+  let eq := BExpr.var 0; let ep := BExpr.var 1
+  let t3 := BExpr.sub (.mul (.nat 3) eq) ep
+  .mul (.nat 2) (.mul (.nat 2) (.sub (.mul ep (.mul t3 t3)) (.mul (.nat 2) (.mul eq (.mul eq eq)))))
+private theorem p_s129_r1_lo : e_s129_r1_lo_L.norm = e_s129_r1_lo_R.norm := rfl
+
+private def e_s129_lin_lo_L : BExpr :=
+  let eq := BExpr.var 0; let em := BExpr.var 3
+  let e2qm := BExpr.sub (.mul (.nat 2) eq) em
+  .mul (.sub em eq) (.add (.mul e2qm (.add (.mul (.nat 5) eq) e2qm)) (.mul (.nat 2) (.mul eq eq)))
+private def e_s129_lin_lo_R : BExpr :=
+  let eq := BExpr.var 0; let em := BExpr.var 3
+  let t5 := BExpr.sub (.mul (.nat 5) eq) em
+  .sub (.mul em (.mul t5 t5)) (.mul (.nat 16) (.mul eq (.mul eq eq)))
+private theorem p_s129_lin_lo : e_s129_lin_lo_L.norm = e_s129_lin_lo_R.norm := rfl
+
+private def e_s129_lin_hi_L : BExpr :=
+  let eq := BExpr.var 0; let em := BExpr.var 3
+  let e3m5q := BExpr.sub (.mul (.nat 3) em) (.mul (.nat 5) eq)
+  let e2qm := BExpr.sub (.mul (.nat 2) eq) em
+  .mul (.mul e3m5q e3m5q) (.add (.mul (.nat 14) eq) (.mul (.nat 3) e2qm))
+private def e_s129_lin_hi_R : BExpr :=
+  let eq := BExpr.var 0; let em := BExpr.var 3
+  let t5 := BExpr.sub (.mul (.nat 5) eq) em
+  .sub (.mul (.nat 500) (.mul eq (.mul eq eq))) (.mul (.nat 27) (.mul em (.mul t5 t5)))
+private theorem p_s129_lin_hi : e_s129_lin_hi_L.norm = e_s129_lin_hi_R.norm := rfl
+
+private def e_s129_b1_L : BExpr := .sub (.nat 2) (.mul (.nat 2) .one)
+private theorem p_s129_b1 : e_s129_b1_L.norm = BExpr.zero.norm := rfl
+
+private def e_s129_blo_L : BExpr := .mul (.nat 2) (.sub .one (.var 4))
+private def e_s129_blo_R : BExpr := .sub (.nat 2) (.mul (.nat 2) (.var 4))
+private theorem p_s129_blo : e_s129_blo_L.norm = e_s129_blo_R.norm := rfl
+
+private def e_s129_bhi_L : BExpr := .mul (.nat 2) (.sub (.var 4) .one)
+private def e_s129_bhi_R : BExpr := .neg (.sub (.nat 2) (.mul (.nat 2) (.var 4)))
+private theorem p_s129_bhi : e_s129_bhi_L.norm = e_s129_bhi_R.norm := rfl
+
+/-- ШАГ 129. Гарантия положительности Ньютона `y(3 - ay²)/2` при скобке `r = a·y² = p/q ∈ [1/2, 2]`
+    (за счёт сдвига экспоненты) и водораздел регуляризатора чётности при `β = 1`:
+    1. При `y > 0, q > 0` и `q ≤ 2p, p ≤ 2q` (`r ∈ [1/2, 2]`):
+       `3q - p ≥ q > 0` и `y·(3q - p) ≥ y·q > 0` (инверсия знака Ньютона математически невозможна!).
+    2. Инвариантное сжатие: `2q³ ≤ p(3q - p)² ≤ 4q³`, т.е. `r₁ ∈ [1/2, 1]` после первого же шага.
+    3. Линейный стартовый seed по мантиссе `y₀ = (5 - m)/4` при `m ∈ [1, 2]` (`q ≤ m ≤ 2q`):
+       `16q³ ≤ m(5q - m)²` и `27·m(5q - m)² ≤ 500q³`, т.е. `r₀ ∈ [1, 125/108]` (`< 1.3e-4` за 2 шага!).
+    4. Водораздел регуляризатора чётности `β(2 - β)`: производная `2 - 2β = 0` в `β = 1`,
+       строго `> 0` при `β < 1` (тянет к `0`) и строго `< 0` при `β > 1` (тянет к `2`). -/
+theorem step129_newton_inv_sqrt_exponent_bracket_and_contraction
+    (y p q m beta : Balance)
+    (hy : BalGtZero y) (hq : BalGtZero q)
+    (hr_lo : BalLe q (balance_mul (balOfNat 2) p))
+    (hr_hi : BalLe p (balance_mul (balOfNat 2) q))
+    (hm_lo : BalLe q m)
+    (hm_hi : BalLe m (balance_mul (balOfNat 2) q)) :
+    let q3 := balance_mul q (bsq q)
+    let t3 := balance_sub (balance_mul (balOfNat 3) q) p
+    let y_next_num := balance_mul y t3
+    let r1_num := balance_mul p (bsq t3)
+    let lin_num := balance_mul m (bsq (balance_sub (balance_mul (balOfNat 5) q) m))
+    -- 1. Безусловная положительность Ньютона
+    (BalLe q t3 ∧ BalGtZero t3 ∧ BalGtZero y_next_num ∧ BalLe (balance_mul y q) y_next_num)
+    ∧
+    -- 2. Инвариантная скобка r₁ ∈ [1/2, 1]
+    (BalLe (balance_mul (balOfNat 2) q3) r1_num ∧ BalLe r1_num (balance_mul (balOfNat 4) q3))
+    ∧
+    -- 3. Линейный seed по мантиссе: r₀ ∈ [1, 125/108]
+    (BalLe (balance_mul (balOfNat 16) q3) lin_num ∧
+     BalLe (balance_mul (balOfNat 27) lin_num) (balance_mul (balOfNat 500) q3))
+    ∧
+    -- 4. Водораздел β(2 - β) в точке β = 1
+    (BalanceEquiv (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) bone)) bzero ∧
+     (BalLt beta bone → BalGtZero (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta))) ∧
+     (BalLt bone beta → BalGtZero (balance_neg (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta))))) := by
+  dsimp only [bsq]
+  let env : Nat → Balance := fun | 0 => q | 1 => p | 2 => y | 3 => m | 4 => beta | _ => bzero
+  -- 1. Строгая положительность Ньютона
+  have h2qp : BalGeZero (balance_sub (balance_mul (balOfNat 2) q) p) := hr_hi
+  have ht3_ge_q : BalLe q (balance_sub (balance_mul (balOfNat 3) q) p) :=
+    bal_ge_zero_of_equiv (bal_poly_eq env e_s129_2qp_L e_s129_2qp_R p_s129_2qp) h2qp
+  have ht3_gt : BalGtZero (balance_sub (balance_mul (balOfNat 3) q) p) :=
+    bal_gt_zero_of_equiv (bal_poly_eq env e_s129_t3_split_L e_s129_t3_split_R p_s129_t3_split)
+      (bal_add_gt_ge hq h2qp)
+  have hynext_gt : BalGtZero (balance_mul y (balance_sub (balance_mul (balOfNat 3) q) p)) :=
+    bal_mul_gt_gt hy ht3_gt
+  have hynext_ge : BalLe (balance_mul y q) (balance_mul y (balance_sub (balance_mul (balOfNat 3) q) p)) :=
+    bal_ge_zero_of_equiv (bal_poly_eq env e_s129_ynext_ge_L e_s129_ynext_ge_R p_s129_ynext_ge)
+      (bal_mul_gt_ge hy h2qp)
+  -- 2. Инвариантная скобка r₁ ∈ [1/2, 1]
+  have hr1_hi : BalLe (balance_mul p (balance_mul (balance_sub (balance_mul (balOfNat 3) q) p)
+                                                  (balance_sub (balance_mul (balOfNat 3) q) p)))
+                      (balance_mul (balOfNat 4) (balance_mul q (balance_mul q q))) :=
+    bal_ge_zero_of_equiv (bal_poly_eq env e_s129_r1_hi_L e_s129_r1_hi_R p_s129_r1_hi)
+      (bal_mul_ge_ge (bal_sq_ge_zero (balance_sub q p))
+        (bal_add_ge_ge (Or.inr (bal_mul_gt_gt (balOfNat_succ_gt_zero 1) hq)) h2qp))
+  have hr1_lo : BalLe (balance_mul (balOfNat 2) (balance_mul q (balance_mul q q)))
+                      (balance_mul p (balance_mul (balance_sub (balance_mul (balOfNat 3) q) p)
+                                                  (balance_sub (balance_mul (balOfNat 3) q) p))) := by
+    have h4_ge : BalGeZero (balance_mul (balOfNat 2) (balance_mul (balOfNat 2)
+        (balance_sub (balance_mul p (balance_mul (balance_sub (balance_mul (balOfNat 3) q) p)
+                                                 (balance_sub (balance_mul (balOfNat 3) q) p)))
+                     (balance_mul (balOfNat 2) (balance_mul q (balance_mul q q)))))) :=
+      bal_ge_zero_of_equiv (bal_poly_eq env e_s129_r1_lo_L e_s129_r1_lo_R p_s129_r1_lo)
+        (bal_mul_ge_ge h2qp
+          (bal_add_ge_ge
+            (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 2)) (bal_sq_ge_zero q))
+            (bal_mul_ge_ge hr_lo
+              (bal_add_ge_ge (Or.inr (bal_mul_gt_gt (balOfNat_succ_gt_zero 2) hq))
+                             (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) h2qp)))))
+    exact bal_ge_zero_of_double_ge (bal_ge_zero_of_double_ge h4_ge)
+  -- 3. Линейный seed по мантиссе: r₀ ∈ [1, 125/108]
+  have hlin_lo : BalLe (balance_mul (balOfNat 16) (balance_mul q (balance_mul q q)))
+                       (balance_mul m (balance_mul (balance_sub (balance_mul (balOfNat 5) q) m)
+                                                   (balance_sub (balance_mul (balOfNat 5) q) m))) :=
+    bal_ge_zero_of_equiv (bal_poly_eq env e_s129_lin_lo_L e_s129_lin_lo_R p_s129_lin_lo)
+      (bal_mul_ge_ge hm_lo
+        (bal_add_ge_ge
+          (bal_mul_ge_ge hm_hi
+            (bal_add_ge_ge (Or.inr (bal_mul_gt_gt (balOfNat_succ_gt_zero 4) hq)) hm_hi))
+          (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) (bal_sq_ge_zero q))))
+  have hlin_hi : BalLe (balance_mul (balOfNat 27)
+                         (balance_mul m (balance_mul (balance_sub (balance_mul (balOfNat 5) q) m)
+                                                     (balance_sub (balance_mul (balOfNat 5) q) m))))
+                       (balance_mul (balOfNat 500) (balance_mul q (balance_mul q q))) :=
+    bal_ge_zero_of_equiv (bal_poly_eq env e_s129_lin_hi_L e_s129_lin_hi_R p_s129_lin_hi)
+      (bal_mul_ge_ge (bal_sq_ge_zero (balance_sub (balance_mul (balOfNat 3) m) (balance_mul (balOfNat 5) q)))
+        (bal_add_ge_ge (Or.inr (bal_mul_gt_gt (balOfNat_succ_gt_zero 13) hq))
+          (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 2)) hm_hi)))
+  -- 4. Водораздел β = 1
+  have hb1 : BalanceEquiv (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) bone)) bzero :=
+    bal_poly_eq env e_s129_b1_L .zero p_s129_b1
+  have hblo : BalLt beta bone → BalGtZero (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta)) := by
+    intro hlt
+    exact bal_gt_zero_of_equiv (bal_poly_eq env e_s129_blo_L e_s129_blo_R p_s129_blo)
+      (bal_mul_gt_gt (balOfNat_succ_gt_zero 1) hlt)
+  have hbhi : BalLt bone beta → BalGtZero (balance_neg (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta))) := by
+    intro hgt
+    exact bal_gt_zero_of_equiv (bal_poly_eq env e_s129_bhi_L e_s129_bhi_R p_s129_bhi)
+      (bal_mul_gt_gt (balOfNat_succ_gt_zero 1) hgt)
+  exact ⟨⟨ht3_ge_q, ht3_gt, hynext_gt, hynext_ge⟩,
+         ⟨hr1_lo, hr1_hi⟩,
+         ⟨hlin_lo, hlin_hi⟩,
+         ⟨hb1, hblo, hbhi⟩⟩
+
+-- =============================================================================
+-- ШАГИ 130–134: ФОРМАЛЬНАЯ ВЕРИФИКАЦИЯ ОПТИМИЗАЦИЙ И ИСПРАВЛЕНИЙ v0.5.0 (0 АКСИОМ)
+-- =============================================================================
+
+-- ----- ШАГ 130. Точный перенос скобок и относительной ошибки для `sqrt_newton_f32(a) = a * y` ([E013]) -----
+private def e_s130_sq_L : BExpr := .mul (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 1))
+private def e_s130_sq_R : BExpr := .mul (.var 0) (.mul (.var 0) (.mul (.var 1) (.var 1)))
+private theorem p_s130_sq : e_s130_sq_L.norm = e_s130_sq_R.norm := rfl
+
+private def e_s130_qsq_L : BExpr := .mul (.var 2) (.mul (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 1)))
+private def e_s130_qsq_R : BExpr := .mul (.var 0) (.mul (.var 2) (.mul (.var 0) (.mul (.var 1) (.var 1))))
+private theorem p_s130_qsq : e_s130_qsq_L.norm = e_s130_qsq_R.norm := rfl
+
+private def e_s130_res_L : BExpr :=
+  .mul (.var 2) (.sub (.mul (.mul (.var 0) (.var 1)) (.mul (.var 0) (.var 1))) (.var 0))
+private def e_s130_res_R : BExpr :=
+  .mul (.var 0) (.sub (.mul (.var 2) (.mul (.var 0) (.mul (.var 1) (.var 1)))) (.var 2))
+private theorem p_s130_res : e_s130_res_L.norm = e_s130_res_R.norm := rfl
+
+private def e_s130_mul_neg_L : BExpr := .mul (.var 0) (.neg (.var 1))
+private def e_s130_mul_neg_R : BExpr := .neg (.mul (.var 0) (.var 1))
+private theorem p_s130_mul_neg : e_s130_mul_neg_L.norm = e_s130_mul_neg_R.norm := rfl
+
+/-- ШАГ 130. Корректность безкорневого `sqrt_newton_f32(a) = a · y` (запрет `.sqrt()` `[E013]`):
+    При `a > 0, y > 0, q > 0` и скобке обратного корня `lo ≤ q·(a·y²) ≤ hi`, `|q·(a·y²) - q| ≤ eps`:
+    1. `s = a · y > 0` (строгая положительность без смены знака).
+    2. Точные тождества `s² ~ a·(a·y²)` и `q·s² ~ a·(q·a·y²)`.
+    3. Точный перенос скобки: `a·lo ≤ q·s² ≤ a·hi`.
+    4. Точный перенос относительной погрешности: `|q·(s² - a)| ≤ a·eps`. -/
+theorem step130_newton_sqrt_from_inv_sqrt_bound
+    (a y q lo hi eps : Balance)
+    (ha : BalGtZero a) (hy : BalGtZero y) (_hq : BalGtZero q)
+    (hlo : BalLe lo (balance_mul q (balance_mul a (bsq y))))
+    (hhi : BalLe (balance_mul q (balance_mul a (bsq y))) hi)
+    (he1 : BalLe (balance_neg eps) (balance_sub (balance_mul q (balance_mul a (bsq y))) q))
+    (he2 : BalLe (balance_sub (balance_mul q (balance_mul a (bsq y))) q) eps) :
+    let s := balance_mul a y
+    let qay2 := balance_mul q (balance_mul a (bsq y))
+    BalGtZero s ∧
+    BalanceEquiv (bsq s) (balance_mul a (balance_mul a (bsq y))) ∧
+    BalanceEquiv (balance_mul q (bsq s)) (balance_mul a qay2) ∧
+    (BalLe (balance_mul a lo) (balance_mul q (bsq s)) ∧
+     BalLe (balance_mul q (bsq s)) (balance_mul a hi)) ∧
+    BalanceEquiv (balance_mul q (balance_sub (bsq s) a)) (balance_mul a (balance_sub qay2 q)) ∧
+    (BalLe (balance_neg (balance_mul a eps)) (balance_mul q (balance_sub (bsq s) a)) ∧
+     BalLe (balance_mul q (balance_sub (bsq s) a)) (balance_mul a eps)) := by
+  dsimp only [bsq]
+  let env : Nat → Balance := fun | 0 => a | 1 => y | 2 => q | _ => bzero
+  have hs_gt : BalGtZero (balance_mul a y) := bal_mul_gt_gt ha hy
+  have hsq : BalanceEquiv (balance_mul (balance_mul a y) (balance_mul a y))
+                          (balance_mul a (balance_mul a (balance_mul y y))) :=
+    bal_poly_eq env e_s130_sq_L e_s130_sq_R p_s130_sq
+  have hqsq : BalanceEquiv (balance_mul q (balance_mul (balance_mul a y) (balance_mul a y)))
+                           (balance_mul a (balance_mul q (balance_mul a (balance_mul y y)))) :=
+    bal_poly_eq env e_s130_qsq_L e_s130_qsq_R p_s130_qsq
+  have hlo' : BalLe (balance_mul a lo) (balance_mul q (balance_mul (balance_mul a y) (balance_mul a y))) :=
+    bal_le_of_equiv_right (step24_balance_symm hqsq) (bal_le_mul_nonneg_left (Or.inr ha) hlo)
+  have hhi' : BalLe (balance_mul q (balance_mul (balance_mul a y) (balance_mul a y))) (balance_mul a hi) :=
+    bal_le_of_equiv_left (step24_balance_symm hqsq) (bal_le_mul_nonneg_left (Or.inr ha) hhi)
+  have hres : BalanceEquiv
+      (balance_mul q (balance_sub (balance_mul (balance_mul a y) (balance_mul a y)) a))
+      (balance_mul a (balance_sub (balance_mul q (balance_mul a (balance_mul y y))) q)) :=
+    bal_poly_eq env e_s130_res_L e_s130_res_R p_s130_res
+  have hnege : BalanceEquiv (balance_mul a (balance_neg eps)) (balance_neg (balance_mul a eps)) :=
+    bal_poly_eq (fun | 0 => a | 1 => eps | _ => bzero) e_s130_mul_neg_L e_s130_mul_neg_R p_s130_mul_neg
+  have he1' : BalLe (balance_neg (balance_mul a eps))
+                    (balance_mul q (balance_sub (balance_mul (balance_mul a y) (balance_mul a y)) a)) :=
+    bal_le_of_equiv_right (step24_balance_symm hres)
+      (bal_le_of_equiv_left hnege (bal_le_mul_nonneg_left (Or.inr ha) he1))
+  have he2' : BalLe (balance_mul q (balance_sub (balance_mul (balance_mul a y) (balance_mul a y)) a))
+                    (balance_mul a eps) :=
+    bal_le_of_equiv_left (step24_balance_symm hres) (bal_le_mul_nonneg_left (Or.inr ha) he2)
+  exact ⟨hs_gt, hsq, hqsq, ⟨hlo', hhi'⟩, hres, ⟨he1', he2'⟩⟩
+
+-- ----- ШАГ 131. Общий хребет банков (shared_backbone) и устойчивость 4-полосового IDBD -----
+private def e_s131_add_dot_L : BExpr := .add (.mul (.add (.var 0) (.var 1)) (.var 2)) (.add (.var 3) (.var 4))
+private def e_s131_add_dot_R : BExpr := .add (.add (.mul (.var 0) (.var 2)) (.var 3)) (.add (.mul (.var 1) (.var 2)) (.var 4))
+private theorem p_s131_add_dot : e_s131_add_dot_L.norm = e_s131_add_dot_R.norm := rfl
+
+theorem vdot_add_left : {n : Nat} → (a b h : Vec n) →
+    BalanceEquiv (vdot (vec_add a b) h) (balance_add (vdot a h) (vdot b h))
+  | 0, (), (), () => step24_balance_symm (bal_add_zero bzero)
+  | _ + 1, (ah, at_), (bh, bt_), (hh, ht_) => by
+    dsimp [vec_add, vdot]
+    have htl := vdot_add_left at_ bt_ ht_
+    have hs := step25_balance_add_congr (step24_balance_refl (balance_mul (balance_add ah bh) hh)) htl
+    exact step24_balance_trans hs
+      (bal_poly_eq (fun | 0 => ah | 1 => bh | 2 => hh | 3 => vdot at_ ht_ | 4 => vdot bt_ ht_ | _ => bzero)
+        e_s131_add_dot_L e_s131_add_dot_R p_s131_add_dot)
+
+private def e_s131_conv_lo_L : BExpr :=
+  .add (.mul (.sub .one (.var 0)) (.add (.var 3) (.var 1)))
+       (.mul (.var 0) (.add (.var 3) (.var 2)))
+private def e_s131_conv_lo_R : BExpr :=
+  .sub (.add (.mul (.sub .one (.var 0)) (.var 1)) (.mul (.var 0) (.var 2))) (.neg (.var 3))
+private theorem p_s131_conv_lo : e_s131_conv_lo_L.norm = e_s131_conv_lo_R.norm := rfl
+
+private def e_s131_conv_hi_L : BExpr :=
+  .add (.mul (.sub .one (.var 0)) (.sub (.var 3) (.var 1)))
+       (.mul (.var 0) (.sub (.var 3) (.var 2)))
+private def e_s131_conv_hi_R : BExpr :=
+  .sub (.var 3) (.add (.mul (.sub .one (.var 0)) (.var 1)) (.mul (.var 0) (.var 2)))
+private theorem p_s131_conv_hi : e_s131_conv_hi_L.norm = e_s131_conv_hi_R.norm := rfl
+
+/-- ШАГ 131. Общий хребет `shared_backbone` и 4-скалярный полосовой рациональный IDBD в `UnifiedCayleyCore`:
+    1. Изоляция неактивного банка: обновление головки активного банка `w₀' = w₀ + Δw₀` при общем
+       хребте `h` даёт точное приращение `⟨w₀', h⟩ ~ ⟨w₀, h⟩ + ⟨Δw₀, h⟩` и оставляет выход
+       неактивного банка `⟨w₁, h⟩` алгебраически неизменным (0 интерференции).
+    2. Строгая положительность знаменателя `q₂(β) ≥ 1 > 0` полосового рационального IDBD (`step116`).
+    3. Выпуклая инвариантность мета-трассы IDBD: при `0 ≤ s ≤ 1`, `|h_tr| ≤ M`, `|u_g| ≤ M`
+       обновление `h_next = (1 - s)·h_tr + s·u_g` строго остаётся в шаре `[-M, +M]`. -/
+theorem step131_shared_backbone_bank_swap_and_band_idbd
+    {n : Nat} (h w0 dw0 w1 : Vec n) (beta h_tr u_g s M : Balance)
+    (hs0 : BalGeZero s) (hs1 : BalLe s bone)
+    (hh1 : BalLe (balance_neg M) h_tr) (hh2 : BalLe h_tr M)
+    (hu1 : BalLe (balance_neg M) u_g) (hu2 : BalLe u_g M) :
+    let w0_next := vec_add w0 dw0
+    let q2 := balance_add (balance_sub (balOfNat 2) (balance_mul (balOfNat 2) beta)) (bsq beta)
+    let h_next := balance_add (balance_mul (balance_sub bone s) h_tr) (balance_mul s u_g)
+    (BalanceEquiv (vdot w0_next h) (balance_add (vdot w0 h) (vdot dw0 h)) ∧
+     BalanceEquiv (vdot w1 h) (vdot w1 h)) ∧
+    (BalLe bone q2 ∧ BalGtZero q2) ∧
+    (BalLe (balance_neg M) h_next ∧ BalLe h_next M) := by
+  have h116 := step116_rational_pos_gate_c1_and_bounds beta
+  have hMh : BalGeZero (balance_add M h_tr) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => M | 1 => h_tr | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) hh1
+  have hMu : BalGeZero (balance_add M u_g) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => M | 1 => u_g | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) hu1
+  let env : Nat → Balance := fun | 0 => s | 1 => h_tr | 2 => u_g | 3 => M | _ => bzero
+  have hlo : BalLe (balance_neg M) (balance_add (balance_mul (balance_sub bone s) h_tr) (balance_mul s u_g)) :=
+    bal_ge_zero_of_equiv (bal_poly_eq env e_s131_conv_lo_L e_s131_conv_lo_R p_s131_conv_lo)
+      (bal_add_ge_ge (bal_mul_ge_ge hs1 hMh) (bal_mul_ge_ge hs0 hMu))
+  have hhi : BalLe (balance_add (balance_mul (balance_sub bone s) h_tr) (balance_mul s u_g)) M :=
+    bal_ge_zero_of_equiv (bal_poly_eq env e_s131_conv_hi_L e_s131_conv_hi_R p_s131_conv_hi)
+      (bal_add_ge_ge (bal_mul_ge_ge hs1 hh2) (bal_mul_ge_ge hs0 hu2))
+  exact ⟨⟨vdot_add_left w0 dw0 h, step24_balance_refl _⟩,
+         ⟨h116.2.1, h116.2.2.1⟩,
+         ⟨hlo, hhi⟩⟩
+
+-- ----- ШАГ 132. Сохранение argmax при квантовании гиперсферических прототипов в Q1.14 (i16) -----
+def VecAbsLe : {n : Nat} → Balance → Vec n → Prop
+  | 0, _, () => True
+  | _ + 1, U, (uh, ut) => (BalLe (balance_neg U) uh ∧ BalLe uh U) ∧ VecAbsLe U ut
+
+def VecQuantErrLe : {n : Nat} → Balance → Balance → Vec n → Vec n → Prop
+  | 0, _, _, (), () => True
+  | _ + 1, S, E, (ph, pt), (qh, qt) =>
+    (BalLe (balance_neg E) (balance_sub (balance_mul S ph) qh) ∧
+     BalLe (balance_sub (balance_mul S ph) qh) E) ∧
+    VecQuantErrLe S E pt qt
+
+private def e_s132_dot_step_L : BExpr :=
+  .add (.mul (.var 0) (.sub (.mul (.var 1) (.var 2)) (.var 3))) (.var 4)
+private def e_s132_dot_step_R : BExpr :=
+  .sub (.mul (.var 1) (.add (.mul (.var 0) (.var 2)) (.var 5))) (.add (.mul (.var 0) (.var 3)) (.var 6))
+private def e_s132_dot_step_diff_L : BExpr :=
+  .add (.mul (.var 0) (.sub (.mul (.var 1) (.var 2)) (.var 3)))
+       (.sub (.mul (.var 1) (.var 5)) (.var 6))
+private theorem p_s132_dot_step : e_s132_dot_step_diff_L.norm = e_s132_dot_step_R.norm := rfl
+
+private def e_s132_succ_L : BExpr := .add (.var 0) (.mul (.var 1) (.var 0))
+private def e_s132_succ_R : BExpr := .mul (.add (.var 1) .one) (.var 0)
+private theorem p_s132_succ : e_s132_succ_L.norm = e_s132_succ_R.norm := rfl
+
+private def e_s132_zero_L : BExpr := .sub (.mul (.var 0) .zero) .zero
+private theorem p_s132_zero : e_s132_zero_L.norm = BExpr.zero.norm := rfl
+
+private def e_s132_zeroM_L : BExpr := .mul .zero (.var 0)
+private theorem p_s132_zeroM : e_s132_zeroM_L.norm = BExpr.zero.norm := rfl
+
+private theorem balOfNat_succ_equiv (k : Nat) :
+    BalanceEquiv (balOfNat (k + 1)) (balance_add (balOfNat k) bone) :=
+  step24_balance_refl _
+
+theorem vdot_q14_err_bound : {n : Nat} → (S U E : Balance) → (u p q : Vec n) →
+    VecAbsLe U u → VecQuantErrLe S E p q →
+    let B := balance_mul (balOfNat n) (balance_mul U E)
+    BalLe (balance_neg B) (balance_sub (balance_mul S (vdot u p)) (vdot u q)) ∧
+    BalLe (balance_sub (balance_mul S (vdot u p)) (vdot u q)) B
+  | 0, S, U, E, (), (), (), _, _ => by
+    dsimp [vdot, balOfNat]
+    have h0 : BalanceEquiv (balance_sub (balance_mul S bzero) bzero) bzero :=
+      bal_poly_eq (fun | 0 => S | _ => bzero) e_s132_zero_L .zero p_s132_zero
+    have hB : BalanceEquiv (balance_mul bzero (balance_mul U E)) bzero :=
+      bal_poly_eq (fun | 0 => balance_mul U E | _ => bzero) e_s132_zeroM_L .zero p_s132_zeroM
+    have hlo : BalLe (balance_neg (balance_mul bzero (balance_mul U E)))
+                     (balance_sub (balance_mul S bzero) bzero) :=
+      bal_le_of_equiv_left (step24_balance_symm (step24_balance_trans (bal_neg_congr hB) bal_neg_zero))
+        (bal_le_of_equiv_right (step24_balance_symm h0) (bal_le_refl bzero))
+    have hhi : BalLe (balance_sub (balance_mul S bzero) bzero)
+                     (balance_mul bzero (balance_mul U E)) :=
+      bal_le_of_equiv_left (step24_balance_symm h0)
+        (bal_le_of_equiv_right (step24_balance_symm hB) (bal_le_refl bzero))
+    exact ⟨hlo, hhi⟩
+  | k + 1, S, U, E, (uh, ut), (ph, pt), (qh, qt), ⟨⟨hu1, hu2⟩, hut⟩, ⟨⟨he1, he2⟩, het⟩ => by
+    dsimp [vdot]
+    have hhd := bal_abs_mul_le hu1 hu2 he1 he2
+    have htl := vdot_q14_err_bound S U E ut pt qt hut het
+    have hsum := bal_abs_add_le hhd.1 hhd.2 htl.1 htl.2
+    let envD : Nat → Balance := fun
+      | 0 => uh | 1 => S | 2 => ph | 3 => qh | 4 => bzero | 5 => vdot ut pt | 6 => vdot ut qt | _ => bzero
+    have hdiff_eq := bal_poly_eq envD e_s132_dot_step_diff_L e_s132_dot_step_R p_s132_dot_step
+    have hbound_eq : BalanceEquiv
+        (balance_add (balance_mul U E) (balance_mul (balOfNat k) (balance_mul U E)))
+        (balance_mul (balOfNat (k + 1)) (balance_mul U E)) :=
+      step24_balance_trans
+        (bal_poly_eq (fun | 0 => balance_mul U E | 1 => balOfNat k | _ => bzero)
+          e_s132_succ_L e_s132_succ_R p_s132_succ)
+        (bal_mul_congr (step24_balance_symm (balOfNat_succ_equiv k)) (step24_balance_refl _))
+    exact ⟨bal_le_of_equiv_left (bal_neg_congr hbound_eq) (bal_le_of_equiv_right hdiff_eq hsum.1),
+           bal_le_of_equiv_left hdiff_eq (bal_le_of_equiv_right hbound_eq hsum.2)⟩
+
+private def e_s132_margin_L : BExpr :=
+  .add (.sub (.var 0) (.mul (.nat 2) (.var 1)))
+       (.add (.sub (.var 1) (.var 2)) (.add (.var 1) (.var 3)))
+private def e_s132_margin_R : BExpr :=
+  .sub (.sub (.var 0) (.var 2)) (.neg (.var 3))
+private theorem p_s132_margin : e_s132_margin_L.norm = e_s132_margin_R.norm := rfl
+
+private def e_s132_qgap_L : BExpr :=
+  .sub (.sub (.mul (.var 0) (.sub (.var 1) (.var 2)))
+             (.sub (.mul (.var 0) (.var 1)) (.var 3)))
+       (.neg (.sub (.mul (.var 0) (.var 2)) (.var 4)))
+private def e_s132_qgap_R : BExpr := .sub (.var 3) (.var 4)
+private theorem p_s132_qgap : e_s132_qgap_L.norm = e_s132_qgap_R.norm := rfl
+
+/-- ШАГ 132. Сохранение argmax при квантовании гиперсферических прототипов в `Q1.14` (`i16`, `S = 16384`):
+    Для ЛЮБОЙ размерности `n`, состояния `|u_i| ≤ U` и прототипов с ошибкой квантования `|S·p_i - q_i| ≤ E`:
+    1. Ошибка скалярного произведения строго ограничена: `|S·⟨u, p⟩ - ⟨u, q⟩| ≤ n·U·E`.
+    2. Если истинный зазор классов `S·(⟨u, p₁⟩ - ⟨u, p₂⟩) > 2·n·U·E` (для `Q1.14`, `U = 1`, `E = 1/2`:
+       `Δ > n / 16384`), то квантованное сравнение строго сохраняет победителя: `⟨u, q₁⟩ > ⟨u, q₂⟩`! -/
+theorem step132_q14_hypersphere_proto_margin_preservation
+    {n : Nat} (S U E : Balance) (u p1 q1 p2 q2 : Vec n)
+    (hu : VecAbsLe U u)
+    (hq1 : VecQuantErrLe S E p1 q1)
+    (hq2 : VecQuantErrLe S E p2 q2)
+    (hmargin : BalLt (balance_mul (balOfNat 2) (balance_mul (balOfNat n) (balance_mul U E)))
+                     (balance_mul S (balance_sub (vdot u p1) (vdot u p2)))) :
+    let B := balance_mul (balOfNat n) (balance_mul U E)
+    (BalLe (balance_neg B) (balance_sub (balance_mul S (vdot u p1)) (vdot u q1)) ∧
+     BalLe (balance_sub (balance_mul S (vdot u p1)) (vdot u q1)) B) ∧
+    (BalLe (balance_neg B) (balance_sub (balance_mul S (vdot u p2)) (vdot u q2)) ∧
+     BalLe (balance_sub (balance_mul S (vdot u p2)) (vdot u q2)) B) ∧
+    BalLt (vdot u q2) (vdot u q1) := by
+  have hb1 := vdot_q14_err_bound S U E u p1 q1 hu hq1
+  have hb2 := vdot_q14_err_bound S U E u p2 q2 hu hq2
+  let B := balance_mul (balOfNat n) (balance_mul U E)
+  let M := balance_mul S (balance_sub (vdot u p1) (vdot u p2))
+  let e1 := balance_sub (balance_mul S (vdot u p1)) (vdot u q1)
+  let e2 := balance_sub (balance_mul S (vdot u p2)) (vdot u q2)
+  have he2p : BalGeZero (balance_add B e2) :=
+    bal_ge_zero_of_equiv (bal_poly_eq (fun | 0 => B | 1 => e2 | _ => bzero)
+      e_sub_neg_eq_add_L e_sub_neg_eq_add_R p_sub_neg_eq_add) hb2.1
+  have hsum_gt : BalGtZero (balance_add (balance_sub M (balance_mul (balOfNat 2) B))
+                                        (balance_add (balance_sub B e1) (balance_add B e2))) :=
+    bal_add_gt_ge hmargin (bal_add_ge_ge hb1.2 he2p)
+  have h1 : BalGtZero (balance_sub (balance_sub M e1) (balance_neg e2)) :=
+    bal_gt_zero_of_equiv
+      (bal_poly_eq (fun | 0 => M | 1 => B | 2 => e1 | 3 => e2 | _ => bzero)
+        e_s132_margin_L e_s132_margin_R p_s132_margin)
+      hsum_gt
+  have hlt : BalLt (vdot u q2) (vdot u q1) :=
+    bal_gt_zero_of_equiv
+      (bal_poly_eq (fun | 0 => S | 1 => vdot u p1 | 2 => vdot u p2 | 3 => vdot u q1 | 4 => vdot u q2 | _ => bzero)
+        e_s132_qgap_L e_s132_qgap_R p_s132_qgap)
+      h1
+  exact ⟨hb1, hb2, hlt⟩
+
+-- ----- ШАГ 133. Точность слияния каскада роторов Гивенса/чётности в предвычисленную матрицу Q -----
+def givens01_num (t : Balance) (v : Vec3) : Vec3 :=
+  let c := balance_sub bone (bsq t)
+  let s := balance_mul (balOfNat 2) t
+  let d := balance_add bone (bsq t)
+  ⟨balance_sub (balance_mul c v.x) (balance_mul s v.y),
+   balance_add (balance_mul s v.x) (balance_mul c v.y),
+   balance_mul d v.z⟩
+
+def givens12_num (t : Balance) (v : Vec3) : Vec3 :=
+  let c := balance_sub bone (bsq t)
+  let s := balance_mul (balOfNat 2) t
+  let d := balance_add bone (bsq t)
+  ⟨balance_mul d v.x,
+   balance_sub (balance_mul c v.y) (balance_mul s v.z),
+   balance_add (balance_mul s v.y) (balance_mul c v.z)⟩
+
+def mat3_cols_mul (c0 c1 c2 v : Vec3) : Vec3 :=
+  ⟨balance_add (balance_add (balance_mul c0.x v.x) (balance_mul c1.x v.y)) (balance_mul c2.x v.z),
+   balance_add (balance_add (balance_mul c0.y v.x) (balance_mul c1.y v.y)) (balance_mul c2.y v.z),
+   balance_add (balance_add (balance_mul c0.z v.x) (balance_mul c1.z v.y)) (balance_mul c2.z v.z)⟩
+
+def det3_cols (c0 c1 c2 : Vec3) : Balance :=
+  balance_add
+    (balance_sub
+      (balance_mul c0.x (balance_sub (balance_mul c1.y c2.z) (balance_mul c2.y c1.z)))
+      (balance_mul c1.x (balance_sub (balance_mul c0.y c2.z) (balance_mul c2.y c0.z))))
+    (balance_mul c2.x (balance_sub (balance_mul c0.y c1.z) (balance_mul c1.y c0.z)))
+
+private def bG01E (t : BExpr) (v : BExpr × BExpr × BExpr) : BExpr × BExpr × BExpr :=
+  let c := BExpr.sub .one (.mul t t)
+  let s := BExpr.mul (.nat 2) t
+  let d := BExpr.add .one (.mul t t)
+  (.sub (.mul c v.1) (.mul s v.2.1),
+   .add (.mul s v.1) (.mul c v.2.1),
+   .mul d v.2.2)
+
+private def bG12E (t : BExpr) (v : BExpr × BExpr × BExpr) : BExpr × BExpr × BExpr :=
+  let c := BExpr.sub .one (.mul t t)
+  let s := BExpr.mul (.nat 2) t
+  let d := BExpr.add .one (.mul t t)
+  (.mul d v.1,
+   .sub (.mul c v.2.1) (.mul s v.2.2),
+   .add (.mul s v.2.1) (.mul c v.2.2))
+
+private def bMat3MulE (c0 c1 c2 v : BExpr × BExpr × BExpr) : BExpr × BExpr × BExpr :=
+  (.add (.add (.mul c0.1 v.1) (.mul c1.1 v.2.1)) (.mul c2.1 v.2.2),
+   .add (.add (.mul c0.2.1 v.1) (.mul c1.2.1 v.2.1)) (.mul c2.2.1 v.2.2),
+   .add (.add (.mul c0.2.2 v.1) (.mul c1.2.2 v.2.1)) (.mul c2.2.2 v.2.2))
+
+private def bDet3E (c0 c1 c2 : BExpr × BExpr × BExpr) : BExpr :=
+  .add
+    (.sub
+      (.mul c0.1 (.sub (.mul c1.2.1 c2.2.2) (.mul c2.2.1 c1.2.2)))
+      (.mul c1.1 (.sub (.mul c0.2.1 c2.2.2) (.mul c2.2.1 c0.2.2))))
+    (.mul c2.1 (.sub (.mul c0.2.1 c1.2.2) (.mul c1.2.1 c0.2.2)))
+
+private def e_s133_q0 := bG12E (.var 1) (bG01E (.var 0) (.one, .zero, .zero))
+private def e_s133_q1 := bG12E (.var 1) (bG01E (.var 0) (.zero, .one, .zero))
+private def e_s133_q2 := bG12E (.var 1) (bG01E (.var 0) (.zero, .zero, .one))
+private def e_s133_v : BExpr × BExpr × BExpr := (.var 2, .var 3, .var 4)
+private def e_s133_fused := bMat3MulE e_s133_q0 e_s133_q1 e_s133_q2 e_s133_v
+private def e_s133_seq := bG12E (.var 1) (bG01E (.var 0) e_s133_v)
+private def e_s133_d12 : BExpr := .mul (.add .one (.mul (.var 0) (.var 0))) (.add .one (.mul (.var 1) (.var 1)))
+
+private theorem p_s133_eq_x : e_s133_fused.1.norm = e_s133_seq.1.norm := rfl
+private theorem p_s133_eq_y : e_s133_fused.2.1.norm = e_s133_seq.2.1.norm := rfl
+private theorem p_s133_eq_z : e_s133_fused.2.2.norm = e_s133_seq.2.2.norm := rfl
+private theorem p_s133_norm :
+    (vDotE e_s133_fused e_s133_fused).norm =
+    (BExpr.mul (.mul e_s133_d12 e_s133_d12) (vDotE e_s133_v e_s133_v)).norm := rfl
+private theorem p_s133_det :
+    (bDet3E e_s133_q0 e_s133_q1 e_s133_q2).norm =
+    (BExpr.mul e_s133_d12 (.mul e_s133_d12 e_s133_d12)).norm := rfl
+
+/-- ШАГ 133. Алгебраическая точность слияния каскада роторов Гивенса/чётности в предвычисленную
+    матрицу `Q` (`GivensParityOp::build_q_mat` и `build_hh5_cascade_mat5`):
+    1. Столбцовое построение `q_j = (G₁₂ ∘ G₀₁)(e_j)` даёт линейный оператор, тождественный
+       последовательному применению каскада на ЛЮБОМ векторе `v`: `Q·v ~ G₁₂(G₀₁(v))`.
+    2. Точное сохранение нормы: `||Q·v||² ~ (d₁·d₂)² · ||v||²`.
+    3. Точный определитель `det(Q) ~ (d₁·d₂)³ > 0` (`det = +1`, строго внутри `SO`). -/
+theorem step133_givens_parity_matrix_fusion_exactness (t1 t2 : Balance) (v : Vec3) :
+    let d1 := balance_add bone (bsq t1)
+    let d2 := balance_add bone (bsq t2)
+    let d12 := balance_mul d1 d2
+    let q0 := givens12_num t2 (givens01_num t1 ⟨bone, bzero, bzero⟩)
+    let q1 := givens12_num t2 (givens01_num t1 ⟨bzero, bone, bzero⟩)
+    let q2 := givens12_num t2 (givens01_num t1 ⟨bzero, bzero, bone⟩)
+    let qv := mat3_cols_mul q0 q1 q2 v
+    let seqv := givens12_num t2 (givens01_num t1 v)
+    BalGtZero d1 ∧ BalGtZero d2 ∧ BalGtZero d12 ∧
+    Vec3Equiv qv seqv ∧
+    BalanceEquiv (dot3 qv qv) (balance_mul (bsq d12) (dot3 v v)) ∧
+    BalanceEquiv (det3_cols q0 q1 q2) (balance_mul d12 (bsq d12)) ∧
+    BalGtZero (det3_cols q0 q1 q2) := by
+  dsimp only [givens01_num, givens12_num, mat3_cols_mul, det3_cols, Vec3Equiv, bsq]
+  let env : Nat → Balance := fun | 0 => t1 | 1 => t2 | 2 => v.x | 3 => v.y | 4 => v.z | _ => bzero
+  have hd1 : BalGtZero (balance_add bone (balance_mul t1 t1)) := bal_one_add_sq_gt_zero t1
+  have hd2 : BalGtZero (balance_add bone (balance_mul t2 t2)) := bal_one_add_sq_gt_zero t2
+  have hd12 : BalGtZero (balance_mul (balance_add bone (balance_mul t1 t1)) (balance_add bone (balance_mul t2 t2))) :=
+    bal_mul_gt_gt hd1 hd2
+  have hdet_eq := bal_poly_eq env (bDet3E e_s133_q0 e_s133_q1 e_s133_q2)
+    (BExpr.mul e_s133_d12 (.mul e_s133_d12 e_s133_d12)) p_s133_det
+  have hdet_gt := bal_gt_zero_of_equiv (step24_balance_symm hdet_eq)
+    (bal_mul_gt_gt hd12 (bal_mul_gt_gt hd12 hd12))
+  exact ⟨hd1, hd2, hd12,
+         ⟨bal_poly_eq env e_s133_fused.1 e_s133_seq.1 p_s133_eq_x,
+          bal_poly_eq env e_s133_fused.2.1 e_s133_seq.2.1 p_s133_eq_y,
+          bal_poly_eq env e_s133_fused.2.2 e_s133_seq.2.2 p_s133_eq_z⟩,
+         bal_poly_eq env (vDotE e_s133_fused e_s133_fused)
+           (BExpr.mul (.mul e_s133_d12 e_s133_d12) (vDotE e_s133_v e_s133_v)) p_s133_norm,
+         hdet_eq, hdet_gt⟩
+
+-- ----- ШАГ 134. Невырожденность 4-Хаусхолдерова моста Q8.24 на водоразделе β = Q -----
+private def e_s134_u3norm_L : BExpr :=
+  let eQ := BExpr.var 0; let eb := BExpr.var 1; let ec := BExpr.sub (.mul (.nat 2) eQ) eb
+  .add (.mul (.mul ec ec) (.var 2))
+       (.add (.mul (.mul ec ec) (.var 3))
+             (.add (.mul (.mul ec ec) (.var 4))
+                   (.add (.mul (.mul ec ec) (.var 5))
+                         (.add (.mul (.mul eQ eb) (.mul eQ eb)) .zero))))
+private def e_s134_u3norm_R : BExpr :=
+  let eQ := BExpr.var 0; let eb := BExpr.var 1; let ec := BExpr.sub (.mul (.nat 2) eQ) eb
+  .add (.mul (.mul ec ec) (.add (.add (.var 2) (.var 3)) (.add (.var 4) (.var 5))))
+       (.mul (.mul eQ eQ) (.mul eb eb))
+private theorem p_s134_u3norm : e_s134_u3norm_L.norm = e_s134_u3norm_R.norm := rfl
+
+private def e_s134_sos_L : BExpr :=
+  let eQ := BExpr.var 0; let eb := BExpr.var 1; let ec := BExpr.sub (.mul (.nat 2) eQ) eb
+  .add (.mul (.mul ec ec) (.mul eQ eQ)) (.mul (.mul eQ eQ) (.mul eb eb))
+private def e_s134_sos_R : BExpr :=
+  let eQ := BExpr.var 0; let eb := BExpr.var 1
+  .mul (.mul eQ eQ) (.add (.mul (.nat 2) (.mul (.sub eb eQ) (.sub eb eQ)))
+                          (.mul (.nat 2) (.mul eQ eQ)))
+private theorem p_s134_sos : e_s134_sos_L.norm = e_s134_sos_R.norm := rfl
+
+private def e_s134_lb_L : BExpr :=
+  let eQ := BExpr.var 0; let eb := BExpr.var 1
+  .mul (.mul eQ eQ) (.mul (.nat 2) (.mul (.sub eb eQ) (.sub eb eQ)))
+private def e_s134_lb_R : BExpr :=
+  let eQ := BExpr.var 0; let eb := BExpr.var 1
+  .sub (.mul (.mul eQ eQ) (.add (.mul (.nat 2) (.mul (.sub eb eQ) (.sub eb eQ)))
+                                (.mul (.nat 2) (.mul eQ eQ))))
+       (.mul (.nat 2) (.mul (.mul eQ eQ) (.mul eQ eQ)))
+private theorem p_s134_lb : e_s134_lb_L.norm = e_s134_lb_R.norm := rfl
+
+private def e_s134_ws_L : BExpr :=
+  let eQ := BExpr.var 0
+  .mul (.mul eQ eQ) (.add (.mul (.nat 2) (.mul (.sub eQ eQ) (.sub eQ eQ)))
+                          (.mul (.nat 2) (.mul eQ eQ)))
+private def e_s134_ws_R : BExpr :=
+  let eQ := BExpr.var 0
+  .mul (.nat 2) (.mul (.mul eQ eQ) (.mul eQ eQ))
+private theorem p_s134_ws : e_s134_ws_L.norm = e_s134_ws_R.norm := rfl
+
+private def e_s134_hh_slack_L : BExpr :=
+  .mul (.mul (.nat 2) (.var 0))
+       (.add (.mul (.sub (.mul (.nat 2) .one) (.nat 2)) (.var 1))
+             (.mul (.mul (.nat 2) .one) .zero))
+private theorem p_s134_hh_slack : e_s134_hh_slack_L.norm = BExpr.zero.norm := rfl
+
+private def e_s134_hh_rhs_L : BExpr :=
+  .mul (.mul (.mul .one (.add (.var 0) .zero)) (.mul .one (.add (.var 0) .zero))) (.var 1)
+private def e_s134_hh_rhs_R : BExpr :=
+  .mul (.mul (.var 0) (.var 0)) (.var 1)
+private theorem p_s134_hh_rhs : e_s134_hh_rhs_L.norm = e_s134_hh_rhs_R.norm := rfl
+
+/-- ШАГ 134. Невырожденность и точная 5D-изометрия целочисленного `FixedO4Rotor` (`Q8.24`, 4 Хаусхолдера в `SO(5)`):
+    Для масштаба `Q > 0` (`Q = 2²⁴`), единичного `vh ∈ R⁴` (`||vh||² ~ Q²`) и ЛЮБОГО `β`
+    (включая критический водораздел `β = Q`, где прежняя 1D-подмесь обнуляла 5-ю координату!):
+    4-й вектор Хаусхолдера `u₃(β) = ((2Q - β)·vh, Q·β) ∈ R⁵` удовлетворяет:
+    1. Точному разложению `||u₃(β)||² ~ Q²·(2(β - Q)² + 2Q²)`.
+    2. Безусловной нижней границе `||u₃(β)||² ≥ 2·Q⁴ > 0` для ВСЕХ `β` (деление на 0 невозможно!).
+    3. На водоразделе `β = Q`: `||u₃(Q)||² ~ 2·Q⁴ > 0`.
+    4. Точной 5D-изометрии Хаусхолдера `||H₂(u₃) y||² ~ ||u₃||⁴ · ||y||²` для любого `y ∈ R⁵`. -/
+theorem step134_fixed_q24_hh5_watershed_nondegeneracy
+    (Q beta : Balance) (hQ : BalGtZero Q) (vh : Vec4)
+    (hvh : BalanceEquiv (dot4 vh vh) (bsq Q)) (y : Vec 5) :
+    let c := balance_sub (balance_mul (balOfNat 2) Q) beta
+    let u3 : Vec 5 := (balance_mul c vh.w, (balance_mul c vh.x,
+                      (balance_mul c vh.y, (balance_mul c vh.z, (balance_mul Q beta, ())))))
+    let n2 := vdot u3 u3
+    let q4_2 := balance_mul (balOfNat 2) (bsq (bsq Q))
+    let h_out := householderN_num (balance_add n2 bzero) (balOfNat 2) bone u3 y
+    BalanceEquiv n2 (balance_mul (bsq Q) (balance_add (balance_mul (balOfNat 2) (bsq (balance_sub beta Q)))
+                                                      (balance_mul (balOfNat 2) (bsq Q)))) ∧
+    BalLe q4_2 n2 ∧
+    BalGtZero n2 ∧
+    BalanceEquiv (balance_mul (bsq Q) (balance_add (balance_mul (balOfNat 2) (bsq (balance_sub Q Q)))
+                                                   (balance_mul (balOfNat 2) (bsq Q)))) q4_2 ∧
+    BalanceEquiv (vdot h_out h_out) (balance_mul (bsq n2) (vdot y y)) := by
+  dsimp only [vdot, bsq]
+  let c := balance_sub (balance_mul (balOfNat 2) Q) beta
+  let u3 : Vec 5 := (balance_mul c vh.w, (balance_mul c vh.x,
+                    (balance_mul c vh.y, (balance_mul c vh.z, (balance_mul Q beta, ())))))
+  let n2 := vdot u3 u3
+  have h1 : BalanceEquiv n2
+      (balance_add (balance_mul (balance_mul c c) (dot4 vh vh))
+                   (balance_mul (balance_mul Q Q) (balance_mul beta beta))) := by
+    have hmul_sq : ∀ (a x : Balance),
+        BalanceEquiv (balance_mul (balance_mul a x) (balance_mul a x))
+                     (balance_mul (balance_mul a a) (balance_mul x x)) :=
+      fun a x => bal_poly_eq (fun | 0 => a | 1 => x | _ => bzero) e_s127_sq2_L e_s127_sq2_R p_s127_sq2
+    have hstep := step25_balance_add_congr (hmul_sq c vh.w)
+      (step25_balance_add_congr (hmul_sq c vh.x)
+        (step25_balance_add_congr (hmul_sq c vh.y)
+          (step25_balance_add_congr (hmul_sq c vh.z)
+            (step25_balance_add_congr
+              (step24_balance_refl (balance_mul (balance_mul Q beta) (balance_mul Q beta)))
+              (step24_balance_refl bzero)))))
+    exact step24_balance_trans hstep
+      (bal_poly_eq (fun | 0 => Q | 1 => beta
+                        | 2 => balance_mul vh.w vh.w | 3 => balance_mul vh.x vh.x
+                        | 4 => balance_mul vh.y vh.y | 5 => balance_mul vh.z vh.z | _ => bzero)
+        e_s134_u3norm_L e_s134_u3norm_R p_s134_u3norm)
+  have h2 : BalanceEquiv n2
+      (balance_mul (balance_mul Q Q)
+        (balance_add (balance_mul (balOfNat 2) (balance_mul (balance_sub beta Q) (balance_sub beta Q)))
+                     (balance_mul (balOfNat 2) (balance_mul Q Q)))) :=
+    step24_balance_trans h1
+      (step24_balance_trans
+        (step25_balance_add_congr (bal_mul_congr (step24_balance_refl _) hvh) (step24_balance_refl _))
+        (bal_poly_eq (fun | 0 => Q | 1 => beta | _ => bzero) e_s134_sos_L e_s134_sos_R p_s134_sos))
+  have hQ2 : BalGtZero (balance_mul Q Q) := bal_mul_gt_gt hQ hQ
+  have hq4_2_gt : BalGtZero (balance_mul (balOfNat 2) (balance_mul (balance_mul Q Q) (balance_mul Q Q))) :=
+    bal_mul_gt_gt (balOfNat_succ_gt_zero 1) (bal_mul_gt_gt hQ2 hQ2)
+  have hlb_rhs : BalLe (balance_mul (balOfNat 2) (balance_mul (balance_mul Q Q) (balance_mul Q Q)))
+      (balance_mul (balance_mul Q Q)
+        (balance_add (balance_mul (balOfNat 2) (balance_mul (balance_sub beta Q) (balance_sub beta Q)))
+                     (balance_mul (balOfNat 2) (balance_mul Q Q)))) :=
+    bal_ge_zero_of_equiv
+      (bal_poly_eq (fun | 0 => Q | 1 => beta | _ => bzero) e_s134_lb_L e_s134_lb_R p_s134_lb)
+      (bal_mul_ge_ge (Or.inr hQ2) (bal_mul_ge_ge (Or.inr (balOfNat_succ_gt_zero 1)) (bal_sq_ge_zero (balance_sub beta Q))))
+  have hlb : BalLe (balance_mul (balOfNat 2) (balance_mul (balance_mul Q Q) (balance_mul Q Q))) n2 :=
+    bal_le_of_equiv_right (step24_balance_symm h2) hlb_rhs
+  have hn2_gt : BalGtZero n2 :=
+    bal_gt_zero_of_equiv
+      (bal_poly_eq (fun | 0 => n2 | 1 => balance_mul (balOfNat 2) (balance_mul (balance_mul Q Q) (balance_mul Q Q)) | _ => bzero)
+        e_add_sub_self_L e_add_sub_self_R p_add_sub_self)
+      (bal_add_gt_ge hq4_2_gt hlb)
+  have hws := bal_poly_eq (fun | 0 => Q | _ => bzero) e_s134_ws_L e_s134_ws_R p_s134_ws
+  have hbibo := (householderN_bibo u3 y bzero (balOfNat 2) bone
+                  (Or.inl (step24_balance_refl bzero)) bone_gt_zero
+                  (Or.inr (balOfNat_succ_gt_zero 1))
+                  (bal_le_of_equiv_right (step24_balance_symm (bal_mul_one (balOfNat 2))) (bal_le_refl (balOfNat 2)))).1
+  have hslack0 : BalanceEquiv
+      (balance_mul (balance_mul (balOfNat 2) (bsq (vdot u3 y)))
+        (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) bone) (balOfNat 2)) n2)
+                     (balance_mul (balance_mul (balOfNat 2) bone) bzero))) bzero :=
+    bal_poly_eq (fun | 0 => bsq (vdot u3 y) | 1 => n2 | _ => bzero) e_s134_hh_slack_L .zero p_s134_hh_slack
+  have hlhs_eq : BalanceEquiv
+      (balance_add (vdot (householderN_num (balance_add n2 bzero) (balOfNat 2) bone u3 y)
+                         (householderN_num (balance_add n2 bzero) (balOfNat 2) bone u3 y))
+                   (balance_mul (balance_mul (balOfNat 2) (bsq (vdot u3 y)))
+                     (balance_add (balance_mul (balance_sub (balance_mul (balOfNat 2) bone) (balOfNat 2)) n2)
+                                  (balance_mul (balance_mul (balOfNat 2) bone) bzero))))
+      (vdot (householderN_num (balance_add n2 bzero) (balOfNat 2) bone u3 y)
+            (householderN_num (balance_add n2 bzero) (balOfNat 2) bone u3 y)) :=
+    step24_balance_trans (step25_balance_add_congr (step24_balance_refl _) hslack0) (bal_add_zero _)
+  have hrhs_eq : BalanceEquiv
+      (balance_mul (bsq (balance_mul bone (balance_add n2 bzero))) (vdot y y))
+      (balance_mul (balance_mul n2 n2) (vdot y y)) :=
+    bal_poly_eq (fun | 0 => n2 | 1 => vdot y y | _ => bzero) e_s134_hh_rhs_L e_s134_hh_rhs_R p_s134_hh_rhs
+  have hisom := step24_balance_trans (step24_balance_symm hlhs_eq) (step24_balance_trans hbibo hrhs_eq)
+  exact ⟨h2, hlb, hn2_gt, hws, hisom⟩
+
 end PosNat
 end Foundations
 
@@ -2851,3 +6361,22 @@ open Foundations.PosNat
 #print axioms step113b_kerr_w1_p4_total_denom
 #print axioms step114_rtrl_exact_derivatives_dual
 #print axioms step115_selective_cayley_contraction_and_deriv
+#print axioms step116_rational_pos_gate_c1_and_bounds
+#print axioms step117_rational_quat_and_so4_double_rotor
+#print axioms step118_gated_householder_o4_bibo_and_parity
+#print axioms step119_two_reflections_fix_orth_and_s5_witness
+#print axioms step120_master_equation_bibo_invariance
+#print axioms step121_dual_derivatives_o4_and_local_state_gate
+#print axioms step122_rmsnorm_newton_and_bartlett_ph_totality
+#print axioms step123_poly_repulsion_bounded
+#print axioms step124_fixed_point_bounds_and_norm_drift
+#print axioms step125_adaptive_od_householder_cascade_and_embedding
+#print axioms step126_pillar5_self_determination_algebra
+#print axioms step127_nested_so2_so3_so4_o4_parity_and_householder_v_deriv
+#print axioms step128_selectivity_saddle_escape_and_q824_product_bounds
+#print axioms step129_newton_inv_sqrt_exponent_bracket_and_contraction
+#print axioms step130_newton_sqrt_from_inv_sqrt_bound
+#print axioms step131_shared_backbone_bank_swap_and_band_idbd
+#print axioms step132_q14_hypersphere_proto_margin_preservation
+#print axioms step133_givens_parity_matrix_fusion_exactness
+#print axioms step134_fixed_q24_hh5_watershed_nondegeneracy

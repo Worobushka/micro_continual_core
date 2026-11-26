@@ -28,12 +28,13 @@ impl AxiomZeroVisitor {
                 }
                 if ident == "cfg" {
                     if let Meta::List(list) = &attr.meta {
-                        let has_test_tok = list
+                        let raw: String = list
                             .tokens
                             .to_string()
-                            .split(|c: char| !c.is_alphanumeric() && c != '_')
-                            .any(|tok| tok == "test");
-                        if has_test_tok {
+                            .chars()
+                            .filter(|c| !c.is_whitespace())
+                            .collect();
+                        if raw == "test" {
                             return true;
                         }
                     }
@@ -214,6 +215,14 @@ impl<'ast> Visit<'ast> for AxiomZeroVisitor {
                     method_name
                 ));
             }
+            "sqrt" => {
+                self.violations.push(
+                    "[E013] AxiomZero Violation: Floating-point `.sqrt()` is forbidden in \
+                     `#[axiom_zero]` core modules. Use `inv_sqrt_newton_2step_f32` / \
+                     `inv_sqrt_newton_f32` / `sqrt_newton_f32` (`step129`/`step130`)."
+                        .to_string(),
+                );
+            }
             _ => {}
         }
         visit::visit_expr_method_call(self, node);
@@ -304,6 +313,13 @@ impl<'ast> Visit<'ast> for AxiomZeroVisitor {
                          (Cayley rotors, Kerr competition, rational softmax).",
                         last
                     ));
+                } else if last == "sqrt" {
+                    self.violations.push(
+                        "[E013] AxiomZero Violation: Floating-point `sqrt` UFCS path is forbidden \
+                         in `#[axiom_zero]` core modules. Use `inv_sqrt_newton_2step_f32` / \
+                         `inv_sqrt_newton_f32` / `sqrt_newton_f32` (`step129`/`step130`)."
+                            .to_string(),
+                    );
                 } else if matches!(last, "unwrap" | "unwrap_err" | "unwrap_unchecked") {
                     self.violations.push(
                         "[E005] AxiomZero Violation: `.unwrap()` / `Option::unwrap` / `Result::unwrap` \
@@ -352,13 +368,13 @@ impl<'ast> Visit<'ast> for AxiomZeroVisitor {
 }
 
 /// Compile-time enforcement attribute implementing Axiom-Zero Constructive Totality rules:
-/// `[E001]`–`[E012]`.
+/// `[E001]`–`[E013]`.
 ///
 /// Rejects panics, assertions, `todo!`/`unimplemented!`/`unreachable!`, `.unwrap*()`/`.expect*()`
 /// (including UFCS paths), direct `None` (`Option::None`) references, terminating calls (`exit`/`abort`),
 /// unchecked indexing (`arr[i]` and `Index::index`), unchecked division/modulo (`/` and `%` and `Div::div`),
-/// expression/formatting macro-token bypasses, and transcendental float methods and UFCS paths
-/// (`exp`/`ln`/`log`/`sin`/`cos`/`tan`/`tanh`/`powf`/etc.).
+/// expression/formatting macro-token bypasses, transcendental float methods and UFCS paths
+/// (`exp`/`ln`/`log`/`sin`/`cos`/`tan`/`tanh`/`powf`/etc.), and floating-point `.sqrt()`/`f32::sqrt`.
 /// Test functions (`#[test]`) and test modules (`#[cfg(test)]`) are exempted.
 #[proc_macro_attribute]
 pub fn axiom_zero(_attr: TokenStream, item: TokenStream) -> TokenStream {

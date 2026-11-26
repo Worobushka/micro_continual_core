@@ -1,9 +1,9 @@
-# MicroContinualCore v0.4.1
+# MicroContinualCore v0.5.0
 
-**Zero-Transcendental Algebraic Online Continual RL & Streaming Architecture in Rust (`#[axiom_zero]`) with 0-Axiom Constructive Lean 4 Proofs**
+**Zero-Transcendental & Zero-`sqrt` Algebraic Online Continual RL, Parity-Bridged $\mathrm{O}(d)$ Rotors & Deterministic `Q8.24` Engine in Rust (`#[axiom_zero]`) with 68 Constructive 0-Axiom Lean 4 Proofs**
 
 **Authors:** Adrian Aleksandrovich İşmuhanov ([ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)) & Sofia Sidorenko ([ORCID `0009-0006-5368-062X`](https://orcid.org/0009-0006-5368-062X))  
-**Zenodo Concept DOI:** [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982) | **License:** [`PolyForm-Noncommercial-1.0.0`](LICENSE) *(embedded `crates/axiom_zero`: `MIT OR Apache-2.0`)*
+**Zenodo Concept DOI:** [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982) | **License:** [`PolyForm-Noncommercial-1.0.0`](LICENSE) *(embedded `crates/axiom_zero`: `MIT OR Apache-2.0`)* | **Release Notes:** [RELEASE_NOTES_v0.5.0.md](RELEASE_NOTES_v0.5.0.md)
 
 > [!CAUTION]
 > **Scientific Integrity & Retraction Notice for `v0.3.0` (`10.5281/zenodo.24424983`):**  
@@ -13,16 +13,16 @@
 
 ## Overview
 
-`micro_continual_core` (`v0.4.1`) is a compact (`4.9–738 KB` RAM; `4.9–454 KB` with frozen `i8` encoder), single-pass online continual learning and reinforcement learning engine written in Rust:
-- **100% `#[axiom_zero]` Core Contract:** Enforced at compile time by `axiom_zero_macros` across `src/core.rs`, `src/rtrl.rs`, `src/math.rs`, `src/belief.rs`, `src/memory.rs`, and `src/env_hard_pomdp.rs`:
-  - **0% transcendental functions (compile-time enforced via `[E012]`):** `.exp()`, `.exp2()`, `.ln()`, `.log()`, `.sin()`, `.cos()`, `.tan()`, `.sinh()`, `.cosh()`, `.tanh()`, `.asin()`, `.acos()`, `.atan()`, `.powf()`, etc. fail compilation inside `#[axiom_zero]`, including via UFCS paths and inside macro-body tokens.
-  - **Total arithmetic & indexing:** Direct `/`, `%`, and `slice[i]` indexing are forbidden; all divisions and lookups use total helpers (`total_div_f32`, `total_div_unit_shifted_f32`, `total_get_copy`, `total_set`).
-  - **Zero heap allocations on the numeric hot step path** (`decide_vec`, `observe_step_reward`, `end_supervised_step`).
+`micro_continual_core` (`v0.5.0`) is a compact (`2.3–738 KB` RAM; `4.9–454 KB` for `f32` cores with frozen `i8` encoder), single-pass online continual learning and reinforcement learning engine written in Rust:
+- **`#[axiom_zero]` Core Contract:** Enforced at compile time by `axiom_zero_macros` across all 10 core modules (`src/algebra.rs`, `src/unified.rs`, `src/fixed_point.rs` *(integer core; float I/O converters sit strictly at the boundary)*, `src/adaptive_od.rs`, `src/core.rs`, `src/rtrl.rs`, `src/math.rs`, `src/belief.rs`, `src/memory.rs`, and `src/env_hard_pomdp.rs`):
+  - **0% transcendental functions (`[E012]`) and 0% `.sqrt()` (`[E013]`):** `.exp()`, `.exp2()`, `.ln()`, `.log()`, `.sin()`, `.cos()`, `.tan()`, `.sinh()`, `.cosh()`, `.tanh()`, `.asin()`, `.acos()`, `.atan()`, `.powf()`, and `.sqrt()` fail compilation inside `#[axiom_zero]`, including via UFCS paths and inside macro-body tokens.
+  - **Total arithmetic & indexing:** Direct `/`, `%`, and `slice[i]` indexing are forbidden; all divisions and lookups use total helpers (`total_div_f32`, `total_div_unit_shifted_f32`, `total_div_i64`, `total_div_i128`, `total_get_copy`, `total_set`).
+  - **Zero heap allocations on the numeric hot step path** (`decide_vec`, `observe_step_reward`, `end_supervised_step`, and `UnifiedCayleyCore` / `AdaptiveOrthogonalRtrl` verified in `tests/zero_alloc_unified.rs`).
 - **Two-Level Fast-Slow 3D Cayley-RTRL (`SO(3)^S`) & Proto-Metric $\mathrm{SO}(3)$ (`NonAbelianCayleyRtrl`):** Rational orthogonal rotors $R(g) = (I_3 - [g]_\times)^{-1}(I_3 + [g]_\times)$ with exact $O(S)$ online RTRL, decoupled $(Q \times \omega)$ grid, orthonormal 4-row Band-1 $\to$ Band-2 pooling (`rtrl_pool_w`), shift-invariant rational policy gradients (`p=2` & `p=4`), and zero-oracle **Proto-Metric $\mathrm{SO}(3)$** readout (`enable_so3_proto_metric`) for non-Abelian length extrapolation up to $L = 500$.
 - **2D Rational Cayley & Algebraic Selective Cayley (`AlgebraicSelectiveCayley`):** 0%-transcendental 2D complex-plane rational oscillators with exact $O(U \cdot d_{\text{in}})$ RTRL, piecewise-rational $C^1$-smooth input-selective step $\Delta(z) = \min(2,\; 1 + z_c)$ for $z_c \ge 0$ and $\max(0.05,\; \frac{1}{1 - z_c + 0.5 z_c^2})$ for $z_c < 0$ (`rational_pos_and_deriv`, strictly bounded in $[0.05, 2.0]$ without `exp` or `sqrt`), causal online Welford standardization, supervised classification & continuous regression, online TD($\lambda$) RL, and Bit-30 SEU scrubbing.
 - **Page-Hinkley Multi-Bank Regime Controller with Causal Parallel Probing (`parallel_bank_probe`):** Automatic drift detection (guarded to multi-bank `banks.len() > 1`), bank freezing, causal 6-step parallel read-only bank scoring (`Par6`) across up to 32 banks in `O(1)` step latency, and immediate retention on regime returns.
 - **Hardware IEEE-754 Bit-Flip SEU Scrubbing:** Built-in state and weight register corruption detection and recovery (`scrub_state_seu`, `scrub_weight_seu`, `total_seu_faults()`).
-- **Constructive Lean 4 Proofs (`proofs/MicroContinualCoreProofs.lean`):** **49** verified `#print axioms` checks with **0 axioms** (including `step109_cayley3d_exact_orthogonality`, `step109c_cayley3d_det_one` proving $\det R(g) = +1$, `step112b_rational_softmax_p4_positive`, `step113b_kerr_w1_p4_total_denom`, `step114_rtrl_exact_derivatives_dual`, and `step115_selective_cayley_contraction_and_deriv`).
+- **Constructive Lean 4 Proofs (`proofs/MicroContinualCoreProofs.lean`):** **68** verified `#print axioms` checks (`step01`–`step134`) with **0 axioms** (not even `propext` or `Quot.sound`) over exact constructive integers (`Balance`), covering $\mathrm{SO}(3)$ orthogonality & $\det R(g) = +1$, quartic rational softmax positivity, selective Cayley contraction, dual derivatives, Newton `inv_sqrt`/`sqrt` bounds, `Q8.24`/`Q39.24` arithmetic, `Q1.14` hypersphere prototype margin preservation, and non-degenerate 4-Householder $\mathrm{SO}(5)$ watershed isometry.
 
 ---
 
@@ -78,26 +78,52 @@
 - **NASA C-MAPSS Aviation Fleet Prognostics & Flight-SEU (`bench_step7_nasa_fleet`, `FD001–FD004`, Strict `60D` Parity, Causal Train-Only Norm):**
   - `MicroCore PURE 2L+Skip (B0=0, 14.6 KB, 0% exp)` achieves **`19.51 / 20.89 / 20.26 / 23.33`** 3-pass RMSE on `FD001–FD004` (leading all Rust per-cycle streaming models on `FD001–FD002`, statistically tied with `Deep 2L LRU` `20.72 / 22.58 / 19.85 / 23.27` at **42% lower RAM**, beating external `river==0.27.0 ARF` `25.70–33.39`, while honestly trailing offline full-trajectory `PyTorch 2.14.0 GRU-60` `15.57–18.98` at `153 µs/cyc`). `RUL-Shuffle` collapses every model (`44.94–47.00` RMSE, `PASS no leak`).
   - Under **Flight SEU** (`test_FD004`, 248 engines: `T30=NaN/+1e30`, Bit-30 State-SEU & Weight-SEU every 25 cycles), `MicroCore` (`23.01 -> 23.00 / 22.98` RMSE) and `Alg.Sel.Cayley` (`24.05 -> 24.04`) keep **`248/248`** engines finite, all `(+Clamp)` baselines crash to **`0/248`** (`NaN`), and all `(+FinGuard)` baselines survive **`248/248`**.
-  - **Fleet Digital Twin Swarm ($N = 4,096$ personal twins, 16 threads):** `MicroCore PURE 2L` fits in **`58.56 MB`** (**16.3× less RAM** than `Online GRU BPTT4`'s `952.36 MB`) at **`0.88 M engine-cycles/s`** (**3.49×** faster than GRU, vs `Deep 2L LRU` `99.89 MB` / `1.81 M/s`). See [assets/nasa_cmapss_4panel.png](assets/nasa_cmapss_4panel.png) and [assets/nasa_fleet_mission_control.gif](assets/nasa_fleet_mission_control.gif) ([MP4](assets/nasa_fleet_mission_control.mp4)).
+  - **Fleet Digital Twin Swarm ($N = 4,096$ personal twins, 16 threads):** `MicroCore PURE 2L` fits in **`58.56 MB`** (**16.3× less RAM** than `Online GRU BPTT4`'s `952.36 MB`) at **`0.91 M engine-cycles/s`** (**3.54×** faster than GRU's `0.26 M/s`, vs `Deep 2L LRU` `99.89 MB` / `1.84 M/s`; note standard C-MAPSS piecewise-linear `RUL_max = 125` cap applies symmetrically to train & test targets across all Rust/Python models, and Block-3 single-thread latency benchmarks pool `min(N, 64)` active instances). See [assets/nasa_cmapss_4panel.png](assets/nasa_cmapss_4panel.png) and [assets/nasa_fleet_mission_control.gif](assets/nasa_fleet_mission_control.gif) ([MP4](assets/nasa_fleet_mission_control.mp4)).
 
 ![NASA C-MAPSS 4-Panel Benchmark & Flight-SEU Audit](assets/nasa_cmapss_4panel.png)
 
 ---
 
+## What's New in `v0.5.0` (`bench_step8_v050`, `bench_step9_prime_arith`, 68 Lean 4 Proofs)
+
+All `v0.5.0` kernels (`src/algebra.rs`, `src/unified.rs`, `src/fixed_point.rs` *(integer core)*, `src/adaptive_od.rs`, and `NonAbelianO4Rtrl` in `src/rtrl.rs`) enforce `#[axiom_zero]` with compile-time transcendental (`[E012]`) **and `.sqrt()` (`[E013]`, verified by 20 `compile_fail` doctests in `crates/axiom_zero`) bans**, pass `scripts/audit_v050_invariants.py` (**0** forbidden math/panic calls across all 10 core modules), achieve **0** heap allocations on hot paths for both `UnifiedCayleyCore` and `AdaptiveOrthogonalRtrl` (`tests/zero_alloc_unified.rs`), and extend constructive Lean 4 `#print axioms` verification to **68** checks (`step01`–`step134`, **0 axioms**):
+
+- **Core Algebraic Architecture & Footprint Highlights (`step130`–`step134`):**
+  - Replaced every `.sqrt()` across core modules with Newton `inv_sqrt_newton_f32` / `sqrt_newton_f32` (`[E013]`, `step130`), extracted shared `#[axiom_zero]` algebraic primitives into `src/algebra.rs`, implemented `FixedO4Rotor` as a non-degenerate 4-Householder $\mathrm{SO}(5)$ cascade in `Q8.24` (`step134`), added `Q1.14` (`i16`) 2× hypersphere prototype deployment (`step132`), and engineered compact layouts: `UnifiedCayleyCore B3` (`shared_backbone`, `use_band0=false`, 4-scalar band IDBD: **`34.6 KB`** on `ELEC2`, **`26.2 KB`** on `RepeatPrev`), `NonAbelianO4Rtrl` $S_5$ `M=3` (**`62.7 KB`**, or **`45.1 KB`** with `Q1.14` prototypes), `FixedCayleyCore` with precomputed `lc_cache`/`ls_cache` (**`1.68–2.05 µs/step`** on `FD001`), and `AdaptiveOrthogonalRtrl` with fused `GivensParityOp` (`step133`).
+- **Suite A — Non-Abelian $\mathrm{O}(4)\hookrightarrow\mathrm{SO}(5)$ Parity Bridge (`NonAbelianO4Rtrl`):** Breaks $\mathrm{SO}(3)$'s orientation barrier on $S_5$ (`120` classes, **`62.7 KB`**, 10 seeds, train $L \in 1..=10$): **`99.5±1.4%` ($L=6$) $\to$ `96.8±8.1%` ($L=12$) $\to$ `87.5±25.5%` ($L=30$) $\to$ `77.2±33.2%` ($L=100$) $\to$ `67.9±34.7%` ($L=250$) $\to$ `54.0±39.7%` ($L=500$)** (Track 2 Unitary $S_5$: **`99.3% → 86.3% → 78.6% → 62.8%`**), with oracle-free parity separation (`odd_beta=1.788`, `even_beta=0.162`), Bit-30 SEU @ $L=100$ = `71.9±32.7%` (`any_nan=false`), Label-Shuffle = `0.7–1.4%`. On $A_5$, `NonAbelianO4Rtrl M=3` (`43.2 KB`) reaches **`100.0% → 99.9% → 98.0% → 92.8±8.7%`** @ $L=500$, and `SO(3)+Pillar2 v0.5.0` (`26.8 KB`) reaches `100.0% → 99.3% → 91.0% → 59.1±38.2%`.
+- **Suite B — `UnifiedCayleyCore` (`One-Config` Challenge across 8 tasks + Track 2 Unitary, ablation ladder `B1 -> B2 -> B3`):** With one fixed hyperparameter set (**`34.6 KB`** on `ELEC2`, **`26.2 KB`** on `RepeatPrev`, `6000/6000` Causal Prefix Invariance; note `B3` sets `use_band0=false` while `B1`/`B2` keep `use_band0=true`): `Dyck-2 = 86.9%` (`Depth>=3: 87.8%`; memoryless 0-step floor is `71.8%` overall / `77.8%` at `Depth>=3` since push tokens copy current input), `Waves ABC/ZS/Flip/Ret12 = 90.0% / 89.7% / 89.2% / 72.3%`, zero-gate `T-Maze` (`L=5 ±0.06`: **`98.1% / Ret 98.5%`**, `L=15 ±0.35`: **`94.9% / Ret 97.2%`**, **0 `novelty_gate`** — driven by `B1`'s decoupled Master-Eq gain `g_in=2/3` + Band RMSNorm, plus `B3` Bartlett PH bank switching for retention), `NASA FD001/FD004` = **`23.89 / 26.94` RMSE** (`Bit-30 SEU 26.15`, `EW-Rec 53.0%`, `any_nan=false`; note `inject_weight_bit30_seu` targets `b1_alpha`/`b2_in_w`/`actor_w` rather than `critic_w`), `ELEC2 raw = 84.96%` (`+y_{t-1} 85.24%`, `Label-Shuffle 55.61%`), `CartPole 2D/+dx = 64.2 (Ev 79.1/86.3) / 91.0 (Ev 124.0/89.0)`, `RepeatPrev K=4/8/16/24 = 76.8% / 58.0% / 33.1% / 27.4%`. *Honest Price of Universality:* single `One-Config` still trails specialized `v0.4.1` configs on `ELEC2` (`84.96%` vs `91.5%`), `NASA` (`23.89/26.94` vs `19.51/23.33`), `CartPole` (`64.2/91.0` vs `117.6/187.4`), and `RepeatPrev K=8` (`58.0%` vs `85.1%`), and without episodic `KerrKernelBank`, `HardPOMDP v2` Cloze remains near chance (`0.2–0.9%`).
+- **Suite C — Deterministic Zero-FPU `Q8.24` / `Q39.24` Engine (`FixedCayleyCore`, `q8_24_inv_sqrt`):** Runs 100% integer (`i32`/`i64`/`i128`) arithmetic inside recurrence, learning, and PH accumulators, producing deterministic 64-bit FNV-1a digests across default release and `--features strict_deterministic` builds on Windows `x86_64` (`0x38030f12b5509866`, `0xe89e5db12b6719d2` on `ELEC2 74.65±0.22%`, `0x614d2e87b5a2d524` on `FD001 27.20±4.65` at `1.68–2.05 µs/step`, `0x285502bbee2b296d` on amplitude `125..175` stress; note `--features strict_deterministic` disables `x86_64` AVX2+FMA on the `f32` path, while `Q8.24` itself never invokes FPU/SIMD), non-degenerate 4-HH `FixedO4Rotor` ($\beta=1.0$) 10k-step drift `unnorm = 4.687e-3 | renorm = 0.000e0`, `q8_24_inv_sqrt` `max_rel_err = 2.021e-4` across `1/16000..1e6`, and `PageHinkleyQ39_24` immune to the `128.0` `Q8.24` ceiling *(cross-architecture verification via `--target wasm32-wasip1` / `wasmtime` against the same 4 digests is a planned next step)*.
+- **Suite D — `AdaptiveOrthogonalRtrl` (`O(d) -> SO(7)`, $C_5 \to A_5 \to S_5 \to S_6$):** Demonstrates shuffle-immune 2-timescale plateau escalation (`fast_ema`/`slow_ema` + 5-sigma $Z^2$: `Label-Shuffle 2.00 -> C_5 2.20 -> A_5 4.80 -> S_5 5.80 -> S_6 6.00`, `0` false escalations on `Label-Shuffle`, `< 1e-6` isometric prob jump, `0` heap allocs on hot paths) and $S_6$ short-horizon capture (`720` classes, `48k` eps, `245.9 KB`, `77.2±18.0% @ L=6` and `25.8±19.7% @ L=12` vs `0.14%` chance, `total_step(min=33)`), with `C_5` (`15.3 KB`) reaching `97.2% -> 88.8% @ L=500` and `S_5` reaching `81.3% @ L=6`. *Honest Caveats:* (a) $A_5$ (`4.80`) and $S_5$ (`5.80`) slightly over-escalate above minimal $d = 3, 4$, and (b) on long-horizon extrapolation ($L=30..500$), the adaptive frame notably trails fixed `O(4)` (`S_5 @ L=500`: `2.8%` vs `54.0–62.8%`; `S_6 @ L=30..500`: collapses to `0.7% -> 0.1%`).
+- **Step 9 — Prime-Field Modular Arithmetic ($\mathbb{F}_{997}$ & $\mathbb{F}_{9973}$, `bench_step9_prime_arith`, `v0.4.0` vs `v0.4.1` vs `v0.5.0`):** Strictly zero-oracle, disjoint 80/20 holdout evaluation of `Add`, `Mul`, `PowG` ($g^k \bmod p$, verified primitive roots $g=7$ for $p=997$ and $g=11$ for $p=9973$), `PowAB` ($a^b \bmod p$), and `DLog` ($\log_g(x)$):
+  - *Bit-serial streaming (`LSB -> MSB`, 6D step features incl. normalized `(a/p, b/p)` alongside current bits):* Input-dependent non-Abelian rotors (`v0.4.1 NonAbelian SO(3)`, `10.7 KB`) break the XOR carry/wrap barrier on modular `Add (a+b) mod p` (**`74.39±1.05%`** on $\mathbb{F}_{997}$ [`Shuf 49.1%`], **`71.35±1.31%`** on $\mathbb{F}_{9973}$ [`Shuf 53.2%`], `Bit-0 72.9–75.6%`, beating both the zero-carry rule `69.3%/65.5%` and stateless `OnlineMlpAdam H=32` `54.23–54.65%`), ahead of `v0.4.1 MicroCore PURE 2L` (`56.79–59.98%`), `v0.5.0 NonAbelian O(4) M=1` (`56.03% / 53.12%`), and `v0.4.0 Alg.Sel.Cayley 2D` (`6.6 KB`, `52.33% / 55.57%`), while additive-input linear-readout cores (`Unified`, `Fixed Q8.24`) sit at the bit-majority floor (`50.2–53.5%`; note $\mathbb{F}_{9973}$ has a `53.87%` per-bit majority floor since bit 13 is `82.14%` zero). On `Mul`, `PowG`, `PowAB`, and `DLog`, **every model honestly hits the cryptographic/modular-folding wall** (`49.0–52.0%` on $\mathbb{F}_{997}$, `50.8–54.2%` on $\mathbb{F}_{9973}$, matching `Label-Shuffle`; direct residue regression RMSE `0.2865–0.3595` vs uniform floor `0.2887`; Bit-30 SEU `any_nan=false`).
+  - *Dynamic order-12 cyclic subgroup ($\langle 906 \rangle \le \mathbb{F}_{997}^\times$ & $\langle 1942 \rangle \le \mathbb{F}_{9973}^\times$, isomorphic to $C_{12}$ under `[1,0]/[0,1]` generator actions, distinct per-prime seeds, train $L \le 8$):* Clear generational progression at $L=6 \to 30$: `v0.4.0 Alg.Sel.Cayley 2D` (`7.1 KB`: `69.6% → 9.6%` / `57.1% → 7.5%`) $\to$ `v0.5.0 SO(3)+Pillar2 M=3` (`6.5 KB`: `96.7% → 39.6%` / `97.5% → 45.4%`) $\to$ **`v0.5.0 NonAbelianO4Rtrl M=2` (`11.1 KB`: `100.0% → 68.3±34.5%` on $\mathbb{F}_{997}$ seeds; `99.6% → 90.0±12.9% → 36.7±30.7%` on $\mathbb{F}_{9973}$ seeds)** with **100% exact `Q1.14` (`i16`) deployment parity** (`9.9 KB`, `Label-Shuffle = 7.1–13.3%`). See [RELEASE_NOTES_v0.5.0.md](RELEASE_NOTES_v0.5.0.md).
+
+---
+
 ## Reproducing All Verifications & Benchmarks
 
-```powershell
-# 1. Verify all 49 constructive Lean 4 theorems (0 axioms)
-lean proofs\MicroContinualCoreProofs.lean
+> **External Dataset Prerequisites:** All synthetic, group-theory, RL, fixed-point, and prime-field suites run out of the box with zero downloads. To also run the real-data **ELEC2** and **NASA C-MAPSS** sections (which are gracefully skipped if missing), place the gitignored external files in the repository root:
+> - `electricity-normalized.arff` — OpenML `electricity` dataset (ID `151`, 45,312 rows).
+> - `CMAPSSData/` — official NASA C-MAPSS turbofan degradation files (`train_FD001..4.txt`, `test_FD001..4.txt`, `RUL_FD001..4.txt`).
 
-# 2. Verify #[axiom_zero] macro contract (4 unit + 4 API + 1 doc + 18 compile_fail doctests) & 29 core tests
-cargo test --release --manifest-path crates\axiom_zero\Cargo.toml
+```bash
+# 1. Verify all 68 constructive Lean 4 theorems (0 axioms) & v0.5.0 code invariants
+lean proofs/MicroContinualCoreProofs.lean
+python scripts/audit_v050_invariants.py
+
+# 2. Verify #[axiom_zero] (20 compile_fail incl. [E013] sqrt ban), 41 core tests (default + strict_deterministic), and 0-alloc hot paths
+cargo test --release --manifest-path crates/axiom_zero/Cargo.toml
 cargo test --release --lib
+cargo test --release --features strict_deterministic --lib
+cargo test --release --test zero_alloc_unified
 
-# 3. Run Causal Prefix Invariance, Label-Shuffle leakage audit & failure diagnostics
+# 3. Run Causal Prefix Invariance, Label-Shuffle leakage audit, v0.5.0 master suite (Suites A/B/C/D) & Prime-Field suite (p997 & p9973)
 cargo run --release --bin bench_forensic_audit
+cargo run --release --bin bench_step8_v050 -- --all
+cargo run --release --features strict_deterministic --bin bench_step8_v050 -- --suite c
+cargo run --release --bin bench_step9_prime_arith
 
-# 4. Run all 8 benchmark suites (bench_step5_v040 & bench_step6_scaling support `-- --filter <substr>`)
+# 4. Run v0.4.0 regression suites (`bench_step5_v040` & `bench_step6_scaling` support `-- --filter <substr>`)
 cargo run --release --bin bench_step1
 cargo run --release --bin bench_step2_streams
 cargo run --release --bin bench_step3_pomdp_rl
@@ -123,5 +149,6 @@ python scripts/plot_nasa_fleet.py
   - **Sofia Sidorenko** (`serjliasereev-KasaneTeto`) — ORCID [`0009-0006-5368-062X`](https://orcid.org/0009-0006-5368-062X)
 - **Repository Licensing:**
   - **Root crate (`micro_continual_core`), benchmarks (`src/bin/`), and Lean 4 proofs (`proofs/`):** Licensed under **`PolyForm-Noncommercial-1.0.0`** — see [LICENSE](LICENSE). *(Note: the conflicting `licenses/LICENSE-AGPL-3.0-only.txt` from `v0.3.0` has been removed.)*
+  - **Commercial Licensing:** For commercial licensing inquiries, contact [mrwerdin@gmail.com](mailto:mrwerdin@gmail.com).
   - **Embedded `crates/axiom_zero` & `crates/axiom_zero/axiom_zero_macros`:** Dual-licensed under **`MIT OR Apache-2.0`** — see [crates/axiom_zero/LICENSE-MIT](crates/axiom_zero/LICENSE-MIT) and [crates/axiom_zero/LICENSE-APACHE](crates/axiom_zero/LICENSE-APACHE).
-- **Citation:** See [CITATION.cff](CITATION.cff). Always cite the Zenodo concept DOI [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982) or the `v0.4.0` release; **do NOT cite `v0.3.0` (`10.5281/zenodo.24424983`)**, which is retracted/superseded.
+- **Citation:** See [CITATION.cff](CITATION.cff). Always cite the Zenodo concept DOI [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982) or the `v0.5.0` release (`v0.4.0+`); **do NOT cite `v0.3.0` (`10.5281/zenodo.24424983`)**, which is retracted/superseded.

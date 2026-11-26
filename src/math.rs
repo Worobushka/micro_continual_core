@@ -15,7 +15,7 @@ use axiom_zero::{
     total_div_usize, total_get_copy, total_rem_usize, total_set,
 };
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(feature = "strict_deterministic")))]
 mod simd_x86 {
     use core::arch::x86_64::*;
 
@@ -164,7 +164,7 @@ pub fn fnv1a_bytes(bytes: &[u8], seed: u64) -> u64 {
 #[axiom_zero]
 #[inline]
 pub fn fast_dot(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(feature = "strict_deterministic")))]
     {
         if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") {
             let v = unsafe { simd_x86::dot_avx2_fma(a, b) };
@@ -182,7 +182,7 @@ pub fn fast_dot(a: &[f32], b: &[f32]) -> f32 {
 /// preserves full SIMD throughput while faithfully propagating `NaN`/`Inf` when SEU guards are OFF).
 #[inline]
 pub fn fast_dot_raw(a: &[f32], b: &[f32]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(feature = "strict_deterministic")))]
     {
         if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") {
             return unsafe { simd_x86::dot_avx2_fma(a, b) };
@@ -202,7 +202,7 @@ pub fn fast_saxpy(dst: &mut [f32], src: &[f32], scale: f32) {
     if s == 0.0 {
         return;
     }
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(feature = "strict_deterministic")))]
     {
         if std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma") {
             unsafe { simd_x86::saxpy_avx2_fma(dst, src, s) };
@@ -218,7 +218,7 @@ pub fn fast_saxpy(dst: &mut [f32], src: &[f32], scale: f32) {
 #[inline]
 pub fn fast_scale(dst: &mut [f32], scale: f32) {
     let s = sanitize_f32(scale);
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(feature = "strict_deterministic")))]
     {
         if std::is_x86_feature_detected!("avx2") {
             unsafe { simd_x86::scale_avx2(dst, s) };
@@ -242,7 +242,7 @@ pub fn sanitize_and_normalize_unit(v: &mut [f32], max_amp: f32) {
         nsq += s * s;
     }
     if nsq > 1e-10 && nsq.is_finite() {
-        let inv = total_div_f32(1.0, nsq.sqrt(), 1.0);
+        let inv = inv_sqrt_newton_f32(nsq);
         fast_scale(v, inv);
     } else if let Some(first) = v.first_mut() {
         *first = 1.0;
@@ -506,22 +506,262 @@ pub fn rational_circle_wave(angle: f32) -> (f32, f32) {
     (s2, c2)
 }
 
-/// Алгебраическое сжатие без tanh: x / sqrt(1 + x^2) in (-1, 1).
+/// Алгебраическое сжатие без tanh: x / sqrt(1 + x^2) in (-1, 1) (0% `.sqrt()`).
 #[axiom_zero]
 #[inline]
 pub fn algebraic_squash(x: f32) -> f32 {
     let sx = sanitize_bounded_f32(x, 1e4);
-    total_div_f32(sx, (1.0 + sx * sx).sqrt(), 0.0)
+    sanitize_f32(sx * inv_sqrt_newton_f32(1.0 + sx * sx))
 }
 
-/// Алгебраическая монотонная лог-подобная компрессия без ln: sign(x) * 2(sqrt(1+|x|)-1)/(1+0.42*(sqrt(1+|x|)-1)).
+/// Алгебраическая монотонная лог-подобная компрессия без ln и без `.sqrt()`:
+/// sign(x) * 2(sqrt(1+|x|)-1)/(1+0.42*(sqrt(1+|x|)-1)).
 #[axiom_zero]
 #[inline]
 pub fn algebraic_signed_log(x: f32) -> f32 {
     let sx = sanitize_bounded_f32(x, 1e6);
-    let dm = sanitize_f32((1.0 + sx.abs()).sqrt() - 1.0);
+    let dm = sanitize_f32(sqrt_newton_f32(1.0 + sx.abs()) - 1.0);
     let mag = total_div_unit_shifted_f32(2.0 * dm, sanitize_f32(0.42 * dm));
     if sx < 0.0 { -mag } else { mag }
+}
+
+/// Безопасный 2-шаговый `1 / sqrt(a)` Ньютона без `.sqrt()` и без делений (`step122` + `step129`):
+/// экспоненциальный сдвиг пополам (с множителем `181/256` для нечётной экспоненты) и линейный seed `(5 - m)/4`
+/// гарантируют `a * y0^2 in [0.9997, 1.1575] subset [0.5, 2.0]` и строгую положительность `y > 0`
+/// при любых скачках мощности (в т.ч. на 10+ порядков, закрытие Мины №1). Относительная точность `< 1.3e-4`.
+#[axiom_zero]
+#[inline]
+pub fn inv_sqrt_newton_2step_f32(a: f32) -> f32 {
+    if !a.is_finite() || a <= 1e-30 {
+        return 0.0;
+    }
+    let ac = a.min(1e30_f32);
+    let bits = ac.to_bits();
+    let exp_b = ((bits >> 23) & 0xFF) as i32;
+    let e = exp_b - 127;
+    let m = f32::from_bits((bits & 0x007F_FFFF) | 0x3F80_0000);
+    let k = e >> 1;
+    let r = e & 1;
+    let pow2_neg_k = f32::from_bits((((127 - k) as u32) & 0xFF) << 23);
+    let odd_scale = if r != 0 { 0.70703125_f32 } else { 1.0_f32 };
+    let y0 = 0.25_f32 * (5.0_f32 - m) * odd_scale * pow2_neg_k;
+    let y1 = 0.5_f32 * y0 * (3.0_f32 - ac * y0 * y0);
+    let y2 = 0.5_f32 * y1 * (3.0_f32 - ac * y1 * y1);
+    sanitize_f32(y2).max(0.0)
+}
+
+/// Полная `f32`-точность `1 / sqrt(a)` (`< 1e-7`) без `.sqrt()` и делений:
+/// экспоненциально-защищённый seed (`step129`) + 3 итерации Ньютона.
+#[axiom_zero]
+#[inline]
+pub fn inv_sqrt_newton_f32(a: f32) -> f32 {
+    if !a.is_finite() || a <= 1e-30 {
+        return 0.0;
+    }
+    let ac = a.min(1e30_f32);
+    let y2 = inv_sqrt_newton_2step_f32(ac);
+    let y3 = 0.5_f32 * y2 * (3.0_f32 - ac * y2 * y2);
+    sanitize_f32(y3).max(0.0)
+}
+
+/// Полная `f32`-точность `sqrt(a)` (`< 1e-7`) без `.sqrt()` и делений (`step130`):
+/// `sqrt(a) = a * inv_sqrt_newton_f32(a)`.
+#[axiom_zero]
+#[inline]
+pub fn sqrt_newton_f32(a: f32) -> f32 {
+    if !a.is_finite() || a <= 1e-30 {
+        return 0.0;
+    }
+    let ac = a.min(1e30_f32);
+    sanitize_f32(ac * inv_sqrt_newton_f32(ac)).max(0.0)
+}
+
+/// Гейтированный Ньютон с кэшем `y_prev`: при выходе за скобку `a * y_prev^2 in [0.5, 2.5]`
+/// мгновенно сбрасывает оценку на безопасный битовый сдвиг экспоненты.
+#[axiom_zero]
+#[inline]
+pub fn inv_sqrt_newton_guarded_f32(a: f32, y_prev: f32) -> f32 {
+    if !a.is_finite() || a <= 1e-30 {
+        return 0.0;
+    }
+    let ac = a.min(1e30_f32);
+    if y_prev.is_finite() && y_prev > 0.0 {
+        let ay2 = ac * y_prev * y_prev;
+        if ay2 >= 0.5 && ay2 <= 2.5 {
+            let y1 = 0.5_f32 * y_prev * (3.0_f32 - ac * y_prev * y_prev);
+            let y2 = 0.5_f32 * y1 * (3.0_f32 - ac * y1 * y1);
+            if y2.is_finite() && y2 > 0.0 {
+                return y2;
+            }
+        }
+    }
+    inv_sqrt_newton_f32(ac)
+}
+
+/// Умножение кватернионов `(w, x, y, z)` (`step117`).
+#[axiom_zero]
+#[inline]
+pub fn quat_mul_4d(
+    p: (f32, f32, f32, f32),
+    q: (f32, f32, f32, f32),
+) -> (f32, f32, f32, f32) {
+    let (pw, px, py, pz) = p;
+    let (qw, qx, qy, qz) = q;
+    (
+        sanitize_f32(pw * qw - px * qx - py * qy - pz * qz),
+        sanitize_f32(pw * qx + px * qw + py * qz - pz * qy),
+        sanitize_f32(pw * qy - px * qz + py * qw + pz * qx),
+        sanitize_f32(pw * qz + px * qy - py * qx + pz * qw),
+    )
+}
+
+/// Стереографический единичный кватернион `q(g) in S^3` без `sin`/`cos`/`sqrt` (`step117`):
+/// `q(g) = ((1 - ||g||^2), 2 g) / (1 + ||g||^2)`.
+#[axiom_zero]
+#[inline]
+pub fn q_stereo_unit_4d(gx: f32, gy: f32, gz: f32) -> (f32, f32, f32, f32) {
+    let s = sanitize_f32(gx * gx + gy * gy + gz * gz);
+    let inv_d = total_div_unit_shifted_f32(1.0, s);
+    (
+        sanitize_f32((1.0 - s) * inv_d),
+        sanitize_f32(2.0 * gx * inv_d),
+        sanitize_f32(2.0 * gy * inv_d),
+        sanitize_f32(2.0 * gz * inv_d),
+    )
+}
+
+/// Точная производная `dq(g) / d(g_axis)` стереографического кватерниона (`step121`).
+#[axiom_zero]
+#[inline]
+pub fn q_stereo_unit_4d_deriv(
+    gx: f32,
+    gy: f32,
+    gz: f32,
+    axis: usize,
+) -> (f32, f32, f32, f32) {
+    let s = sanitize_f32(gx * gx + gy * gy + gz * gz);
+    let inv_d = total_div_unit_shifted_f32(1.0, s);
+    let two_inv = sanitize_f32(2.0 * inv_d);
+    let g_ax = match axis {
+        0 => gx,
+        1 => gy,
+        _ => gz,
+    };
+    let q_ax = sanitize_f32(two_inv * g_ax);
+    let dw = sanitize_f32(-two_inv * q_ax);
+    let dx = sanitize_f32(two_inv * ((if axis == 0 { 1.0 } else { 0.0 }) - gx * q_ax));
+    let dy = sanitize_f32(two_inv * ((if axis == 1 { 1.0 } else { 0.0 }) - gy * q_ax));
+    let dz = sanitize_f32(two_inv * ((if axis == 2 { 1.0 } else { 0.0 }) - gz * q_ax));
+    (dw, dx, dy, dz)
+}
+
+/// Двойной лево-правый 4D ротор Кэли `q_L(g_L) * u * q_R(g_R) in SO(4)` (`step117`).
+#[axiom_zero]
+#[inline]
+pub fn so4_double_rotor_4d(
+    gl: (f32, f32, f32),
+    gr: (f32, f32, f32),
+    u: (f32, f32, f32, f32),
+) -> (f32, f32, f32, f32) {
+    let ql = q_stereo_unit_4d(gl.0, gl.1, gl.2);
+    let qr = q_stereo_unit_4d(gr.0, gr.1, gr.2);
+    quat_mul_4d(ql, quat_mul_4d(u, qr))
+}
+
+/// Гейтированное 4D отражение Хаусхолдера `H_beta(v) r = r - beta * (v^T r / (||v||^2 + eps)) * v` (`step118`).
+#[axiom_zero]
+#[inline]
+pub fn householder4_gated(
+    v: (f32, f32, f32, f32),
+    beta: f32,
+    eps: f32,
+    r: (f32, f32, f32, f32),
+) -> (f32, f32, f32, f32) {
+    let b = sanitize_f32(beta).clamp(0.0, 2.0);
+    let ep = sanitize_f32(eps).max(1e-12);
+    let dv = sanitize_f32(v.0 * v.0 + v.1 * v.1 + v.2 * v.2 + v.3 * v.3 + ep);
+    let inv_dv = total_div_f32(1.0, dv, 0.0);
+    let vr = sanitize_f32(v.0 * r.0 + v.1 * r.1 + v.2 * r.2 + v.3 * r.3);
+    let sc = sanitize_f32(b * vr * inv_dv);
+    (
+        sanitize_f32(r.0 - sc * v.0),
+        sanitize_f32(r.1 - sc * v.1),
+        sanitize_f32(r.2 - sc * v.2),
+        sanitize_f32(r.3 - sc * v.3),
+    )
+}
+
+/// Точная производная `d(H_beta(v) r) / d(v_c)` (`step127`).
+#[axiom_zero]
+#[inline]
+pub fn householder4_gated_deriv_v(
+    v: (f32, f32, f32, f32),
+    beta: f32,
+    eps: f32,
+    r: (f32, f32, f32, f32),
+    c_axis: usize,
+) -> (f32, f32, f32, f32) {
+    let b = sanitize_f32(beta).clamp(0.0, 2.0);
+    if b <= 0.0 {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let ep = sanitize_f32(eps).max(1e-12);
+    let dv = sanitize_f32(v.0 * v.0 + v.1 * v.1 + v.2 * v.2 + v.3 * v.3 + ep);
+    let inv_dv = total_div_f32(1.0, dv, 0.0);
+    let vr = sanitize_f32(v.0 * r.0 + v.1 * r.1 + v.2 * r.2 + v.3 * r.3);
+    let (vc, rc) = match c_axis {
+        0 => (v.0, r.0),
+        1 => (v.1, r.1),
+        2 => (v.2, r.2),
+        _ => (v.3, r.3),
+    };
+    let coeff_v = sanitize_f32(rc - 2.0 * vr * inv_dv * vc);
+    let pref = sanitize_f32(-b * inv_dv);
+    (
+        sanitize_f32(pref * (coeff_v * v.0 + if c_axis == 0 { vr } else { 0.0 })),
+        sanitize_f32(pref * (coeff_v * v.1 + if c_axis == 1 { vr } else { 0.0 })),
+        sanitize_f32(pref * (coeff_v * v.2 + if c_axis == 2 { vr } else { 0.0 })),
+        sanitize_f32(pref * (coeff_v * v.3 + if c_axis == 3 { vr } else { 0.0 })),
+    )
+}
+
+/// Точный детерминант `4x4` матрицы по её 4 столбцам (0 делений, 0 `sqrt`).
+#[axiom_zero]
+#[inline]
+pub fn det4x4_cols(
+    c0: (f32, f32, f32, f32),
+    c1: (f32, f32, f32, f32),
+    c2: (f32, f32, f32, f32),
+    c3: (f32, f32, f32, f32),
+) -> f32 {
+    let s0 = c0.0 * c1.1 - c1.0 * c0.1;
+    let s1 = c0.0 * c2.1 - c2.0 * c0.1;
+    let s2 = c0.0 * c3.1 - c3.0 * c0.1;
+    let s3 = c1.0 * c2.1 - c2.0 * c1.1;
+    let s4 = c1.0 * c3.1 - c3.0 * c1.1;
+    let s5 = c2.0 * c3.1 - c3.0 * c2.1;
+
+    let d5 = c2.2 * c3.3 - c3.2 * c2.3;
+    let d4 = c1.2 * c3.3 - c3.2 * c1.3;
+    let d3 = c1.2 * c2.3 - c2.2 * c1.3;
+    let d2 = c0.2 * c3.3 - c3.2 * c0.3;
+    let d1 = c0.2 * c2.3 - c2.2 * c0.3;
+    let d0 = c0.2 * c1.3 - c1.2 * c0.3;
+
+    sanitize_f32(s0 * d5 - s1 * d4 + s2 * d3 + s3 * d2 - s4 * d1 + s5 * d0)
+}
+
+/// Коэффициент ограниченного полиномиального отталкивания прототипов `max(0, dot - mu)` (`step123`).
+#[axiom_zero]
+#[inline]
+pub fn poly_repulsion_grad_coeff(dot_sim: f32, mu: f32) -> f32 {
+    let d = sanitize_f32(dot_sim).clamp(-1.0, 1.0);
+    let m = sanitize_f32(mu).clamp(0.0, 0.99);
+    if d > m {
+        sanitize_f32(d - m)
+    } else {
+        0.0
+    }
 }
 
 /// Разбор числового токена из байтов без аллокаций на куче.
@@ -814,7 +1054,7 @@ impl SpinorEncoder {
             let qx = total_div_f32(((m1 >> 16) & 0xFFFF) as f32, 32767.5, 1.0) - 1.0;
             let qy = total_div_f32(((m1 >> 32) & 0xFFFF) as f32, 32767.5, 1.0) - 1.0;
             let qz = total_div_f32(((m2 >> 16) & 0xFFFF) as f32, 32767.5, 1.0) - 1.0;
-            let inv = total_div_f32(w, (qx * qx + qy * qy + qz * qz).sqrt().max(1e-6), w);
+            let inv = sanitize_f32(w * inv_sqrt_newton_f32((qx * qx + qy * qy + qz * qz).max(1e-12)));
             let _ = total_set(dst_half, b, total_get_copy(dst_half, b, 0.0) + qx * inv);
             let _ = total_set(dst_half, b + 1, total_get_copy(dst_half, b + 1, 0.0) + qy * inv);
             let _ = total_set(dst_half, b + 2, total_get_copy(dst_half, b + 2, 0.0) + qz * inv);
@@ -826,7 +1066,7 @@ impl SpinorEncoder {
         let x = sanitize_bounded_f32(val, 1e6);
         let signed_log = algebraic_signed_log(x);
         let smooth_z = sanitize_f32(algebraic_squash(x * 0.25) * 0.65);
-        let xy_scale = (1.0_f32 - smooth_z * smooth_z).max(0.0).sqrt();
+        let xy_scale = sqrt_newton_f32((1.0_f32 - smooth_z * smooth_z).max(0.0));
         let freqs: [f32; 6] = [0.35, 0.85, 1.65, 3.2, 6.0, 11.0];
 
         let mut k = 0usize;
@@ -864,7 +1104,7 @@ impl SpinorEncoder {
         }
         // Сколько независимых 3D секторов выделяем каждому признаку (без коллизий до 16 признаков)
         let per_feat = total_div_usize(self.total_sectors, n_feat.max(1), 1).clamp(1, 6);
-        let base_w = total_div_f32(1.0, (n_feat as f32).sqrt(), 1.0);
+        let base_w = inv_sqrt_newton_f32(n_feat as f32);
         let freqs: [f32; 6] = [0.6, 1.3, 2.4, 4.2, 7.0, 11.5];
 
         for (i, &raw) in features.iter().enumerate() {
@@ -1129,7 +1369,7 @@ impl SpinorEncoder {
                     let dot_pos = fast_dot(&cur_v, &ctx);
 
                     let cfreq = local_freq.get(&c_slot).copied().unwrap_or(1).max(1) as f32;
-                    let freq_damp = total_div_f32(1.0, cfreq.sqrt(), 0.5).clamp(0.25, 1.0);
+                    let freq_damp = inv_sqrt_newton_f32(cfreq).clamp(0.25, 1.0);
 
                     if dot_pos < 0.94 {
                         let step = sanitize_f32((0.96 - dot_pos).clamp(0.05, 1.0) * 0.45 * freq_damp * ep_sc);
@@ -1141,7 +1381,7 @@ impl SpinorEncoder {
                                 if let Some(&(ns, nm)) = row.get(nb) {
                                     if ns != c_slot && nm > 0.0 {
                                         let nf = local_freq.get(&ns).copied().unwrap_or(1).max(1) as f32;
-                                        let adj = total_div_f32(nb_step, nf.sqrt(), 0.02);
+                                        let adj = sanitize_f32(nb_step * inv_sqrt_newton_f32(nf));
                                         self.apply_sem_update(ns, &cur_v, adj);
                                     }
                                 }
@@ -1188,7 +1428,7 @@ impl SpinorEncoder {
                     self.write_sem_slot_into(sl, &mut tv);
                     fast_saxpy(&mut mean_vec, &tv, 1.0);
                 }
-                let mn = fast_dot(&mean_vec, &mean_vec).sqrt();
+                let mn = sqrt_newton_f32(fast_dot(&mean_vec, &mean_vec));
                 if mn > 1e-4 {
                     sanitize_and_normalize_unit(&mut mean_vec, 8.0);
                     for &sl in &active_slots {
@@ -1208,9 +1448,9 @@ impl SpinorEncoder {
         if self.is_frozen_i8 {
             let ad = self.domain_adapters.entry(slot).or_insert_with(|| vec![0.0_f32; hd]);
             fast_saxpy(ad, dir, alpha);
-            let n = fast_dot(ad, ad).sqrt();
-            if n > 3.0 {
-                fast_scale(ad, total_div_f32(3.0, n, 1.0));
+            let n2 = fast_dot(ad, ad);
+            if n2 > 9.0 {
+                fast_scale(ad, sanitize_f32(3.0 * inv_sqrt_newton_f32(n2)));
             }
         } else {
             let off = slot.saturating_mul(hd);

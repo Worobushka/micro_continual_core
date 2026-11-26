@@ -14,4 +14,12 @@ CMAPSSData/
 logs/
 *.jsonl
 __pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.vscode/
+.idea/
+CONCEPT_*.md
+PLAN_*.md
 crates/axiom_zero/Cargo.lock

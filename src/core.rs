@@ -18,8 +18,9 @@ use axiom_zero::{
 
 use crate::belief::{CayleyBeliefState, EligibilityTraceRing, PageHinkleyDetector};
 use crate::math::{
-    fast_dot, fast_saxpy, fast_scale, rand_signed_f32, rand_unit_f32, rational_probs_and_psi_into,
-    sanitize_and_normalize_unit, splitmix64, SpinorEncoder,
+    fast_dot, fast_saxpy, fast_scale, inv_sqrt_newton_f32, rand_signed_f32, rand_unit_f32,
+    rational_probs_and_psi_into, sanitize_and_normalize_unit, splitmix64, sqrt_newton_f32,
+    SpinorEncoder,
 };
 use crate::memory::KerrKernelBank;
 use crate::rtrl::{PlasticCayleyParams, PlasticCayleyState};
@@ -37,7 +38,7 @@ fn update_normed_vec(w: &mut [f32], dir: &[f32], step: f32, keep: f32, max_norm:
     let nsq = fast_dot(w, w);
     let lim = sanitize_f32(max_norm * max_norm);
     if nsq > lim {
-        fast_scale(w, total_div_f32(max_norm, nsq.sqrt(), 1.0));
+        fast_scale(w, sanitize_f32(max_norm * inv_sqrt_newton_f32(nsq)));
     }
 }
 
@@ -51,7 +52,7 @@ fn accum_trace_vec(e: &mut [f32], feat: &[f32], decay: f32, weight: f32) {
     fast_saxpy(e, feat, weight);
     let nsq = fast_dot(e, e);
     if nsq > 16.0 {
-        fast_scale(e, total_div_f32(4.0, nsq.sqrt(), 1.0));
+        fast_scale(e, sanitize_f32(4.0 * inv_sqrt_newton_f32(nsq)));
     }
 }
 
@@ -443,13 +444,13 @@ impl RegimeBank {
     ) -> f32 {
         let mut s = self.linear_score(action, frozen_b);
         if self.rtrl_dim > 0 {
-            let r_scale = total_div_f32(1.0, (self.rtrl_params.sectors.max(1) as f32).sqrt(), 0.25);
+            let r_scale = inv_sqrt_newton_f32(self.rtrl_params.sectors.max(1) as f32);
             let roff = action.saturating_mul(self.rtrl_dim);
             let rw = self.rtrl_actor_w.get(roff..roff + self.rtrl_dim).unwrap_or(&[]);
             s = sanitize_f32(s + r_scale * fast_dot(rw, plastic_b));
         }
         if self.rtrl_slow_dim > 0 {
-            let s_scale = total_div_f32(1.0, (self.rtrl_slow_params.sectors.max(1) as f32).sqrt(), 0.25);
+            let s_scale = inv_sqrt_newton_f32(self.rtrl_slow_params.sectors.max(1) as f32);
             let soff = action.saturating_mul(self.rtrl_slow_dim);
             let sw = self.rtrl_slow_actor_w.get(soff..soff + self.rtrl_slow_dim).unwrap_or(&[]);
             s = sanitize_f32(s + s_scale * fast_dot(sw, slow_b));
@@ -469,11 +470,11 @@ impl RegimeBank {
             v = sanitize_f32(v + fast_dot(&self.critic_w, frozen_b));
         }
         if !self.rtrl_critic_w.is_empty() {
-            let r_scale = total_div_f32(1.0, (self.rtrl_params.sectors.max(1) as f32).sqrt(), 0.25);
+            let r_scale = inv_sqrt_newton_f32(self.rtrl_params.sectors.max(1) as f32);
             v = sanitize_f32(v + r_scale * fast_dot(&self.rtrl_critic_w, plastic_b));
         }
         if !self.rtrl_slow_critic_w.is_empty() {
-            let s_scale = total_div_f32(1.0, (self.rtrl_slow_params.sectors.max(1) as f32).sqrt(), 0.25);
+            let s_scale = inv_sqrt_newton_f32(self.rtrl_slow_params.sectors.max(1) as f32);
             v = sanitize_f32(v + s_scale * fast_dot(&self.rtrl_slow_critic_w, slow_b));
         }
         if !self.rtrl_skip_critic_w.is_empty() {
@@ -808,7 +809,7 @@ impl MicroContinualCore {
             Vec::new()
         };
         if !rtrl_pool_w.is_empty() && r1_dim > 0 {
-            let p_scale = total_div_f32(1.0, (r1_dim.max(1) as f32).sqrt(), 0.2);
+            let p_scale = inv_sqrt_newton_f32(r1_dim.max(1) as f32);
             fill_small_rand(&mut rtrl_pool_w, config.seed ^ 0x41E2_CA71_E700, p_scale);
             // Modified Gram-Schmidt (2 passes) so the 4 rows of rtrl_pool_w are orthonormal (P P^T = I_4).
             for r in 0..4usize {
@@ -837,9 +838,8 @@ impl MicroContinualCore {
                     let v = total_get_copy(&rtrl_pool_w, roff + i, 0.0);
                     n2 = sanitize_f32(n2 + v * v);
                 }
-                let norm = n2.sqrt();
-                if norm > 1e-6 {
-                    let inv_n = total_div_f32(1.0, norm, 0.0);
+                if n2 > 1e-12 {
+                    let inv_n = inv_sqrt_newton_f32(n2);
                     for i in 0..r1_dim {
                         let nv = sanitize_f32(total_get_copy(&rtrl_pool_w, roff + i, 0.0) * inv_n);
                         let _ = total_set(&mut rtrl_pool_w, roff + i, nv);
@@ -1075,7 +1075,7 @@ impl MicroContinualCore {
                     let new_var = sanitize_f32(keep * var + alpha * diff * (raw - new_mu)).max(1e-3);
                     let _ = total_set(&mut self.scratch.feat_mean, i, new_mu);
                     let _ = total_set(&mut self.scratch.feat_var, i, new_var);
-                    let std = new_var.sqrt().max(0.05);
+                    let std = sqrt_newton_f32(new_var).max(0.05);
                     let z = if self.scratch.feat_count <= 2 {
                         raw.clamp(-4.0, 4.0)
                     } else {
@@ -1088,7 +1088,7 @@ impl MicroContinualCore {
                     let raw = sanitize_bounded_f32(total_get_copy(features, i, 0.0), 1e5);
                     let mu = total_get_copy(&self.scratch.feat_mean, i, 0.0);
                     let var = total_get_copy(&self.scratch.feat_var, i, 1.0);
-                    let std = var.sqrt().max(0.05);
+                    let std = sqrt_newton_f32(var).max(0.05);
                     let z = if self.scratch.feat_count <= 2 {
                         raw.clamp(-4.0, 4.0)
                     } else {
@@ -1245,7 +1245,7 @@ impl MicroContinualCore {
                         let new_var = sanitize_f32(keep * var + alpha * diff * (raw - new_mu)).max(1e-3);
                         let _ = total_set(&mut feat_mean, i, new_mu);
                         let _ = total_set(&mut feat_var, i, new_var);
-                        let std = new_var.sqrt().max(0.05);
+                        let std = sqrt_newton_f32(new_var).max(0.05);
                         let z = if feat_count <= 2 {
                             raw.clamp(-4.0, 4.0)
                         } else {
@@ -1258,7 +1258,7 @@ impl MicroContinualCore {
                         let raw = sanitize_bounded_f32(total_get_copy(features, i, 0.0), 1e5);
                         let mu = total_get_copy(&feat_mean, i, 0.0);
                         let var = total_get_copy(&feat_var, i, 1.0);
-                        let std = var.sqrt().max(0.05);
+                        let std = sqrt_newton_f32(var).max(0.05);
                         let z = if feat_count <= 2 {
                             raw.clamp(-4.0, 4.0)
                         } else {
@@ -1517,7 +1517,7 @@ impl MicroContinualCore {
             return 0.0;
         }
         let n2 = fast_dot(&self.rtrl_slow_state.b, &self.rtrl_slow_state.b).max(0.0);
-        total_div_f32(n2.sqrt(), (s2 as f32).sqrt(), 0.0)
+        sanitize_f32(sqrt_newton_f32(n2) * inv_sqrt_newton_f32(s2 as f32))
     }
 
     fn bank_suspect_drift(&self, reg_id: usize) -> bool {
@@ -1543,7 +1543,7 @@ impl MicroContinualCore {
         self.scratch.td_mean_ema = sanitize_f32(0.99 * self.scratch.td_mean_ema + 0.01 * raw_d);
         self.scratch.td_var_ema =
             sanitize_f32(0.98 * self.scratch.td_var_ema + 0.02 * centered * centered).max(0.08);
-        let adv_err = total_div_f32(centered, self.scratch.td_var_ema.sqrt(), 0.0).clamp(-2.5, 2.5);
+        let adv_err = sanitize_f32(centered * inv_sqrt_newton_f32(self.scratch.td_var_ema)).clamp(-2.5, 2.5);
 
         let a_lr = self.config.actor_critic_lr;
         let c_lr = if self.config.critic_lr > 0.0 {
@@ -1621,8 +1621,8 @@ impl MicroContinualCore {
         let r1_dim = self.rtrl_state.sectors.saturating_mul(3);
         let r2_dim = self.rtrl_slow_state.sectors.saturating_mul(3);
         let skip_dim = self.scratch.rtrl_skip_buf.len();
-        let sc1 = total_div_f32(1.0, (self.rtrl_state.sectors.max(1) as f32).sqrt(), 0.25);
-        let sc2 = total_div_f32(1.0, (self.rtrl_slow_state.sectors.max(1) as f32).sqrt(), 0.25);
+        let sc1 = inv_sqrt_newton_f32(self.rtrl_state.sectors.max(1) as f32);
+        let sc2 = inv_sqrt_newton_f32(self.rtrl_slow_state.sectors.max(1) as f32);
 
         let mut sum_p2 = 0.0_f32;
         for a in 0..n_act {
@@ -1780,8 +1780,8 @@ impl MicroContinualCore {
             if train_mode && !in_probe {
                 let decay = sanitize_f32(self.config.trace_gamma.clamp(0.0, 0.99) * 0.80);
                 let d = if use_frozen { self.encoder.dim } else { 0 };
-                let sc1 = total_div_f32(1.0, (self.rtrl_state.sectors.max(1) as f32).sqrt(), 0.25);
-                let sc2 = total_div_f32(1.0, (self.rtrl_slow_state.sectors.max(1) as f32).sqrt(), 0.25);
+                let sc1 = inv_sqrt_newton_f32(self.rtrl_state.sectors.max(1) as f32);
+                let sc2 = inv_sqrt_newton_f32(self.rtrl_slow_state.sectors.max(1) as f32);
 
                 if d > 0 {
                     accum_trace_vec(&mut self.scratch.td_e_critic_f, &self.belief.state, decay, 1.0);
@@ -2058,7 +2058,7 @@ impl MicroContinualCore {
 
             let ucb_scale = if qo < -0.10 && vo >= 2.0 && vb < 0.7 { 0.10_f32 } else { 1.0_f32 };
             let bonus = if ucb_c > 0.0 {
-                total_div_f32(ucb_c * ucb_scale, (1.0 + vb).sqrt(), 0.0)
+                sanitize_f32(ucb_c * ucb_scale * inv_sqrt_newton_f32(1.0 + vb))
             } else {
                 0.0
             };
@@ -2284,7 +2284,7 @@ impl MicroContinualCore {
                         let a = total_get_copy(&advs, s, 0.0);
                         sq_a = sanitize_f32(sq_a + a * a);
                     }
-                    let rms_a = total_div_f32(sq_a, t_len as f32, 1.0).sqrt().max(0.25);
+                    let rms_a = sqrt_newton_f32(total_div_f32(sq_a, t_len as f32, 1.0)).max(0.25);
                     for s in 0..t_len {
                         let a = total_get_copy(&advs, s, 0.0);
                         let _ = total_set(&mut advs, s, total_div_f32(a, rms_a, 0.0).clamp(-2.5, 2.5));
@@ -2628,8 +2628,8 @@ impl MicroContinualCore {
         let skip_dim = self.scratch.rtrl_skip_buf.len();
 
         if !bank_suspect_drift {
-            let r1_scale = total_div_f32(1.0, (self.rtrl_state.sectors.max(1) as f32).sqrt(), 0.25);
-            let r2_scale = total_div_f32(1.0, (self.rtrl_slow_state.sectors.max(1) as f32).sqrt(), 0.25);
+            let r1_scale = inv_sqrt_newton_f32(self.rtrl_state.sectors.max(1) as f32);
+            let r2_scale = inv_sqrt_newton_f32(self.rtrl_slow_state.sectors.max(1) as f32);
             let r_lr = self.config.rtrl_lr;
             let keep = (1.0 - sanitize_f32(lin_wd).clamp(0.0, 0.05)).clamp(0.95, 1.0);
             if r1_dim > 0 {
@@ -2847,8 +2847,8 @@ impl MicroContinualCore {
         let skip_dim = self.scratch.rtrl_skip_buf.len();
 
         if !bank_suspect_drift {
-            let r1_scale = total_div_f32(1.0, (self.rtrl_state.sectors.max(1) as f32).sqrt(), 0.25);
-            let r2_scale = total_div_f32(1.0, (self.rtrl_slow_state.sectors.max(1) as f32).sqrt(), 0.25);
+            let r1_scale = inv_sqrt_newton_f32(self.rtrl_state.sectors.max(1) as f32);
+            let r2_scale = inv_sqrt_newton_f32(self.rtrl_slow_state.sectors.max(1) as f32);
             let r_lr = self.config.rtrl_lr;
             let keep = (1.0 - sanitize_f32(lin_wd).clamp(0.0, 0.05)).clamp(0.95, 1.0);
             if r1_dim > 0 {

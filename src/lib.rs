@@ -1,14 +1,21 @@
 // Copyright (c) 2026 Adrian Aleksandrovich İşmuhanov
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
+pub mod adaptive_od;
+pub mod algebra;
 pub mod baselines;
 pub mod belief;
 pub mod core;
 pub mod env_hard_pomdp;
+pub mod fixed_point;
 pub mod math;
 pub mod memory;
 pub mod stream_baselines;
 pub mod rtrl;
+pub mod unified;
+
+pub use adaptive_od::*;
+pub use fixed_point::*;
 
 pub use baselines::{
     DeepRtrrlLruPhBaseline, OnlineGruPerStepPhBaseline, OnlineSelectiveSsmPhBaseline,
@@ -22,8 +29,11 @@ pub use env_hard_pomdp::{
 };
 pub use rtrl::{
     cayley_rot3_double_vec, cayley_rot3_double_vec_deriv, cayley_rot3_vec, cayley_rot3_vec_deriv,
-    AlgebraicSelectiveCayley, HierarchicalCayleyRtrl, NonAbelianCayleyRtrl, PlasticCayleyParams,
-    PlasticCayleyState,
+    AlgebraicSelectiveCayley, HierarchicalCayleyRtrl, NonAbelianCayleyRtrl, NonAbelianO4Rtrl,
+    PlasticCayleyParams, PlasticCayleyState,
+};
+pub use unified::{
+    BartlettPageHinkley, CausalInputConditioner, UnifiedCayleyConfig, UnifiedCayleyCore,
 };
 
 #[cfg(test)]
@@ -1567,6 +1577,1229 @@ mod tests {
                 cl_ls = ls_c.predict_and_train(w, 0, false);
             }
             assert_eq!(ro_ls, cl_ls);
+        }
+    }
+
+    #[test]
+    fn test_inv_sqrt_newton_f32_ten_order_jump() {
+        let test_vals = [
+            1e-12_f32, 1e-6, 0.003, 0.5, 0.99, 1.0, 1.5, 2.0, 125.0, 1e6, 1e-6, 1e10, 1e-10, 3.7e-4,
+        ];
+        for &a in &test_vals {
+            let y2 = math::inv_sqrt_newton_2step_f32(a);
+            let y3 = math::inv_sqrt_newton_f32(a);
+            let exact = 1.0_f32 / a.sqrt();
+            assert!(y2.is_finite() && y2 > 0.0, "2-step newton <= 0 for a={a}: {y2}");
+            assert!(y3.is_finite() && y3 > 0.0, "3-step newton <= 0 for a={a}: {y3}");
+            let rel2 = ((y2 - exact) / exact).abs();
+            let rel3 = ((y3 - exact) / exact).abs();
+            assert!(rel2 < 1.5e-4, "2-step rel err too big for a={a}: {rel2}");
+            assert!(rel3 < 1.5e-6, "3-step rel err too big for a={a}: {rel3}");
+        }
+        // Резкий скачок мощности при использовании y_prev: reset должен защитить от <= 0
+        let y_small = math::inv_sqrt_newton_f32(1e-4);
+        let y_jump = math::inv_sqrt_newton_guarded_f32(1e6, y_small);
+        assert!(y_jump > 0.0 && y_jump.is_finite());
+        let exact_jump = 1.0_f32 / (1e6_f32).sqrt();
+        assert!(((y_jump - exact_jump) / exact_jump).abs() < 1e-5);
+        assert_eq!(math::inv_sqrt_newton_f32(0.0), 0.0);
+        assert_eq!(math::inv_sqrt_newton_f32(-5.0), 0.0);
+        assert_eq!(math::inv_sqrt_newton_f32(f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn test_o4_double_rotor_and_householder_invariants() {
+        let gl = (0.42_f32, -0.31, 0.25);
+        let gr = (-0.19_f32, 0.54, -0.37);
+        let v = (0.5_f32, -0.5, 0.5, 0.5);
+        let basis = [
+            (1.0_f32, 0.0, 0.0, 0.0),
+            (0.0_f32, 1.0, 0.0, 0.0),
+            (0.0_f32, 0.0, 1.0, 0.0),
+            (0.0_f32, 0.0, 0.0, 1.0),
+        ];
+
+        // 1. beta = 0 -> SO(4), det = +1, ортонормированность
+        let cols_even: Vec<(f32, f32, f32, f32)> = basis
+            .iter()
+            .map(|&u| math::householder4_gated(v, 0.0, 1e-10, math::so4_double_rotor_4d(gl, gr, u)))
+            .collect();
+        let det_even = math::det4x4_cols(cols_even[0], cols_even[1], cols_even[2], cols_even[3]);
+        assert!((det_even - 1.0).abs() < 1e-5, "SO(4) det must be +1, got {det_even}");
+        for i in 0..4 {
+            for j in 0..4 {
+                let dot = cols_even[i].0 * cols_even[j].0
+                    + cols_even[i].1 * cols_even[j].1
+                    + cols_even[i].2 * cols_even[j].2
+                    + cols_even[i].3 * cols_even[j].3;
+                let tgt = if i == j { 1.0 } else { 0.0 };
+                assert!((dot - tgt).abs() < 1e-5);
+            }
+        }
+
+        // 2. beta = 2 -> O(4) reflection, det = -1, инволюция H_2^2 = I_4
+        let cols_odd: Vec<(f32, f32, f32, f32)> = basis
+            .iter()
+            .map(|&u| math::householder4_gated(v, 2.0, 1e-10, math::so4_double_rotor_4d(gl, gr, u)))
+            .collect();
+        let det_odd = math::det4x4_cols(cols_odd[0], cols_odd[1], cols_odd[2], cols_odd[3]);
+        assert!((det_odd + 1.0).abs() < 1e-5, "O(4) reflection det must be -1, got {det_odd}");
+        let r_once = math::householder4_gated(v, 2.0, 1e-10, (0.3, -0.7, 0.2, 0.6));
+        let r_twice = math::householder4_gated(v, 2.0, 1e-10, r_once);
+        assert!((r_twice.0 - 0.3).abs() < 1e-5 && (r_twice.1 + 0.7).abs() < 1e-5);
+
+        // 3. BIBO контракция для всех beta in [0, 2]
+        let r_in = (0.3_f32, -0.7, 0.2, 0.6);
+        let r_in_norm2 = r_in.0 * r_in.0 + r_in.1 * r_in.1 + r_in.2 * r_in.2 + r_in.3 * r_in.3;
+        for b_i in 0..=20 {
+            let beta = (b_i as f32) * 0.1;
+            let hb = math::householder4_gated(v, beta, 1e-10, r_in);
+            let h2 = hb.0 * hb.0 + hb.1 * hb.1 + hb.2 * hb.2 + hb.3 * hb.3;
+            assert!(h2 <= r_in_norm2 + 1e-5, "BIBO violated at beta={beta}: {h2} > {r_in_norm2}");
+        }
+
+        // 4. Вложенность SO(3) subset SO(4): при g_minus = 0 (g_R = -g_L) координата w инвариантна
+        let u_sub = (0.45_f32, -0.35, 0.62, -0.18);
+        let g_neg = (-gl.0, -gl.1, -gl.2);
+        let u_rot = math::so4_double_rotor_4d(gl, g_neg, u_sub);
+        assert!((u_rot.0 - u_sub.0).abs() < 1e-5, "SO(3) subset SO(4) must fix u.w");
+
+        // 5. FD проверка производных q_stereo и householder4_gated_deriv_v
+        let eps = 1e-3_f32;
+        for c in 0..4usize {
+            let mut vp = v;
+            let mut vm = v;
+            match c {
+                0 => { vp.0 += eps; vm.0 -= eps; }
+                1 => { vp.1 += eps; vm.1 -= eps; }
+                2 => { vp.2 += eps; vm.2 -= eps; }
+                _ => { vp.3 += eps; vm.3 -= eps; }
+            }
+            let hp = math::householder4_gated(vp, 1.35, 1e-10, r_in);
+            let hm = math::householder4_gated(vm, 1.35, 1e-10, r_in);
+            let an = math::householder4_gated_deriv_v(v, 1.35, 1e-10, r_in, c);
+            let fd = ((hp.0 - hm.0) / (2.0 * eps), (hp.1 - hm.1) / (2.0 * eps), (hp.2 - hm.2) / (2.0 * eps), (hp.3 - hm.3) / (2.0 * eps));
+            assert!(
+                (fd.0 - an.0).abs() < 2e-3 && (fd.1 - an.1).abs() < 2e-3 && (fd.2 - an.2).abs() < 2e-3 && (fd.3 - an.3).abs() < 2e-3,
+                "Householder dv deriv mismatch c={c}: fd={fd:?} an={an:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_nonabelian_o4_rtrl_fd_gradients() {
+        let mut o4 = NonAbelianO4Rtrl::new(2, 3, 5, 101);
+        // Разнообразие beta внутри (0.1, 1.9), включая проверку строго на водоразделе beta = 1.00
+        for (idx, wb) in o4.w_beta.iter_mut().enumerate() {
+            *wb = match idx % 3 {
+                0 => 1.00,
+                1 => 1.38,
+                _ => 0.62,
+            };
+        }
+        let seq = [
+            [0.75_f32, 0.15, -0.10],
+            [-0.10, 0.85, 0.15],
+            [0.12, -0.15, 0.90],
+            [0.65, 0.25, -0.05],
+        ];
+        let d = o4.d_state;
+        let mut rng_w = math::splitmix64(777);
+        let w_obj: Vec<f32> = (0..d)
+            .map(|_| math::rand_signed_f32(&mut rng_w) * 0.5)
+            .collect();
+        let run_j = |p: &NonAbelianO4Rtrl| -> f32 {
+            let mut c = p.clone();
+            c.reset();
+            for x in &seq {
+                c.step_forward(x);
+            }
+            fast_dot(&w_obj, &c.u)
+        };
+
+        let mut o4_run = o4.clone();
+        o4_run.reset();
+        for x in &seq {
+            o4_run.step_forward(x);
+        }
+
+        // Проверка сохранения нормы даже на водоразделе beta=1.0
+        assert!(
+            o4_run.max_sphere_drift_4d() < 1e-5 && o4_run.max_orth_drift_4d() < 2e-5,
+            "Unitary parity bridge must preserve norm/orthogonality even at beta=1: sphere={} orth={}",
+            o4_run.max_sphere_drift_4d(),
+            o4_run.max_orth_drift_4d()
+        );
+
+        let eps = 1e-3_f32;
+        let d_in = o4_run.in_dim;
+        let mut max_err_wv = 0.0_f32;
+        let mut max_err_wb = 0.0_f32;
+
+        for m in 0..o4_run.frames {
+            let s0 = m * 5;
+            for kc in 0..16 {
+                for j in 0..d_in {
+                    let mut an_v = 0.0_f32;
+                    for a in 0..5 {
+                        let s = s0 + a;
+                        let off = s * 5;
+                        let pv_off = ((s * 16 + kc) * d_in + j) * 5;
+                        for q in 0..5 {
+                            an_v += w_obj[off + q] * o4_run.p_wv[pv_off + q];
+                        }
+                    }
+                    let idx = (m * 16 + kc) * d_in + j;
+                    let (mut vp, mut vm) = (o4.clone(), o4.clone());
+                    vp.wv[idx] += eps;
+                    vm.wv[idx] -= eps;
+                    let fd_v = (run_j(&vp) - run_j(&vm)) / (2.0 * eps);
+                    max_err_wv = max_err_wv.max((fd_v - an_v).abs());
+                }
+            }
+        }
+        for m in 0..o4_run.frames {
+            let s0 = m * 5;
+            for j in 0..d_in {
+                let mut an_b = 0.0_f32;
+                for a in 0..5 {
+                    let s = s0 + a;
+                    let off = s * 5;
+                    let pb_off = (s * d_in + j) * 5;
+                    for q in 0..5 {
+                        an_b += w_obj[off + q] * o4_run.p_wbeta[pb_off + q];
+                    }
+                }
+                let wb_idx = m * d_in + j;
+                let (mut bp, mut bm) = (o4.clone(), o4.clone());
+                bp.w_beta[wb_idx] += eps;
+                bm.w_beta[wb_idx] -= eps;
+                let fd_b = (run_j(&bp) - run_j(&bm)) / (2.0 * eps);
+                max_err_wb = max_err_wb.max((fd_b - an_b).abs());
+            }
+        }
+        assert!(
+            max_err_wv < 1e-3 && max_err_wb < 1e-3,
+            "O(4) RTRL FD mismatch (u): wv={max_err_wv} wb={max_err_wb}"
+        );
+
+        // Вторая проверка: FD-паритет для сферического чтения c.b через exact inv_rho * (gb - (gb.b)*b)
+        let run_jb = |p: &NonAbelianO4Rtrl| -> f32 {
+            let mut c = p.clone();
+            c.reset();
+            for x in &seq {
+                c.step_forward(x);
+            }
+            fast_dot(&w_obj, &c.b)
+        };
+        let mut grad_u_b = vec![0.0_f32; d];
+        for s in 0..o4_run.sectors {
+            let off = s * 5;
+            let mut dot_gb = 0.0_f32;
+            for q in 0..5 {
+                dot_gb += w_obj[off + q] * o4_run.b[off + q];
+            }
+            let inv_r = o4_run.inv_rho[s];
+            for q in 0..5 {
+                grad_u_b[off + q] = inv_r * (w_obj[off + q] - dot_gb * o4_run.b[off + q]);
+            }
+        }
+        let mut max_err_b_wb = 0.0_f32;
+        let mut max_err_b_wv = 0.0_f32;
+        for j in 0..d_in {
+            for m in 0..o4_run.frames {
+                let s0 = m * 5;
+                let mut an_b = 0.0_f32;
+                for a in 0..5 {
+                    let s = s0 + a;
+                    let off = s * 5;
+                    let pb_off = (s * d_in + j) * 5;
+                    for q in 0..5 {
+                        an_b += grad_u_b[off + q] * o4_run.p_wbeta[pb_off + q];
+                    }
+                }
+                let wb_idx = m * d_in + j;
+                let (mut bp, mut bm) = (o4.clone(), o4.clone());
+                bp.w_beta[wb_idx] += eps;
+                bm.w_beta[wb_idx] -= eps;
+                let fd_b = (run_jb(&bp) - run_jb(&bm)) / (2.0 * eps);
+                max_err_b_wb = max_err_b_wb.max((fd_b - an_b).abs());
+            }
+
+            let mut an_v = 0.0_f32;
+            for a in 0..5 {
+                let s = a;
+                let off = s * 5;
+                let pv_off = ((s * 16 + 13) * d_in + j) * 5;
+                for q in 0..5 {
+                    an_v += grad_u_b[off + q] * o4_run.p_wv[pv_off + q];
+                }
+            }
+            let idx_v = 13 * d_in + j;
+            let (mut vp, mut vm) = (o4.clone(), o4.clone());
+            vp.wv[idx_v] += eps;
+            vm.wv[idx_v] -= eps;
+            let fd_v = (run_jb(&vp) - run_jb(&vm)) / (2.0 * eps);
+            max_err_b_wv = max_err_b_wv.max((fd_v - an_v).abs());
+        }
+        assert!(
+            max_err_b_wb < 1e-3 && max_err_b_wv < 1e-3,
+            "O(4) RTRL FD mismatch (b): wb={max_err_b_wb} wv={max_err_b_wv}"
+        );
+    }
+
+    #[test]
+    fn test_nonabelian_o4_readonly_seu_and_s5_watershed() {
+        // 1. Read-only bit equivalence + State/Weight SEU + 0-NaN
+        let mut o4 = NonAbelianO4Rtrl::new(2, 4, 16, 42);
+        o4.enable_o4_proto_metric(12.0, 1.4, 0.08, 0.25, 0.04);
+        for t in 0..12usize {
+            let mut x = [0.0_f32; 4];
+            x[t % 4] = 1.0;
+            let _ = o4.step_and_learn_supervised(&x, Some((t * 3 + 1) % 16), 0.02, 0.02);
+        }
+        let u_snap = o4.u.clone();
+        let w_refs: [&[f32]; 4] = [
+            &[1.0, 0.0, 0.0, 0.0],
+            &[0.0, 1.0, 0.0, 0.0],
+            &[0.0, 0.0, 1.0, 0.0],
+            &[0.0, 0.0, 0.0, 1.0],
+        ];
+        let ro_pred = o4.predict_k_ahead_readonly(&w_refs);
+        assert_eq!(o4.u, u_snap, "predict_k_ahead_readonly must not mutate state");
+        let mut o4_clone = o4.clone();
+        let mut cl_pred = 0usize;
+        for &wx in &w_refs {
+            cl_pred = o4_clone.step_and_learn_supervised(wx, None, 0.0, 0.0);
+        }
+        assert_eq!(ro_pred, cl_pred);
+
+        // State-SEU & Weight-SEU
+        for k in 0..5usize {
+            o4.inject_register_bit_flip(k * 7, 30);
+            o4.inject_weight_bit_flip(k * 3, 30);
+        }
+        o4.step_forward(&[1.0, 0.0, 0.0, 0.0]);
+        assert!(o4.seu_fault_count >= 5);
+        assert!(o4.u.iter().all(|v| v.is_finite()));
+        assert!(o4.wv.iter().all(|v| v.is_finite()));
+        assert!(o4.w_beta.iter().all(|v| v.is_finite()));
+        assert!(o4.out_w.iter().all(|v| v.is_finite()));
+
+        // 2. Диагностика Мины №2 + унитарный мост чётности: S_5 без оракулов (120 классов)
+        let gens: [[u8; 5]; 4] = [
+            [1, 0, 2, 3, 4], // (0 1) — нечётная (odd)
+            [0, 2, 1, 3, 4], // (1 2) — нечётная (odd)
+            [1, 2, 3, 4, 0], // (0 1 2 3 4) — чётная (even)
+            [4, 0, 1, 2, 3], // (4 3 2 1 0) — чётная (even)
+        ];
+        let mut perms: Vec<[u8; 5]> = Vec::new();
+        for a in 0..5u8 {
+            for b in 0..5u8 {
+                if b == a { continue; }
+                for c in 0..5u8 {
+                    if c == a || c == b { continue; }
+                    for d in 0..5u8 {
+                        if d == a || d == b || d == c { continue; }
+                        let e = 10 - (a + b + c + d);
+                        perms.push([a, b, c, d, e]);
+                    }
+                }
+            }
+        }
+        perms.sort();
+        let ident = perms.binary_search(&[0, 1, 2, 3, 4]).unwrap();
+        let mut mul = vec![vec![0usize; 120]; 4];
+        for g in 0..4 {
+            for p_id in 0..120 {
+                let cp = perms[p_id];
+                let gp = gens[g];
+                let prod = [
+                    cp[gp[0] as usize],
+                    cp[gp[1] as usize],
+                    cp[gp[2] as usize],
+                    cp[gp[3] as usize],
+                    cp[gp[4] as usize],
+                ];
+                mul[g][p_id] = perms.binary_search(&prod).unwrap();
+            }
+        }
+        let frames = 4usize;
+        let mut net = NonAbelianO4Rtrl::new(frames, 4, 120, 7);
+        net.enable_o4_proto_metric(12.0, 1.4, 0.08, 0.55, 0.0);
+        let mut rng = math::splitmix64(7777);
+        let n_eps = 10000usize;
+        for ep in 0..n_eps {
+            let len = 1 + (ep % 10);
+            net.reset();
+            let mut cur = ident;
+            let dec = 1.0_f32 / (1.0 + 3.5 * (ep as f32) / (n_eps as f32));
+            for _ in 0..len {
+                rng = math::splitmix64(rng);
+                let g = ((rng >> 16) as usize) % 4;
+                cur = mul[g][cur];
+                let mut x = [0.0_f32; 4];
+                x[g] = 1.0;
+                let _ = net.step_and_learn_supervised(&x, Some(cur), 0.025 * dec, 0.025 * dec);
+            }
+        }
+
+        let x_onehot = [
+            [1.0_f32, 0.0, 0.0, 0.0],
+            [0.0_f32, 1.0, 0.0, 0.0],
+            [0.0_f32, 0.0, 1.0, 0.0],
+            [0.0_f32, 0.0, 0.0, 1.0],
+        ];
+        let mut eval_at = |len: usize, eval_seed: u64| -> (f64, f32, f32) {
+            let mut hits = 0usize;
+            let mut max_orth = 0.0_f32;
+            let mut max_sph = 0.0_f32;
+            let mut rng_ev = math::splitmix64(eval_seed);
+            for _ in 0..80usize {
+                net.reset();
+                let mut cur = ident;
+                let mut refs: Vec<&[f32]> = Vec::with_capacity(len);
+                for _ in 0..len {
+                    rng_ev = math::splitmix64(rng_ev);
+                    let g = ((rng_ev >> 16) as usize) % 4;
+                    cur = mul[g][cur];
+                    refs.push(&x_onehot[g]);
+                }
+                let pred = net.predict_k_ahead_readonly(&refs);
+                if pred == cur {
+                    hits += 1;
+                }
+                // Также проверим живой ненормализованный шаг при одном запуске
+                net.reset();
+                for &r in &refs {
+                    net.step_forward(r);
+                }
+                max_orth = max_orth.max(net.max_orth_drift_4d());
+                max_sph = max_sph.max(net.max_sphere_drift_4d());
+            }
+            (hits as f64 * 100.0 / 80.0, max_orth, max_sph)
+        };
+
+        let (acc_30, _, _) = eval_at(30, 99991);
+        let (acc_100, orth_100, sph_100) = eval_at(100, 88881);
+
+        let mut ch_betas = [[0.0_f32; 4]; 4];
+        for g in 0..4usize {
+            net.channel_betas_into(g, &mut ch_betas[g]);
+        }
+        let rqs: Vec<f32> = (0..frames).map(|m| net.frame_parity_line_rq(m)).collect();
+        let parity_spread = |m: usize| -> f32 {
+            let mut mn = f32::INFINITY;
+            let mut mx = f32::NEG_INFINITY;
+            for g in 0..4usize {
+                let v = ch_betas[g][m];
+                if v < mn { mn = v; }
+                if v > mx { mx = v; }
+            }
+            mx - mn
+        };
+        let mut faithful: Vec<usize> = (0..frames)
+            .filter(|&m| rqs[m] > 0.97 && net.frame_acc_ema[m] > 0.85 && parity_spread(m) > 0.5)
+            .collect();
+        if faithful.is_empty() {
+            faithful = (0..frames)
+                .filter(|&m| rqs[m] > 0.97 && net.frame_acc_ema[m] > 0.85)
+                .collect();
+        }
+        if faithful.is_empty() {
+            faithful = (0..frames)
+                .filter(|&m| rqs[m] > 0.97 && net.frame_acc_ema[m] > 0.70)
+                .collect();
+        }
+        let best_m = (0..frames)
+            .max_by(|&a, &b| rqs[a].partial_cmp(&rqs[b]).unwrap())
+            .unwrap_or(0);
+        let use_frames: Vec<usize> = if faithful.is_empty() { vec![best_m] } else { faithful };
+        let odd_mean: f32 = use_frames
+            .iter()
+            .map(|&m| 0.5 * (ch_betas[0][m] + ch_betas[1][m]))
+            .sum::<f32>()
+            / (use_frames.len() as f32);
+        let even_mean: f32 = use_frames
+            .iter()
+            .map(|&m| 0.5 * (ch_betas[2][m] + ch_betas[3][m]))
+            .sum::<f32>()
+            / (use_frames.len() as f32);
+
+        assert!(
+            acc_30 >= 85.0 && acc_100 >= 80.0,
+            "S_5 extrapolation too low: L=30={acc_30:.1}% L=100={acc_100:.1}%, orth={orth_100:.2e}, sph={sph_100:.2e}, rqs={rqs:?}, ch_betas={ch_betas:?}"
+        );
+        assert!(
+            odd_mean > 1.80 && even_mean < 0.20,
+            "S_5 intrinsic parity separation failed: rqs={rqs:?}, odd_mean={odd_mean:.3}, even_mean={even_mean:.3}, ch_betas={ch_betas:?}"
+        );
+    }
+
+    #[test]
+    fn test_unified_b1_exact_fd_gradients_and_10_order_jump() {
+        let seq: [[f32; 3]; 5] = [
+            [0.8, -0.4, 0.3],
+            [-0.6, 1.1, -0.2],
+            [0.4, 0.5, -0.9],
+            [-1.0, -0.3, 0.7],
+            [0.7, -0.8, 0.5],
+        ];
+        let init_base = |exact_sqrt: bool| {
+            let mut cfg = UnifiedCayleyConfig::checkpoint_b1(3, 3, 77);
+            cfg.learn_norm = false;
+            cfg.exact_inv_sqrt = exact_sqrt;
+            let mut core = UnifiedCayleyCore::new(cfg);
+            // Ненулевые веса обеих головок для нетривиальной проверки
+            for (i, w) in core.slots[0].actor_w.iter_mut().enumerate() {
+                *w += 0.12 * (((i as f32) * 0.71).sin());
+            }
+            for (i, w) in core.slots[0].critic_w.iter_mut().enumerate() {
+                *w = 0.15 * (((i as f32) * 0.53 + 0.4).cos());
+            }
+            core
+        };
+
+        let eval_obj = |core_tpl: &UnifiedCayleyCore, mutate: &dyn Fn(&mut UnifiedCayleyCore)| -> f64 {
+            let mut c = core_tpl.clone();
+            mutate(&mut c);
+            c.start_episode();
+            for x in &seq {
+                c.forward_and_rtrl_traces(x, false, false, false);
+            }
+            (c.ws.probs[0] as f64).ln() + (c.ws.critic_val as f64)
+        };
+
+        for &exact_sqrt in &[true, false] {
+            let base = init_base(exact_sqrt);
+            let mut c = base.clone();
+            c.start_episode();
+            for x in &seq {
+                c.forward_and_rtrl_traces(x, false, true, false);
+            }
+            let target_y = 0usize;
+            let mut lerrs = [0.0_f32; 3];
+            UnifiedCayleyCore::fill_p4_logprob_grads(
+                &c.ws.logits,
+                &c.ws.probs,
+                &c.ws.psis,
+                target_y,
+                &mut lerrs,
+            );
+            c.compute_instant_rtrl_grads(&lerrs, 1.0);
+
+            let tol = if exact_sqrt { 5e-4 } else { 2e-3 };
+            let eps = 1e-3_f32;
+            let mut max_err = 0.0_f64;
+            let mut max_abs_g = 0.0_f64;
+
+            let mut check_param = |name: &str, ana: f32, set_fn: &dyn Fn(&mut UnifiedCayleyCore, f32)| {
+                let jp = eval_obj(&base, &|m| set_fn(m, eps));
+                let jm = eval_obj(&base, &|m| set_fn(m, -eps));
+                let fd = (jp - jm) / (2.0 * eps as f64);
+                let err = (ana as f64 - fd).abs();
+                max_err = max_err.max(err);
+                max_abs_g = max_abs_g.max(fd.abs());
+                assert!(
+                    err < tol,
+                    "FD mismatch on {name} (exact={exact_sqrt}): ana={ana:.6}, fd={fd:.6}, err={err:.6} >= {tol}"
+                );
+            };
+
+            for b in 0..4usize {
+                check_param("gate_logits", c.ws.g_gates[b], &move |m, d| {
+                    m.slots[0].gate_logits[b] += d;
+                });
+            }
+            for k in 0..4usize {
+                check_param("b1_alpha", c.ws.g_b1_alpha[k], &move |m, d| {
+                    m.slots[0].b1_alpha[k] += d;
+                });
+                check_param("b1_omega", c.ws.g_b1_omega[k], &move |m, d| {
+                    m.slots[0].b1_omega[k] += d;
+                });
+            }
+            for j in 0..12usize {
+                check_param("b1_in_w", c.ws.g_b1_inw[j], &move |m, d| {
+                    m.slots[0].b1_in_w[j] += d;
+                });
+                check_param("b2_in_w", c.ws.g_b2_inw[j], &move |m, d| {
+                    m.slots[0].b2_in_w[j] += d;
+                });
+            }
+            for s in 0..4usize {
+                check_param("b2_alpha", c.ws.g_b2_alpha[s], &move |m, d| {
+                    m.slots[0].b2_alpha[s] += d;
+                });
+                check_param("b2_omega", c.ws.g_b2_omega[s], &move |m, d| {
+                    m.slots[0].b2_omega[s] += d;
+                });
+            }
+            let fdim = c.ws.feat_dim;
+            for i in 0..8usize {
+                check_param("actor_w", lerrs[0] * c.ws.feat_gated[i], &move |m, d| {
+                    m.slots[0].actor_w[i] += d;
+                });
+                check_param("critic_w", c.ws.feat_gated[fdim - 1 - i], &move |m, d| {
+                    m.slots[0].critic_w[fdim - 1 - i] += d;
+                });
+            }
+            assert!(max_abs_g > 1e-3, "trivial zero gradient in B1 check: {max_abs_g}");
+        }
+
+        // Стресс-тест 10-порядкового скачка мощности входа (1e-5 -> 1e+5) без sqrt -> y > 0 и строго конечный вывод
+        let mut jump_core = UnifiedCayleyCore::new(UnifiedCayleyConfig::checkpoint_b1(2, 3, 99));
+        let jumps: [[f32; 3]; 6] = [
+            [1e-5, -1e-5, 2e-5],
+            [1e-5, 1e-5, -1e-5],
+            [1e5, -1e5, 5e4],
+            [-1e5, 8e4, -1e5],
+            [1e-5, 0.0, 1e-5],
+            [3e4, -2e4, 1e4],
+        ];
+        for (idx, x) in jumps.iter().enumerate() {
+            let (pred, conf) = jump_core.step_supervised_class(x, idx & 1, true, true, false);
+            assert!(pred < 2 && conf.is_finite(), "non-finite conf at jump {idx}: {conf}");
+            for &ni in &jump_core.ws.norm_inv {
+                assert!(ni.is_finite() && ni > 0.0, "norm_inv violated positivity bound: {ni}");
+            }
+            assert!(jump_core.ws.critic_val.is_finite(), "non-finite critic on 10-order jump");
+        }
+    }
+
+    #[test]
+    fn test_unified_b2_selectivity_and_local_feedback_fd_gradients() {
+        let seq: [[f32; 3]; 5] = [
+            [0.9, -0.5, 0.4],
+            [-0.7, 1.0, -0.3],
+            [0.5, 0.6, -0.8],
+            [-0.9, -0.4, 0.8],
+            [0.6, -0.7, 0.5],
+        ];
+        let mut cfg = UnifiedCayleyConfig::checkpoint_b2(3, 3, 123);
+        cfg.learn_norm = false;
+        cfg.exact_inv_sqrt = true;
+        let mut base = UnifiedCayleyCore::new(cfg);
+
+        // Ненулевые beta, bdelta и qfb для нетривиальной проверки селективности и rank-1 обратной связи dg_du
+        for i in 0..base.slots[0].b1_beta.len() {
+            base.slots[0].b1_beta[i] = 0.35 * if (i & 1) == 0 { 1.0 } else { -1.0 };
+            base.slots[0].b1_bdelta[i] = 0.15;
+        }
+        for (i, q) in base.slots[0].b1_qfb.iter_mut().enumerate() {
+            *q = 0.25 * if (i & 1) == 0 { 1.0 } else { -0.8 };
+        }
+        for i in 0..base.slots[0].b2_beta.len() {
+            base.slots[0].b2_beta[i] = 0.35 * if (i & 1) == 0 { 1.0 } else { -1.0 };
+            base.slots[0].b2_bdelta[i] = 0.15;
+        }
+        for (i, q) in base.slots[0].b2_qfb.iter_mut().enumerate() {
+            *q = 0.25 * if (i & 1) == 0 { 1.0 } else { -0.7 };
+        }
+        for (i, w) in base.slots[0].actor_w.iter_mut().enumerate() {
+            *w += 0.12 * (((i as f32) * 0.71).sin());
+        }
+        for (i, w) in base.slots[0].critic_w.iter_mut().enumerate() {
+            *w = 0.15 * (((i as f32) * 0.53 + 0.4).cos());
+        }
+
+        let eval_obj = |core_tpl: &UnifiedCayleyCore, mutate: &dyn Fn(&mut UnifiedCayleyCore)| -> f64 {
+            let mut c = core_tpl.clone();
+            mutate(&mut c);
+            c.start_episode();
+            for x in &seq {
+                c.forward_and_rtrl_traces(x, false, false, false);
+            }
+            (c.ws.probs[0] as f64).ln() + (c.ws.critic_val as f64)
+        };
+
+        let mut c = base.clone();
+        c.start_episode();
+        for x in &seq {
+            c.forward_and_rtrl_traces(x, false, true, false);
+        }
+        let mut lerrs = [0.0_f32; 3];
+        UnifiedCayleyCore::fill_p4_logprob_grads(&c.ws.logits, &c.ws.probs, &c.ws.psis, 0, &mut lerrs);
+        c.compute_instant_rtrl_grads(&lerrs, 1.0);
+
+        let tol = 5e-4_f64;
+        let eps = 1e-3_f32;
+        let mut max_abs_g = 0.0_f64;
+        let mut check = |name: &str, ana: f32, set_fn: &dyn Fn(&mut UnifiedCayleyCore, f32)| {
+            let jp = eval_obj(&base, &|m| set_fn(m, eps));
+            let jm = eval_obj(&base, &|m| set_fn(m, -eps));
+            let fd = (jp - jm) / (2.0 * eps as f64);
+            let err = (ana as f64 - fd).abs();
+            max_abs_g = max_abs_g.max(fd.abs());
+            assert!(
+                err < tol,
+                "B2 FD mismatch on {name}: ana={ana:.6}, fd={fd:.6}, err={err:.6} >= {tol}"
+            );
+        };
+
+        for k in 0..4usize {
+            check("b1_beta", c.ws.g_b1_beta[k], &move |m, d| { m.slots[0].b1_beta[k] += d; });
+            check("b1_bdelta", c.ws.g_b1_bdelta[k], &move |m, d| { m.slots[0].b1_bdelta[k] += d; });
+        }
+        for i in 0..8usize {
+            check("b1_qfb", c.ws.g_b1_qfb[i], &move |m, d| { m.slots[0].b1_qfb[i] += d; });
+            check("b1_sel_w", c.ws.g_b1_selw[i], &move |m, d| { m.slots[0].b1_sel_w[i] += d; });
+            check("b2_sel_w", c.ws.g_b2_selw[i], &move |m, d| { m.slots[0].b2_sel_w[i] += d; });
+        }
+        for s in 0..4usize {
+            check("b2_beta", c.ws.g_b2_beta[s], &move |m, d| { m.slots[0].b2_beta[s] += d; });
+            check("b2_bdelta", c.ws.g_b2_bdelta[s], &move |m, d| { m.slots[0].b2_bdelta[s] += d; });
+        }
+        for i in 0..9usize {
+            check("b2_qfb", c.ws.g_b2_qfb[i], &move |m, d| { m.slots[0].b2_qfb[i] += d; });
+        }
+        assert!(max_abs_g > 1e-3, "trivial zero gradient in B2 check: {max_abs_g}");
+    }
+
+    #[test]
+    fn test_unified_b3_readonly_equivalence_bartlett_ph_and_bank_recall() {
+        // 1. &self predict_class_readonly битово/точно совпадает с последовательным шагом без обучения
+        let mut core = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(3, 4, 303));
+        let train_seq: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        for step in 0..40usize {
+            if step % 4 == 0 { core.start_episode(); }
+            let _ = core.step_supervised_class(&train_seq[step % 4], step % 3, true, true, false);
+        }
+        let query: [&[f32]; 4] = [&train_seq[0], &train_seq[1], &train_seq[2], &train_seq[3]];
+        let ro_pred = core.predict_class_readonly(&query);
+        let mut clone_m = core.clone();
+        clone_m.start_episode();
+        let mut mut_pred = 0usize;
+        for q in &query {
+            mut_pred = clone_m.step_supervised_class(q, 0, false, false, false).0;
+        }
+        assert_eq!(ro_pred, mut_pred, "readonly &self rollout diverged from forward pass");
+
+        // 2. Bartlett PH устойчив к сильно автокоррелированному стационарному шуму (rho ~ 0.6), но ловит смену режима
+        let mut ph = PageHinkleyDetector::new(0.14, 2.2, 20).with_bartlett_scaling(true);
+        let mut e = 0.0_f32;
+        let mut rng = crate::math::splitmix64(999);
+        let mut false_triggers = 0usize;
+        for _ in 0..160usize {
+            rng = crate::math::splitmix64(rng);
+            let w = crate::math::rand_signed_f32(&mut rng) * 0.14;
+            e = 0.65 * e + w;
+            if ph.observe((0.86 + e).clamp(0.0, 1.0)) {
+                false_triggers += 1;
+            }
+        }
+        assert_eq!(false_triggers, 0, "Bartlett PH false alarm under rho=0.65 noise: {false_triggers}");
+        let mut caught_at = None;
+        for step in 0..40usize {
+            if ph.observe(0.15) {
+                caught_at = Some(step);
+                break;
+            }
+        }
+        assert!(caught_at.is_some(), "Bartlett PH missed real regime drop");
+
+        // 3. Probe-Before-Allocate банк recall A -> B -> A возвращает в Slot 0
+        let mut bank_core = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(2, 3, 505));
+        for _ in 0..36usize {
+            let _ = bank_core.end_episode_score(0.90, true);
+        }
+        assert_eq!(bank_core.active_slot, 0);
+        // Дрейф к B -> переход в свежий слот 1 (без затирания слота 0!)
+        for _ in 0..40usize {
+            let _ = bank_core.end_episode_score(0.10, true);
+            if bank_core.active_slot != 0 { break; }
+        }
+        assert_eq!(bank_core.active_slot, 1, "expected switch from Slot 0 to fresh Slot 1");
+        for _ in 0..32usize {
+            let _ = bank_core.end_episode_score(0.88, true);
+        }
+        // Возврат A: Slot 1 падает -> запускает probe(Slot 0), затем принимается на хороших очках A
+        for _ in 0..25usize {
+            let _ = bank_core.end_episode_score(0.10, true);
+            if bank_core.probe_eps_left > 0 { break; }
+        }
+        assert!(bank_core.probe_eps_left > 0 && bank_core.active_slot == 0, "expected frozen probe on Slot 0");
+        for _ in 0..6usize {
+            let _ = bank_core.end_episode_score(0.90, true);
+        }
+        assert_eq!(bank_core.active_slot, 0, "expected Slot 0 recall after successful 6-ep probe");
+        assert_eq!(bank_core.probe_eps_left, 0);
+    }
+
+    #[test]
+    fn test_fixed_point_q8_24_vs_q16_16_nasa_ruling_and_determinism() {
+        // 1. q8_24_inv_sqrt по 10+ порядкам (1/16000 .. 1e6, выход <= 126.5 < 128.0 потолка Q8.24)
+        let scales = [1.0f32 / 16000.0, 1.0e-3, 0.25, 1.0, 125.0, 4096.0, 1.0e6];
+        for &a_f in &scales {
+            let a_q = Q39_24::from_f32_boundary(a_f);
+            let y_q = q8_24_inv_sqrt(a_q);
+            assert!(y_q.0 > 0, "q8_24_inv_sqrt({}) must stay > 0, got {}", a_f, y_q.0);
+            let y_got = y_q.to_f32_boundary() as f64;
+            let y_exp = 1.0f64 / (a_f as f64).sqrt();
+            let rel_err = (y_got - y_exp).abs() / y_exp;
+            assert!(
+                rel_err < 5.0e-4,
+                "inv_sqrt rel_err too high at a={}: got={}, exp={}, rel_err={}",
+                a_f,
+                y_got,
+                y_exp,
+                rel_err
+            );
+        }
+
+        // 2. Q8.24 vs Q16.16: шаг lr=1e-4 * grad=0.05 живёт в Q8.24 (>0 LSB), но зануляется в Q16.16
+        let lr_q24 = Q8_24::from_f32_boundary(1.0e-4);
+        let grad_q24 = Q8_24::from_f32_boundary(0.05);
+        let step_q24 = q24_mul(lr_q24, grad_q24);
+        assert!(step_q24.0 > 0, "Q8.24 update must stay > 0 LSB, got {}", step_q24.0);
+
+        let lr_q16 = Q16_16::from_f32_boundary(1.0e-4);
+        let grad_q16 = Q16_16::from_f32_boundary(0.05);
+        let step_q16 = q16_mul(lr_q16, grad_q16);
+        assert_eq!(step_q16, Q16_16(0), "expected Q16.16 underflow for 1e-4 * 0.05, got {:?}", step_q16);
+
+        // 3. PageHinkleyQ39_24 принимает NASA RUL = 125.0 без насыщения 128.0 и ловит дрейф
+        let mut ph = PageHinkleyQ39_24::new(
+            Q39_24::from_f32_boundary(2.0),
+            Q39_24::from_f32_boundary(60.0),
+            8,
+        );
+        for _ in 0..16 {
+            assert!(!ph.observe(Q39_24::from_f32_boundary(125.0)));
+        }
+        assert!(
+            (ph.mu_bank.to_f32_boundary() - 125.0).abs() < 0.05,
+            "Q39.24 mu_bank saturated prematurely: {}",
+            ph.mu_bank.to_f32_boundary()
+        );
+        let mut caught = false;
+        for _ in 0..10 {
+            if ph.observe(Q39_24::from_f32_boundary(40.0)) {
+                caught = true;
+                break;
+            }
+        }
+        assert!(caught, "PageHinkleyQ39_24 failed to detect 125.0 -> 40.0 drift");
+
+        // 4. FixedO4Rotor удерживает единичную норму 10 000 шагов без дрейфа FPU
+        let mut rotor = FixedO4Rotor::new(42, Q8_24::from_f32_boundary(1.0));
+        for _ in 0..10_000 {
+            rotor.step_and_renorm();
+        }
+        let norm_sq = rotor.sphere_norm_sq_q39().to_f32_boundary();
+        assert!(
+            (norm_sq - 1.0).abs() < 1.0e-5,
+            "FixedO4Rotor norm^2 drifted after 10k steps: {}",
+            norm_sq
+        );
+
+        // 5. FixedCayleyCore детерминированный дайджест на потоке с амплитудой NASA 125.0
+        let run_stream = || -> u64 {
+            let mut c = FixedCayleyCore::new(4, 2, 777);
+            for t in 0..120usize {
+                let x = [
+                    Q39_24::from_f32_boundary(125.0 + (t as f32) * 0.1),
+                    Q39_24::from_f32_boundary(((t % 5) as f32 - 2.0) * 15.0),
+                    Q39_24::from_f32_boundary(0.5),
+                    Q39_24::from_f32_boundary(-3.0),
+                ];
+                let cls = t & 1;
+                let _ = c.step_supervised_class_q(&x, cls, true);
+                let _ = c.step_supervised_reg_q(&x, Q39_24::from_f32_boundary(125.0 - (t as f32)), true);
+            }
+            c.state_digest_fnv1a()
+        };
+        let d1 = run_stream();
+        let d2 = run_stream();
+        assert_eq!(d1, d2);
+        assert_ne!(d1, 0);
+    }
+
+    #[test]
+    fn test_adaptive_od_isometric_zero_forgetting_and_shuffle_immunity() {
+        // 1. RAM для S_6 (720 классов, M=2, D_MAX=6) строго < 260 KB (<< 450 KB бюджета)
+        let big = AdaptiveOrthogonalRtrl::new(2, 4, 720, 42);
+        assert!(
+            big.memory_footprint_bytes() < 260 * 1024,
+            "AdaptiveOrthogonalRtrl S6 RAM {} >= 260 KB",
+            big.memory_footprint_bytes()
+        );
+
+        // 2. Изометрический апгрейд 2->3->4->5 сохраняет вероятности < 1e-6, логиты < 1e-5 и активирует новые плоскости
+        let mut net = AdaptiveOrthogonalRtrl::new(2, 4, 16, 17);
+        let onehot: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        for ep in 0..80usize {
+            net.reset();
+            for step in 0..5usize {
+                let g = (ep + step) % 4;
+                let y = (g * 3 + step) % 16;
+                let _ = net.step_supervised(&onehot[g], true, y, 0.025, 0.025);
+            }
+        }
+
+        for target_d in 3..=5usize {
+            net.reset();
+            for step in 0..6usize {
+                net.step_forward(&onehot[(step * 3) % 4]);
+            }
+            let mut logits_before = vec![0.0_f32; 16];
+            let mut probs_before = vec![0.0_f32; 16];
+            let mut psi = vec![0.0_f32; 16];
+            net.compute_combined_logits_into(&mut logits_before);
+            crate::math::rational_probs_p4_into(&logits_before, &mut probs_before, &mut psi);
+
+            assert!(net.upgrade_dimension_isometric());
+            assert_eq!(net.active_dim, target_d);
+
+            net.reset();
+            for step in 0..6usize {
+                net.step_forward(&onehot[(step * 3) % 4]);
+            }
+            let mut logits_after = vec![0.0_f32; 16];
+            let mut probs_after = vec![0.0_f32; 16];
+            net.compute_combined_logits_into(&mut logits_after);
+            crate::math::rational_probs_p4_into(&logits_after, &mut probs_after, &mut psi);
+
+            let max_dl = logits_before
+                .iter()
+                .zip(logits_after.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            let max_dp = probs_before
+                .iter()
+                .zip(probs_after.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(max_dl < 1.0e-5, "dim {} logit jump too large: {}", target_d, max_dl);
+            assert!(max_dp < 1.0e-6, "dim {} prob jump too large: {}", target_d, max_dp);
+
+            let n_old = planes_for_dim(target_d - 1);
+            let n_new = planes_for_dim(target_d);
+            for ep in 0..120usize {
+                net.reset();
+                for step in 0..5usize {
+                    let g = (ep * 5 + step) % 4;
+                    let y = (g * 3 + step * 2) % 16;
+                    let _ = net.step_supervised(&onehot[g], true, y, 0.025, 0.025);
+                }
+            }
+            let mut max_new_t = 0.0_f32;
+            for ch in &net.planes {
+                for k in n_old..n_new {
+                    max_new_t = max_new_t.max(ch[k].abs());
+                }
+            }
+            assert!(
+                max_new_t > 0.02,
+                "newly opened planes at dim {} stayed trapped in saddle: max|t|={}",
+                target_d,
+                max_new_t
+            );
+        }
+
+        // 3. Контроль со случайными метками (Label-Shuffle): остаётся строго в d = 2 за 2 000 эпизодов
+        let mut shuf = AdaptiveOrthogonalRtrl::new(2, 3, 24, 999);
+        let mut rng = crate::math::splitmix64(999);
+        for ep in 0..2_000usize {
+            shuf.reset();
+            let g = ep % 3;
+            let _ = shuf.step_supervised(&onehot[g], true, (rng as usize) % 24, 0.02, 0.02);
+            rng = crate::math::splitmix64(rng);
+            let pred = shuf.predict_current_readonly();
+            let y_rand = ((rng >> 16) as usize) % 24;
+            let _ = shuf.observe_episode_hit(pred == y_rand, y_rand);
+        }
+        assert_eq!(shuf.active_dim, 2, "Label-Shuffle falsely escalated to dim {}", shuf.active_dim);
+    }
+
+    #[test]
+    fn test_adaptive_od_fd_gradients() {
+        use crate::math::rational_probs_p4_into;
+        for &target_d in &[2usize, 3, 4] {
+            let mut base = AdaptiveOrthogonalRtrl::new(1, 2, 5, 77 + target_d as u64);
+            while base.active_dim < target_d {
+                assert!(base.upgrade_dimension_isometric());
+            }
+            for ch in 0..2 {
+                for k in 0..planes_for_dim(target_d) {
+                    base.planes[ch][k] = 0.23 * ((k + 1) as f32) - 0.17 * (ch as f32);
+                }
+                for a in 0..target_d {
+                    base.h_vec[ch][a] = 0.4 + 0.15 * ((a + ch) as f32);
+                }
+                base.betas[ch] = 0.35 + 0.12 * (ch as f32);
+            }
+            // Населяем все активные столбцы прототипов ненулевыми значениями
+            let mut rng = crate::math::splitmix64(91 + target_d as u64);
+            for c in 0..5 {
+                let p_off = c * ADAPTIVE_MAX_COLS;
+                for col in 0..ADAPTIVE_MAX_COLS {
+                    if !is_col_active(col, target_d) {
+                        continue;
+                    }
+                    for i in 0..target_d {
+                        rng = crate::math::splitmix64(rng);
+                        base.proto[p_off + col][i] = ((rng >> 40) & 0xFFFF) as f32 * 3.0517578e-5_f32 - 1.0;
+                    }
+                    rng = crate::math::splitmix64(rng);
+                    base.proto[p_off + col][ADAPTIVE_PARITY_AXIS] =
+                        ((rng >> 40) & 0xFFFF) as f32 * 3.0517578e-5_f32 - 1.0;
+                }
+            }
+            base.lambda_par = 0.0;
+
+            let inputs: [[f32; 2]; 3] = [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]];
+            let targets = [1usize, 3, 2];
+            let eff_scale = base.proto_scale * ADAPTIVE_COL_LOGIT_SCALE;
+
+            let eval_loss = |m: &AdaptiveOrthogonalRtrl| -> f32 {
+                let mut net = m.clone();
+                net.reset();
+                let mut total = 0.0_f32;
+                let mut probs = vec![0.0_f32; 5];
+                let mut psi = vec![0.0_f32; 5];
+                for t in 0..3 {
+                    net.step_forward(&inputs[t]);
+                    let mut logits = vec![0.0_f32; 5];
+                    for c in 0..5 {
+                        let p_off = c * ADAPTIVE_MAX_COLS;
+                        let mut sum_dot = 0.0_f32;
+                        for col in 0..ADAPTIVE_MAX_COLS {
+                            if !is_col_active(col, target_d) {
+                                continue;
+                            }
+                            for i in 0..target_d {
+                                sum_dot += net.state[0][col][i] * net.proto[p_off + col][i];
+                            }
+                            sum_dot += net.state[0][col][ADAPTIVE_PARITY_AXIS]
+                                * net.proto[p_off + col][ADAPTIVE_PARITY_AXIS];
+                        }
+                        logits[c] = eff_scale * sum_dot;
+                    }
+                    rational_probs_p4_into(&logits, &mut probs, &mut psi);
+                    total += probs[targets[t]].max(1e-12).ln();
+                }
+                total
+            };
+
+            let mut probe = base.clone();
+            probe.reset();
+            let mut ana_pl = vec![vec![0.0_f32; planes_for_dim(target_d)]; 2];
+            let mut ana_p = vec![0.0_f32; 2];
+            let scale_mod = {
+                let wm = 0.25 + base.frame_acc_ema[0] * base.frame_acc_ema[0];
+                (base.solo_w + (1.0 - base.solo_w) * wm).max(0.25)
+            };
+            for t in 0..3 {
+                let mut tmp = probe.clone();
+                let _ = tmp.step_supervised(&inputs[t], true, targets[t], 0.0, 0.0);
+                let mut grad_cols = [[0.0_f32; ADAPTIVE_STATE_DIM]; ADAPTIVE_MAX_COLS];
+                for c in 0..5 {
+                    let ec = tmp.lerrs[c];
+                    let p_off = c * ADAPTIVE_MAX_COLS;
+                    for col in 0..ADAPTIVE_MAX_COLS {
+                        if !is_col_active(col, target_d) {
+                            continue;
+                        }
+                        for i in 0..target_d {
+                            grad_cols[col][i] += scale_mod * eff_scale * ec * probe.proto[p_off + col][i];
+                        }
+                        grad_cols[col][ADAPTIVE_PARITY_AXIS] +=
+                            scale_mod * eff_scale * ec * probe.proto[p_off + col][ADAPTIVE_PARITY_AXIS];
+                    }
+                }
+                for gx in 0..2 {
+                    for col in 0..ADAPTIVE_MAX_COLS {
+                        if !is_col_active(col, target_d) {
+                            continue;
+                        }
+                        let cb = (col * 2 + gx) * ADAPTIVE_PARAMS_PER_CH;
+                        for k in 0..planes_for_dim(target_d) {
+                            for i in 0..target_d {
+                                ana_pl[gx][k] += grad_cols[col][i] * tmp.sens[cb + k][i];
+                            }
+                            ana_pl[gx][k] += grad_cols[col][ADAPTIVE_PARITY_AXIS]
+                                * tmp.sens[cb + k][ADAPTIVE_PARITY_AXIS];
+                        }
+                        let bi = ADAPTIVE_MAX_PLANES + ADAPTIVE_D_MAX;
+                        for i in 0..target_d {
+                            ana_p[gx] += grad_cols[col][i] * tmp.sens[cb + bi][i];
+                        }
+                        ana_p[gx] += grad_cols[col][ADAPTIVE_PARITY_AXIS]
+                            * tmp.sens[cb + bi][ADAPTIVE_PARITY_AXIS];
+                    }
+                }
+                probe.state = tmp.state;
+                probe.sens = tmp.sens;
+            }
+
+            let eps = 1.0e-3_f32;
+            for gx in 0..2 {
+                let mut mp = base.clone();
+                mp.betas[gx] += eps;
+                let lp = eval_loss(&mp);
+                let mut mm = base.clone();
+                mm.betas[gx] -= eps;
+                let lm = eval_loss(&mm);
+                let fd = (lp - lm) / (2.0 * eps) * scale_mod;
+                let diff = (fd - ana_p[gx]).abs();
+                assert!(
+                    diff < 2.0e-2 || diff / fd.abs().max(1e-4) < 0.05,
+                    "d={} ch={} p_rot FD mismatch: fd={} ana={}",
+                    target_d,
+                    gx,
+                    fd,
+                    ana_p[gx]
+                );
+                for k in 0..planes_for_dim(target_d) {
+                    let mut mp2 = base.clone();
+                    mp2.planes[gx][k] += eps;
+                    let lp2 = eval_loss(&mp2);
+                    let mut mm2 = base.clone();
+                    mm2.planes[gx][k] -= eps;
+                    let lm2 = eval_loss(&mm2);
+                    let fd2 = (lp2 - lm2) / (2.0 * eps) * scale_mod;
+                    let diff2 = (fd2 - ana_pl[gx][k]).abs();
+                    assert!(
+                        diff2 < 2.0e-2 || diff2 / fd2.abs().max(1e-4) < 0.05,
+                        "d={} ch={} plane={} FD mismatch: fd={} ana={}",
+                        target_d,
+                        gx,
+                        k,
+                        fd2,
+                        ana_pl[gx][k]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_q14_hypersphere_proto_export_and_shared_backbone_ram() {
+        // 1. NonAbelianO4Rtrl: Q1.14 (i16) прототипы ровно в 2x компактнее и сохраняют argmax (step132)
+        let mut o4 = NonAbelianO4Rtrl::new(3, 2, 24, 42);
+        o4.enable_o4_proto_metric(12.0, 1.4, 0.12, 0.55, 0.05);
+        assert!(
+            o4.memory_footprint_bytes() < 32 * 1024,
+            "NonAbelianO4Rtrl proto_metric must free v_out_w/v_out_b"
+        );
+        let x0 = [1.0_f32, 0.0];
+        let x1 = [0.0_f32, 1.0];
+        for ep in 0..80usize {
+            o4.reset();
+            let seq: [&[f32]; 3] = if ep % 2 == 0 {
+                [&x0, &x1, &x0]
+            } else {
+                [&x1, &x0, &x1]
+            };
+            let target = ep % 2;
+            for (i, &x) in seq.iter().enumerate() {
+                let y = if i == 2 { Some(target) } else { None };
+                let _ = o4.step_and_learn_supervised(x, y, 0.04, 0.02);
+            }
+        }
+        let q14_o4 = o4.export_proto_q14();
+        assert_eq!(q14_o4.len(), o4.out_w.len());
+        assert_eq!(q14_o4.len() * 2, o4.out_w.len() * 4 / 2);
+        o4.reset();
+        let w_a: [&[f32]; 3] = [&x0, &x1, &x0];
+        let w_b: [&[f32]; 3] = [&x1, &x0, &x1];
+        assert_eq!(o4.predict_k_ahead_readonly(&w_a), o4.predict_k_ahead_q14_readonly(&w_a, &q14_o4));
+        assert_eq!(o4.predict_k_ahead_readonly(&w_b), o4.predict_k_ahead_q14_readonly(&w_b, &q14_o4));
+
+        // 2. AdaptiveOrthogonalRtrl: Q1.14 (i16) экспорт и совпадение argmax (step132)
+        let mut ad = AdaptiveOrthogonalRtrl::new(3, 2, 12, 77);
+        for ep in 0..60usize {
+            ad.reset();
+            let seq: [&[f32]; 2] = if ep % 2 == 0 { [&x0, &x1] } else { [&x1, &x0] };
+            let target = ep % 2;
+            for (i, &x) in seq.iter().enumerate() {
+                let _ = ad.step_supervised(x, i == 1, target, 0.03, 0.05);
+            }
+        }
+        let q14_ad = ad.export_proto_q14();
+        assert_eq!(q14_ad.len(), ad.proto.len());
+        let wa2: [&[f32]; 2] = [&x0, &x1];
+        let wb2: [&[f32]; 2] = [&x1, &x0];
+        assert_eq!(ad.predict_k_ahead_readonly(&wa2), ad.predict_k_ahead_q14_readonly(&wa2, &q14_ad));
+        assert_eq!(ad.predict_k_ahead_readonly(&wb2), ad.predict_k_ahead_q14_readonly(&wb2, &q14_ad));
+
+        // 3. UnifiedCayleyCore::one_config: shared_backbone + use_band0=false + 4-band IDBD < 45 KB на ELEC2
+        let u = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(2, 8, 1));
+        assert!(
+            u.memory_footprint_bytes() < 45 * 1024,
+            "Optimized UnifiedCayleyCore::one_config ELEC2 must be < 45 KB, got {} B",
+            u.memory_footprint_bytes()
+        );
+    }
+
+    #[test]
+    fn test_prime_fields_p997_and_p9973_primitive_roots_and_zero_oracle_contract() {
+        let mod_pow = |mut b: u64, mut e: u64, m: u64| -> u64 {
+            let mut r = 1u64;
+            b %= m;
+            while e > 0 {
+                if (e & 1) == 1 {
+                    r = (r * b) % m;
+                }
+                b = (b * b) % m;
+                e >>= 1;
+            }
+            r
+        };
+        let find_prim = |p: u64| -> u64 {
+            let phi = p - 1;
+            let mut n = phi;
+            let mut facs = Vec::new();
+            let mut d = 2u64;
+            while d * d <= n {
+                if n % d == 0 {
+                    facs.push(d);
+                    while n % d == 0 {
+                        n /= d;
+                    }
+                }
+                d += if d == 2 { 1 } else { 2 };
+            }
+            if n > 1 {
+                facs.push(n);
+            }
+            for g in 2..p {
+                if facs.iter().all(|&q| mod_pow(g, phi / q, p) != 1) {
+                    return g;
+                }
+            }
+            panic!("no primitive root for {p}");
+        };
+        assert_eq!(find_prim(997), 7);
+        let g9973 = find_prim(9973);
+        for &(p, g) in &[(997u64, 7u64), (9973u64, g9973)] {
+            // Проверка биекции pow <-> dlog на всей мультипликативной группе F_p^*
+            let mut seen = vec![false; p as usize];
+            let mut cur = 1u64;
+            for k in 0..(p - 1) {
+                assert!(!seen[cur as usize], "Non-primitive root g={g} mod {p} at k={k}");
+                seen[cur as usize] = true;
+                assert_eq!(mod_pow(g, k, p), cur);
+                cur = (cur * g) % p;
+            }
+            assert_eq!(cur, 1);
+            assert!(seen[1..].iter().all(|&s| s));
+            // Проверка циклической подгруппы порядка 12
+            let gs = mod_pow(g, (p - 1) / 12, p);
+            assert_eq!(mod_pow(gs, 12, p), 1);
+            assert_ne!(mod_pow(gs, 6, p), 1);
+            assert_ne!(mod_pow(gs, 4, p), 1);
         }
     }
 }

@@ -2,7 +2,7 @@
 
 [![GitHub](https://img.shields.io/badge/github-Worobushka%2Faxiom--zero-blue.svg)](https://github.com/Worobushka/axiom-zero)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
-[![Build Status](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](#running-tests)
 
 > **Compile-time totality validation and homeostatic runtime for zero-crash Rust systems.**
 
@@ -28,7 +28,7 @@ Production outages across modern backends, autonomous agents, and embedded devic
 
 | Layer | Mechanism | Engineering Guarantee |
 | :--- | :--- | :--- |
-| **Static Compiler Macro** (`#[axiom_zero]`) | AST-level validation pass (`[E001]`–`[E012]`) using `syn` | Statically prevents compilation of `panic!`, `assert!`/`debug_assert!`, `.unwrap*()`/`.expect*()` (methods & UFCS), `Option::None`, `todo!`, `unreachable!`, `exit`/`abort`, raw indexing `arr[i]`, raw `/` / `%`, formatting/collection macro bypasses, and transcendental float methods & UFCS paths (`exp`/`ln`/`sin`/`cos`/`tanh`/`powf`/etc.). |
+| **Static Compiler Macro** (`#[axiom_zero]`) | AST-level validation pass (`[E001]`–`[E013]`) using `syn` | Statically prevents compilation of `panic!`, `assert!`/`debug_assert!`, `.unwrap*()`/`.expect*()` (methods & UFCS), `Option::None`, `todo!`, `unreachable!`, `exit`/`abort`, raw indexing `arr[i]`, raw `/` / `%`, formatting/collection macro bypasses, transcendental float methods & UFCS paths (`exp`/`ln`/`sin`/`cos`/`tanh`/`powf`/etc.), and `.sqrt()` / UFCS `sqrt` (`[E013]`). |
 | **Total Presence Container** (`Presence<T>`) | Replacement for `Option<T>` | Eliminates unhandled absence; queries resolve to either a live payload or an explicit boundary fallback token. |
 | **Non-Empty Attractor** (`Attractor<S>`) | Structurally non-empty limit cycle `(head, tail)` | Period `>= 1` guaranteed by construction (`NonZeroUsize`) with zero-panic phase indexing and $\tau = 1$ perturbation recovery. |
 | **Total Slice & Arithmetic Guards** (`total_get`, `total_div_*`, `sanitize_bounded_f32`) | Bounds-checked & zero-safe runtime primitives | Eliminates out-of-bounds panics, integer/float division-by-zero traps, `NaN`/`Inf`, and extreme amplitude spikes. |
@@ -191,7 +191,7 @@ fn main() {
 
 ## Running Tests
 
-Run the unit and macro validation suite in `tests/api_tests.rs`:
+Run the unit, API (`tests/api_tests.rs`), and `20 compile_fail` macro-validation doctest suites:
 
 ```bash
 cargo test --manifest-path crates/axiom_zero/Cargo.toml
@@ -199,7 +199,7 @@ cargo test --manifest-path crates/axiom_zero/Cargo.toml
 
 ---
 
-## Validation Error Codes (`[E001]`–`[E012]`)
+## Validation Error Codes (`[E001]`–`[E013]`)
 
 Inside any `#[axiom_zero]` function, module, or `impl` block (`#[test]` and `#[cfg(test)]` are exempted):
 
@@ -212,8 +212,9 @@ Inside any `#[axiom_zero]` function, module, or `impl` block (`#[test]` and `#[c
 | `[E008]` | `assert*!`, `debug_assert*!` | `RelationalIdentity::measure` or `Presence<T>` |
 | `[E009]` | `exit`, `abort`, `panic_any` | Bounded recovery / boundary tokens |
 | `[E010]` | Raw indexing `arr[i]` and `Index::index` | `total_get`, `total_get_copy`, `total_set`, `mask_get`, `TotalSliceExt` |
-| `[E011]` | Raw division `/` and modulo `%` (including `Div::div` and inside `vec!`/`format!` macros) | `total_div_usize`, `total_rem_nonzero`, `total_div_f32`, `total_div_unit_shifted_f32` |
+| `[E011]` | Raw division `/` and modulo `%` (including `Div::div` and inside `vec!`/`format!` macros) | `total_div_usize`, `total_div_i64`, `total_div_i128`, `total_rem_nonzero`, `total_rem_i128`, `total_div_f32`, `total_div_unit_shifted_f32` |
 | `[E012]` | Transcendental float methods & UFCS calls (`exp`, `exp2`, `exp_m1`, `ln`, `ln_1p`, `log*`, `sin*`, `cos*`, `tan*`, `asin*`, `acos*`, `atan*`, `sinh`, `cosh`, `tanh`, `powf`) | Exact rational/algebraic operators (Cayley rotors, Kerr competition, rational softmax) |
+| `[E013]` | Floating-point `.sqrt()` and UFCS `f32::sqrt` / `f64::sqrt` (including inside macro-body tokens) | Bounded Newton-Raphson inverse-square-root (`inv_sqrt_newton_f32`, `sqrt_newton_f32`, `q8_24_inv_sqrt`) |
 
 ## Finite Stabilization & Slice Access
 

@@ -10,11 +10,12 @@
 //!
 //! `axiom_zero` replaces those fragile patterns with a constructive, non-annihilating model:
 //!
-//! * **Compile-Time Static Validation (`#[axiom_zero]`):** AST validation pass (`[E001]`–`[E012]`)
+//! * **Compile-Time Static Validation (`#[axiom_zero]`):** AST validation pass (`[E001]`–`[E013]`)
 //!   that rejects panics, assertions, `todo!`/`unimplemented!`/`unreachable!`, `.unwrap*()`/`.expect*()`
 //!   (method and UFCS paths), direct `None` references, terminating calls (`exit`/`abort`), raw indexing
-//!   (`arr[i]` and `Index::index`), raw division/modulo (`/` and `%`), macro-argument bypasses, and
-//!   transcendental float methods and UFCS paths (`exp`/`ln`/`sin`/`cos`/`tanh`/`powf`/etc.) at compile time.
+//!   (`arr[i]` and `Index::index`), raw division/modulo (`/` and `%`), macro-argument bypasses,
+//!   transcendental float methods and UFCS paths (`exp`/`ln`/`sin`/`cos`/`tanh`/`powf`/etc.), and
+//!   floating-point `.sqrt()` / `f32::sqrt` at compile time.
 //! * **Total Presence (`Presence<T>`):** Algebraic replacement for `Option<T>` that eliminates empty
 //!   null states by resolving every query to either a `Live(T)` payload or an explicit `Boundary(T)`
 //!   fallback token.
@@ -200,6 +201,24 @@
 //! }
 //! ```
 //!
+//! ```compile_fail
+//! use axiom_zero::axiom_zero;
+//!
+//! #[axiom_zero]
+//! fn bad_sqrt_method(x: f32) -> f32 {
+//!     x.sqrt()
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use axiom_zero::axiom_zero;
+//!
+//! #[axiom_zero]
+//! fn bad_sqrt_ufcs(x: f32) -> f32 {
+//!     f32::sqrt(x)
+//! }
+//! ```
+//!
 //! Total code compiles cleanly:
 //!
 //! ```rust
@@ -286,6 +305,20 @@ pub fn total_div_i64(num: i64, den: i64, fallback: i64) -> i64 {
 #[axiom_zero]
 #[inline]
 pub fn total_rem_i64(num: i64, den: i64, fallback: i64) -> i64 {
+    num.checked_rem(den).unwrap_or(fallback)
+}
+
+/// Total signed integer division on `i128`, catching both `den == 0` and `i128::MIN / -1` overflow.
+#[axiom_zero]
+#[inline]
+pub fn total_div_i128(num: i128, den: i128, fallback: i128) -> i128 {
+    num.checked_div(den).unwrap_or(fallback)
+}
+
+/// Total signed integer remainder on `i128`, catching both `den == 0` and `i128::MIN % -1` overflow.
+#[axiom_zero]
+#[inline]
+pub fn total_rem_i128(num: i128, den: i128, fallback: i128) -> i128 {
     num.checked_rem(den).unwrap_or(fallback)
 }
 
