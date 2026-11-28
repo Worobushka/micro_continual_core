@@ -2802,4 +2802,472 @@ mod tests {
             assert_ne!(mod_pow(gs, 4, p), 1);
         }
     }
+
+    #[test]
+    fn test_unified_p1_j_xor_algebra_fd_gradients_and_readonly() {
+        use crate::algebra::{cross_3d_pair, symplectic_j_xor_2d};
+        // 1. Точная антисимметрия и зануление диагонали J-XOR и 3D cross
+        let u2 = (1.35_f32, -0.82_f32);
+        let v2 = (-0.64_f32, 1.19_f32);
+        let om_uv = symplectic_j_xor_2d(u2, v2, true);
+        let om_vu = symplectic_j_xor_2d(v2, u2, true);
+        let om_uu = symplectic_j_xor_2d(u2, u2, true);
+        assert!((om_uv.0 + om_vu.0).abs() < 1e-6 && (om_uv.1 + om_vu.1).abs() < 1e-6);
+        assert!(om_uu.0.abs() < 1e-7 && om_uu.1.abs() < 1e-7);
+
+        let u3 = (0.7_f32, -1.2_f32, 0.4_f32);
+        let v3 = (-0.5_f32, 0.3_f32, 1.1_f32);
+        let c_uv = cross_3d_pair(u3, v3);
+        let c_vu = cross_3d_pair(v3, u3);
+        let c_uu = cross_3d_pair(u3, u3);
+        assert!((c_uv.0 + c_vu.0).abs() < 1e-6 && (c_uv.1 + c_vu.1).abs() < 1e-6 && (c_uv.2 + c_vu.2).abs() < 1e-6);
+        assert!(c_uu.0.abs() < 1e-7 && c_uu.1.abs() < 1e-7 && c_uu.2.abs() < 1e-7);
+        assert!((u3.0 * c_uv.0 + u3.1 * c_uv.1 + u3.2 * c_uv.2).abs() < 1e-6);
+
+        // 2. Точная проверка центральных конечных разностей через J-XOR + Cross3D + 2ndMoment + RMSNorm + RTRL
+        let seq: [[f32; 3]; 5] = [
+            [0.9, -0.5, 0.4],
+            [-0.7, 1.0, -0.3],
+            [0.5, 0.6, -0.8],
+            [-0.9, -0.4, 0.8],
+            [0.6, -0.7, 0.5],
+        ];
+        let mut cfg = UnifiedCayleyConfig::one_config(3, 3, 2026);
+        cfg.enable_j_xor = true;
+        cfg.learn_norm = false;
+        cfg.exact_inv_sqrt = true;
+        let mut base = UnifiedCayleyCore::new(cfg);
+        assert_eq!(base.ws.nl_dim, 16);
+        for (i, w) in base.slots[0].actor_w.iter_mut().enumerate() {
+            *w += 0.14 * (((i as f32) * 0.63).sin());
+        }
+        for (i, w) in base.slots[0].critic_w.iter_mut().enumerate() {
+            *w = 0.15 * (((i as f32) * 0.47 + 0.3).cos());
+        }
+        for i in 0..base.slots[0].b1_beta.len() {
+            base.slots[0].b1_beta[i] = 0.3 * if (i & 1) == 0 { 1.0 } else { -1.0 };
+        }
+        for i in 0..base.slots[0].b2_beta.len() {
+            base.slots[0].b2_beta[i] = 0.3 * if (i & 1) == 0 { 1.0 } else { -1.0 };
+        }
+
+        let eval_obj = |core_tpl: &UnifiedCayleyCore, mutate: &dyn Fn(&mut UnifiedCayleyCore)| -> f64 {
+            let mut c = core_tpl.clone();
+            mutate(&mut c);
+            c.start_episode();
+            for x in &seq {
+                c.forward_and_rtrl_traces(x, false, false, false);
+            }
+            (c.ws.probs[0] as f64).ln() + (c.ws.critic_val as f64)
+        };
+
+        let mut c = base.clone();
+        c.start_episode();
+        for x in &seq {
+            c.forward_and_rtrl_traces(x, false, true, false);
+        }
+        let mut lerrs = [0.0_f32; 3];
+        UnifiedCayleyCore::fill_p4_logprob_grads(&c.ws.logits, &c.ws.probs, &c.ws.psis, 0, &mut lerrs);
+        c.compute_instant_rtrl_grads(&lerrs, 1.0);
+
+        let tol = 6e-4_f64;
+        let eps = 1e-3_f32;
+        let mut max_abs_g = 0.0_f64;
+        let mut check = |name: &str, ana: f32, set_fn: &dyn Fn(&mut UnifiedCayleyCore, f32)| {
+            let jp = eval_obj(&base, &|m| set_fn(m, eps));
+            let jm = eval_obj(&base, &|m| set_fn(m, -eps));
+            let fd = (jp - jm) / (2.0 * eps as f64);
+            let err = (ana as f64 - fd).abs();
+            max_abs_g = max_abs_g.max(fd.abs());
+            assert!(err < tol, "P1 J-XOR FD mismatch on {name}: ana={ana:.6}, fd={fd:.6}, err={err:.6}");
+        };
+
+        for b in 0..5usize {
+            check("gate_logits", c.ws.g_gates[b], &move |m, d| { m.slots[0].gate_logits[b] += d; });
+        }
+        for k in [0usize, 1, 2, 8, 12, 14, 15] {
+            check("b1_alpha", c.ws.g_b1_alpha[k], &move |m, d| { m.slots[0].b1_alpha[k] += d; });
+            check("b1_omega", c.ws.g_b1_omega[k], &move |m, d| { m.slots[0].b1_omega[k] += d; });
+        }
+        for s in [0usize, 3, 4, 7] {
+            check("b2_alpha", c.ws.g_b2_alpha[s], &move |m, d| { m.slots[0].b2_alpha[s] += d; });
+            check("b2_omega", c.ws.g_b2_omega[s], &move |m, d| { m.slots[0].b2_omega[s] += d; });
+        }
+        for j in 0..12usize {
+            check("b1_in_w", c.ws.g_b1_inw[j], &move |m, d| { m.slots[0].b1_in_w[j] += d; });
+            check("b2_in_w", c.ws.g_b2_inw[j], &move |m, d| { m.slots[0].b2_in_w[j] += d; });
+        }
+        assert!(max_abs_g > 1e-2, "trivial zero gradient in P1 J-XOR check: {max_abs_g}");
+
+        // 3. Read-only эквивалентность + ленивая аллокация (0 байт при false) + бюджет RAM <= 40 KB на ELEC2
+        let qrefs: [&[f32]; 5] = [&seq[0], &seq[1], &seq[2], &seq[3], &seq[4]];
+        let ro_pred = base.predict_class_readonly(&qrefs);
+        let mut mut_core = base.clone();
+        mut_core.start_episode();
+        let mut mut_pred = 0usize;
+        for x in &seq {
+            mut_pred = mut_core.step_supervised_class(x, 0, false, false, false).0;
+        }
+        assert_eq!(ro_pred, mut_pred, "P1 J-XOR predict_class_readonly diverged");
+
+        let off_core = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config_v050(2, 8, 1));
+        assert_eq!(off_core.ws.nl_raw.len(), 0);
+        assert_eq!(off_core.ws.grad_nl_raw.len(), 0);
+        let on_core = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(2, 8, 1));
+        assert!(
+            on_core.memory_footprint_bytes() <= 40 * 1024,
+            "P1 ELEC2 RAM {} > 40 KB",
+            on_core.memory_footprint_bytes()
+        );
+    }
+
+    #[test]
+    fn test_unified_p2_bank_rotor_adapter_fd_seu_and_readonly() {
+        let seq: [[f32; 3]; 5] = [
+            [0.8, -0.5, 0.3],
+            [-0.6, 0.9, -0.4],
+            [0.4, 0.7, -0.8],
+            [-0.7, -0.3, 0.6],
+            [0.5, -0.6, 0.4],
+        ];
+        let mut cfg = UnifiedCayleyConfig::one_config(3, 3, 2027);
+        cfg.enable_j_xor = true;
+        cfg.enable_bank_rotor_adapter = true;
+        cfg.learn_norm = false;
+        cfg.exact_inv_sqrt = true;
+        let mut base = UnifiedCayleyCore::new(cfg);
+        base.active_slot = 1; // Проверяем работу адаптера на ненулевом банке с общим хребтом slots[0]!
+        for (i, w) in base.slots[1].actor_w.iter_mut().enumerate() {
+            *w += 0.13 * (((i as f32) * 0.59).sin());
+        }
+        for (i, w) in base.slots[1].critic_w.iter_mut().enumerate() {
+            *w = 0.14 * (((i as f32) * 0.41 + 0.2).cos());
+        }
+        for (k, t) in base.slots[1].adapter_b1_t.iter_mut().enumerate() {
+            *t = 0.35 * if (k & 1) == 0 { 1.0 } else { -0.8 };
+        }
+        for (i, g) in base.slots[1].adapter_b2_g.iter_mut().enumerate() {
+            *g = 0.28 * (((i as f32) * 0.73).cos());
+        }
+
+        let eval_obj = |core_tpl: &UnifiedCayleyCore, mutate: &dyn Fn(&mut UnifiedCayleyCore)| -> f64 {
+            let mut c = core_tpl.clone();
+            mutate(&mut c);
+            c.start_episode();
+            for x in &seq {
+                c.forward_and_rtrl_traces(x, false, false, false);
+            }
+            (c.ws.probs[0] as f64).ln() + (c.ws.critic_val as f64)
+        };
+
+        let mut c = base.clone();
+        c.start_episode();
+        for x in &seq {
+            c.forward_and_rtrl_traces(x, false, true, false);
+        }
+        let mut lerrs = [0.0_f32; 3];
+        UnifiedCayleyCore::fill_p4_logprob_grads(&c.ws.logits, &c.ws.probs, &c.ws.psis, 0, &mut lerrs);
+        c.compute_instant_rtrl_grads(&lerrs, 1.0);
+
+        let tol = 6e-4_f64;
+        let eps = 1e-3_f32;
+        let mut max_abs_g = 0.0_f64;
+        let mut check = |name: &str, ana: f32, set_fn: &dyn Fn(&mut UnifiedCayleyCore, f32)| {
+            let jp = eval_obj(&base, &|m| set_fn(m, eps));
+            let jm = eval_obj(&base, &|m| set_fn(m, -eps));
+            let fd = (jp - jm) / (2.0 * eps as f64);
+            let err = (ana as f64 - fd).abs();
+            max_abs_g = max_abs_g.max(fd.abs());
+            assert!(err < tol, "P2 Adapter FD mismatch on {name}: ana={ana:.6}, fd={fd:.6}, err={err:.6}");
+        };
+
+        for k in [0usize, 1, 4, 8, 12, 15] {
+            check("adapter_b1_t", c.ws.g_adapter_b1_t[k], &move |m, d| { m.slots[1].adapter_b1_t[k] += d; });
+            check("b1_omega_bb", c.ws.g_b1_omega[k], &move |m, d| { m.slots[0].b1_omega[k] += d; });
+        }
+        for i in [0usize, 1, 2, 9, 10, 11, 21, 22, 23] {
+            check("adapter_b2_g", c.ws.g_adapter_b2_g[i], &move |m, d| { m.slots[1].adapter_b2_g[i] += d; });
+        }
+        for s in [0usize, 3, 4, 7] {
+            check("b2_omega_bb", c.ws.g_b2_omega[s], &move |m, d| { m.slots[0].b2_omega[s] += d; });
+        }
+        assert!(max_abs_g > 1e-2, "trivial zero gradient in P2 check: {max_abs_g}");
+
+        // Read-only эквивалентность на ненулевом банке 1
+        let qrefs: [&[f32]; 5] = [&seq[0], &seq[1], &seq[2], &seq[3], &seq[4]];
+        let ro_pred = base.predict_class_readonly(&qrefs);
+        let mut mut_core = base.clone();
+        mut_core.start_episode();
+        let mut mut_pred = 0usize;
+        for x in &seq {
+            mut_pred = mut_core.step_supervised_class(x, 0, false, false, false).0;
+        }
+        assert_eq!(ro_pred, mut_pred, "P2 Adapter predict_class_readonly diverged on bank 1");
+
+        // SEU-инъекция (включая critic_w и роторный адаптер!) и полная очистка без NaN
+        let mut seu_core = base.clone();
+        seu_core.slots[1].critic_w[0] = 1.25;
+        seu_core.slots[1].adapter_b1_t[0] = 1.25;
+        seu_core.slots[1].adapter_b2_g[0] = 1.25;
+        seu_core.inject_weight_bit30_seu(1);
+        let pred_r = seu_core.step_supervised_reg(&seq[0], 0.5, true, true, true);
+        assert!(pred_r.is_finite(), "P2 SEU reg output non-finite");
+        assert!(seu_core.seu_faults_scrubbed >= 3, "P2 SEU must scrub critic_w + adapters, got {}", seu_core.seu_faults_scrubbed);
+
+        // RAM бюджет: ELEC2 <= 38.5 KB (<= 40 KB) и 0 байт при отключении
+        let off = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config_v050(2, 8, 1));
+        assert_eq!(off.slots[0].adapter_b1_t.len(), 0);
+        assert_eq!(off.slots[0].adapter_b2_g.len(), 0);
+        let on_elec = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(2, 8, 1));
+        assert!(
+            on_elec.memory_footprint_bytes() <= 40 * 1024,
+            "P2 ELEC2 RAM {} > 40 KB",
+            on_elec.memory_footprint_bytes()
+        );
+    }
+
+    #[test]
+    fn test_unified_p3_finsler_randers_diode_fd_and_readonly() {
+        // 1. Строгая положительность и необратимая асимметрия tau(v, delta) != tau(v, -delta) + нормированный контраст in (-1, 1)
+        let (tp2, _, _) = algebra::finsler_randers_diode_2d((0.8, -0.5), (0.9, -0.4), 0.25, true);
+        let (tm2, _, _) = algebra::finsler_randers_diode_2d((0.8, -0.5), (-0.9, 0.4), 0.25, true);
+        assert!(tp2 > 0.0 && tm2 > 0.0 && tp2 > tm2 + 0.5, "2D Randers asymmetry failed: {tp2} vs {tm2}");
+        let (cp2, _, _) = algebra::finsler_randers_contrast_2d((0.8, -0.5), (0.9, -0.4), 0.25, true);
+        let (cm2, _, _) = algebra::finsler_randers_contrast_2d((0.8, -0.5), (-0.9, 0.4), 0.25, true);
+        assert!(cp2.abs() < 1.0 && (cp2 + cm2).abs() < 1e-6 && cp2 > 0.3, "2D contrast failed: {cp2} vs {cm2}");
+        assert_eq!(algebra::finsler_randers_contrast_2d((0.0, 0.0), (0.9, -0.4), 0.25, true).0, 0.0);
+        let (tp3, _, _) = algebra::finsler_randers_diode_3d((0.7, -0.6, 0.5), (0.8, -0.5, 0.4), 0.25, true);
+        let (tm3, _, _) = algebra::finsler_randers_diode_3d((0.7, -0.6, 0.5), (-0.8, 0.5, -0.4), 0.25, true);
+        assert!(tp3 > 0.0 && tm3 > 0.0 && tp3 > tm3 + 0.5, "3D Randers asymmetry failed: {tp3} vs {tm3}");
+        let (cp3, _, _) = algebra::finsler_randers_contrast_3d((0.7, -0.6, 0.5), (0.8, -0.5, 0.4), 0.25, true);
+        let (cm3, _, _) = algebra::finsler_randers_contrast_3d((0.7, -0.6, 0.5), (-0.8, 0.5, -0.4), 0.25, true);
+        assert!(cp3.abs() < 1.0 && (cp3 + cm3).abs() < 1e-6 && cp3 > 0.3, "3D contrast failed: {cp3} vs {cm3}");
+        assert_eq!(algebra::finsler_randers_contrast_3d((0.0, 0.0, 0.0), (0.8, -0.5, 0.4), 0.25, true).0, 0.0);
+
+        // 2. Точная FD-верификация RTRL-градиентов с включённым Finsler-Randers диодом
+        let seq: [[f32; 3]; 5] = [
+            [0.85, -0.45, 0.35],
+            [-0.55, 0.80, -0.30],
+            [0.45, 0.65, -0.75],
+            [-0.65, -0.35, 0.70],
+            [0.60, -0.50, 0.40],
+        ];
+        let mut cfg = UnifiedCayleyConfig::one_config(3, 3, 2028);
+        cfg.enable_finsler_diode = true;
+        cfg.learn_norm = false;
+        cfg.exact_inv_sqrt = true;
+        let mut base = UnifiedCayleyCore::new(cfg);
+        for (i, w) in base.slots[0].actor_w.iter_mut().enumerate() {
+            *w += 0.14 * (((i as f32) * 0.61).sin());
+        }
+        for (i, w) in base.slots[0].critic_w.iter_mut().enumerate() {
+            *w = 0.13 * (((i as f32) * 0.37 + 0.3).cos());
+        }
+        for i in 0..base.slots[0].b1_beta.len() {
+            base.slots[0].b1_beta[i] = 0.45 * if (i & 1) == 0 { 1.0 } else { -0.8 };
+        }
+        for i in 0..base.slots[0].b2_beta.len() {
+            base.slots[0].b2_beta[i] = 0.40 * if (i & 1) == 0 { 1.0 } else { -0.7 };
+        }
+        for (i, v) in base.slots[0].b1_vdrift.iter_mut().enumerate() {
+            *v = 0.55 * (((i as f32) * 0.83 + 0.1).sin());
+        }
+        for (i, v) in base.slots[0].b2_vdrift.iter_mut().enumerate() {
+            *v = 0.50 * (((i as f32) * 0.71 - 0.2).cos());
+        }
+        for (i, q) in base.slots[0].b1_qfb.iter_mut().enumerate() {
+            *q = 0.25 * (((i as f32) * 0.47).cos());
+        }
+        for (i, q) in base.slots[0].b2_qfb.iter_mut().enumerate() {
+            *q = 0.25 * (((i as f32) * 0.53).sin());
+        }
+
+        let eval_obj = |core_tpl: &UnifiedCayleyCore, mutate: &dyn Fn(&mut UnifiedCayleyCore)| -> f64 {
+            let mut c = core_tpl.clone();
+            mutate(&mut c);
+            c.start_episode();
+            for x in &seq {
+                c.forward_and_rtrl_traces(x, false, false, false);
+            }
+            (c.ws.probs[0] as f64).ln() + (c.ws.critic_val as f64)
+        };
+
+        let mut c = base.clone();
+        c.start_episode();
+        for x in &seq {
+            c.forward_and_rtrl_traces(x, false, true, false);
+        }
+        let mut lerrs = [0.0_f32; 3];
+        UnifiedCayleyCore::fill_p4_logprob_grads(&c.ws.logits, &c.ws.probs, &c.ws.psis, 0, &mut lerrs);
+        c.compute_instant_rtrl_grads(&lerrs, 1.0);
+
+        let tol = 6e-4_f64;
+        let eps = 1e-3_f32;
+        let mut max_abs_g = 0.0_f64;
+        let mut check = |name: &str, ana: f32, set_fn: &dyn Fn(&mut UnifiedCayleyCore, f32)| {
+            let jp = eval_obj(&base, &|m| set_fn(m, eps));
+            let jm = eval_obj(&base, &|m| set_fn(m, -eps));
+            let fd = (jp - jm) / (2.0 * eps as f64);
+            let err = (ana as f64 - fd).abs();
+            max_abs_g = max_abs_g.max(fd.abs());
+            assert!(err < tol, "P3 Diode FD mismatch on {name}: ana={ana:.6}, fd={fd:.6}, err={err:.6}");
+        };
+
+        for idx in [0usize, 1, 2, 3, 16, 17, 30, 31] {
+            check("b1_vdrift", c.ws.g_b1_vdrift[idx], &move |m, d| { m.slots[0].b1_vdrift[idx] += d; });
+            check("b1_qfb", c.ws.g_b1_qfb[idx], &move |m, d| { m.slots[0].b1_qfb[idx] += d; });
+        }
+        for idx in [0usize, 1, 2, 9, 10, 11, 21, 22, 23] {
+            check("b2_vdrift", c.ws.g_b2_vdrift[idx], &move |m, d| { m.slots[0].b2_vdrift[idx] += d; });
+            check("b2_qfb", c.ws.g_b2_qfb[idx], &move |m, d| { m.slots[0].b2_qfb[idx] += d; });
+        }
+        for j in 0..12usize {
+            check("b1_in_w", c.ws.g_b1_inw[j], &move |m, d| { m.slots[0].b1_in_w[j] += d; });
+            check("b2_in_w", c.ws.g_b2_inw[j], &move |m, d| { m.slots[0].b2_in_w[j] += d; });
+        }
+        for k in [0usize, 1, 8, 15] {
+            check("b1_beta", c.ws.g_b1_beta[k], &move |m, d| { m.slots[0].b1_beta[k] += d; });
+        }
+        for s in [0usize, 3, 7] {
+            check("b2_beta", c.ws.g_b2_beta[s], &move |m, d| { m.slots[0].b2_beta[s] += d; });
+        }
+        assert!(max_abs_g > 1e-2, "trivial zero gradient in P3 diode check: {max_abs_g}");
+
+        // 3. Read-only эквивалентность + 0 байт при отключении + строгие RAM бюджеты
+        let qrefs: [&[f32]; 5] = [&seq[0], &seq[1], &seq[2], &seq[3], &seq[4]];
+        let ro_pred = base.predict_class_readonly(&qrefs);
+        let mut mut_core = base.clone();
+        mut_core.start_episode();
+        let mut mut_pred = 0usize;
+        for x in &seq {
+            mut_pred = mut_core.step_supervised_class(x, 0, false, false, false).0;
+        }
+        assert_eq!(ro_pred, mut_pred, "P3 Diode predict_class_readonly diverged");
+
+        let off = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config_v050(2, 8, 1));
+        assert_eq!(off.slots[0].b1_vdrift.len(), 0);
+        assert_eq!(off.ws.s_b1_vdrift.len(), 0);
+        let on_elec = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(2, 8, 1));
+        let on_rp = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(3, 3, 1));
+        assert!(
+            on_elec.memory_footprint_bytes() <= 40 * 1024,
+            "P3 ELEC2 RAM {} > 40 KB",
+            on_elec.memory_footprint_bytes()
+        );
+        assert!(
+            on_rp.memory_footprint_bytes() <= 32 * 1024,
+            "P3 RepeatPrev RAM {} > 32 KB",
+            on_rp.memory_footprint_bytes()
+        );
+    }
+
+    #[test]
+    fn test_unified_p4_lyapunov_lk_balance_readonly_and_ram() {
+        // 1. Свойства гейта Ляпунова: (0, 1], == 1 ниже порога, строго убывает при росте всплеска
+        let g_calm = algebra::lyapunov_backbone_gate(0.10, 0.25, 1.5, 2.25, 0.02);
+        let g_mild = algebra::lyapunov_backbone_gate(1.00, 0.25, 1.5, 2.25, 0.02);
+        let g_spike = algebra::lyapunov_backbone_gate(10.0, 0.25, 1.5, 2.25, 0.02);
+        assert!((g_calm - 1.0).abs() < 1e-6, "calm gate must be 1.0, got {g_calm}");
+        assert!(g_mild > 0.0 && g_mild < 1.0, "mild spike must damp gate: {g_mild}");
+        assert!(g_spike > 0.0 && g_spike < g_mild, "larger spike must damp more: {g_spike} vs {g_mild}");
+
+        // 2. Свойства рационального баланса Либеля-Кёрнера
+        let mut s_hi = 0.5_f32;
+        let w0 = algebra::rational_lk_balance_step(&mut s_hi, 4.0, 0.05, 0.35, 0.5, 1.8);
+        let w1 = algebra::rational_lk_balance_step(&mut s_hi, 4.0, 0.05, 0.35, 0.5, 1.8);
+        assert!(s_hi > 0.5 && w1 < w0 && w1 >= 0.5, "large loss must increase s and lower w: s={s_hi}, w0={w0}, w1={w1}");
+        let mut s_lo = 1.0_f32;
+        let wl0 = algebra::rational_lk_balance_step(&mut s_lo, 0.01, 0.05, 0.35, 0.5, 1.8);
+        let wl1 = algebra::rational_lk_balance_step(&mut s_lo, 0.01, 0.05, 0.35, 0.5, 1.8);
+        assert!(s_lo < 1.0 && wl1 > wl0 && wl1 <= 1.8, "small loss must lower s and raise w: s={s_lo}, wl0={wl0}, wl1={wl1}");
+
+        // 3. Read-only эквивалентность ПОСЛЕ count >= 32 (adaptive_var_floor активен) + 10-order jump stability
+        let mut core = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(2, 4, 2029));
+        let warm_seq: [[f32; 4]; 8] = [
+            [0.01, 0.50, 0.02, 0.80],
+            [0.02, 0.51, 0.03, 0.79],
+            [0.03, 0.49, 0.01, 0.81],
+            [0.04, 0.52, 0.04, 0.78],
+            [0.02, 0.48, 0.02, 0.82],
+            [0.05, 0.50, 0.03, 0.77],
+            [0.01, 0.53, 0.02, 0.80],
+            [0.03, 0.47, 0.04, 0.83],
+        ];
+        core.start_episode();
+        for rep in 0..5usize {
+            for (t, x) in warm_seq.iter().enumerate() {
+                let _ = core.step_supervised_class(x, (t + rep) & 1, true, true, false);
+            }
+        }
+        assert!(core.in_cond.count >= 40);
+        let qrefs: [&[f32]; 4] = [&warm_seq[0], &warm_seq[1], &warm_seq[2], &warm_seq[3]];
+        let ro_pred = core.predict_class_readonly(&qrefs);
+        let mut mut_core = core.clone();
+        mut_core.start_episode();
+        let mut mut_pred = 0usize;
+        for x in &warm_seq[..4] {
+            mut_pred = mut_core.step_supervised_class(x, 0, false, false, false).0;
+        }
+        assert_eq!(ro_pred, mut_pred, "P4 adaptive_var_floor predict_class_readonly diverged");
+
+        // 10-order jump without NaN/Inf
+        let r_jump = core.step_supervised_reg(&[1e5, -1e5, 1e-5, 0.0], 0.5, true, true, true);
+        assert!(r_jump.is_finite(), "P4 10-order jump non-finite: {r_jump}");
+
+        // 4. Строгий RAM-бюджет на реальных конфигурациях ELEC2 (2, 8) <= 40 KB и RepeatPrev (4, 4) <= 32 KB
+        let elec_core = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(2, 8, 1));
+        let rp_core = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(4, 4, 1));
+        assert!(
+            elec_core.memory_footprint_bytes() <= 40 * 1024,
+            "P4 ELEC2 (2,8) RAM {} > 40 KB",
+            elec_core.memory_footprint_bytes()
+        );
+        assert!(
+            rp_core.memory_footprint_bytes() <= 32 * 1024,
+            "P4 RepeatPrev (4,4) RAM {} > 32 KB",
+            rp_core.memory_footprint_bytes()
+        );
+    }
+
+    #[test]
+    fn test_adaptive_od_p5_anchor_utilization_and_plateau_gating() {
+        // 1. RAM бюджет на S_6 (720 классов, M=2, D_MAX=6) строго < 260 KB с m_theta (без плацебо plane_anchor)
+        let big = AdaptiveOrthogonalRtrl::new(2, 4, 720, 42);
+        assert!(
+            big.memory_footprint_bytes() < 260 * 1024,
+            "P5 AdaptiveOrthogonalRtrl S6 RAM {} >= 260 KB",
+            big.memory_footprint_bytes()
+        );
+
+        // 2. Утилизация оболочки: сразу после апгрейда 2->3 новые плоскости ~1e-9 -> active_ratio == 0 -> блокирует ложную эскалацию
+        let mut net = AdaptiveOrthogonalRtrl::new(2, 3, 12, 101);
+        assert_eq!(net.current_shell_utilization(), (1.0, 1.0));
+        assert!(net.upgrade_dimension_isometric());
+        assert_eq!(net.active_dim, 3);
+        assert_eq!(net.prev_active_dim, 2);
+        assert_eq!(net.prev_active_planes, 1);
+        let (ar0, e0) = net.current_shell_utilization();
+        assert!(ar0 < 0.01 && e0 < 1e-6, "freshly opened shell must report ~0 utilization: ({ar0}, {e0})");
+        // Новые плоскости получили свежий rms_theta = 0.04 и обнулённый m_theta = 0.0
+        for ch in 0..(net.frames * net.num_inputs) {
+            let base = ch * ADAPTIVE_PARAMS_PER_CH;
+            assert!((net.rms_theta[base + 1] - 0.04).abs() < 1e-6);
+            assert!((net.rms_theta[base + 2] - 0.04).abs() < 1e-6);
+            assert!(net.m_theta[base + 1].abs() < 1e-6);
+        }
+
+        // 3. Проверка 2-блокового плато в d=2: при активно растущем fast_ema > slow_ema + 0.015 эскалация запрещена!
+        let mut climb = AdaptiveOrthogonalRtrl::new(2, 2, 7, 77);
+        climb.eps_in_dim = 600;
+        climb.fast_ema = 0.80;
+        climb.slow_ema = 0.70;
+        climb.prev_block_acc = 0.75;
+        climb.win_hits = 400;
+        climb.win_total = 600;
+        climb.block_hits = 148;
+        climb.block_total = 199;
+        climb.seen_classes = 7;
+        assert!(!climb.observe_episode_hit(true, 0), "must not escalate while fast_ema is actively climbing");
+        assert_eq!(climb.active_dim, 2);
+    }
 }

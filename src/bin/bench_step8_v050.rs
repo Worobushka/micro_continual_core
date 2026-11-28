@@ -2166,9 +2166,11 @@ fn run_suite_c() {
     println!("==========================================================================================");
     println!(" SUITE C: No-FPU Fixed-Point Q8.24/Q39.24 Determinism & Digest Verification");
     println!("==========================================================================================");
-    #[cfg(feature = "strict_deterministic")]
+    #[cfg(target_arch = "wasm32")]
+    println!("  Build mode: wasm32-wasip1 (32-bit WebAssembly; Q8.24/Q39.24 path 100% integer)");
+    #[cfg(all(not(target_arch = "wasm32"), feature = "strict_deterministic"))]
     println!("  Build mode: strict_deterministic (SIMD/FMA disabled)");
-    #[cfg(not(feature = "strict_deterministic"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "strict_deterministic")))]
     println!("  Build mode: default release (x86_64 SIMD enabled for float path; Q8.24 path 100% integer)");
 
     // 1. q8_24_inv_sqrt по 10+ порядкам & FixedO4Rotor 10k-step drift
@@ -2241,26 +2243,27 @@ fn run_suite_c() {
             .iter()
             .map(|(x, y)| (x.iter().map(|&v| Q39_24::from_f32_boundary(v)).collect(), *y))
             .collect();
+        let run_elec_seed = |sd: u64| -> (f64, f64, u64) {
+            let mut core = FixedCayleyCore::new(d_in, 2, sd);
+            core.reset_episode();
+            let t_s = Instant::now();
+            let mut hits = 0usize;
+            for (qx, y) in &elec_q {
+                let p = core.step_supervised_class_q(qx, *y, true);
+                if p == *y {
+                    hits += 1;
+                }
+            }
+            let us = t_s.elapsed().as_secs_f64() * 1e6 / elec_q.len() as f64;
+            (hits as f64 * 100.0 / elec_q.len() as f64, us, core.state_digest_fnv1a())
+        };
+        #[cfg(target_arch = "wasm32")]
+        let res: Vec<(f64, f64, u64)> = seeds.iter().map(|&sd| run_elec_seed(sd)).collect();
+        #[cfg(not(target_arch = "wasm32"))]
         let res: Vec<(f64, f64, u64)> = thread::scope(|s| {
             let hs: Vec<_> = seeds
                 .iter()
-                .map(|&sd| {
-                    let data_ref = &elec_q;
-                    s.spawn(move || {
-                        let mut core = FixedCayleyCore::new(d_in, 2, sd);
-                        core.reset_episode();
-                        let t_s = Instant::now();
-                        let mut hits = 0usize;
-                        for (qx, y) in data_ref {
-                            let p = core.step_supervised_class_q(qx, *y, true);
-                            if p == *y {
-                                hits += 1;
-                            }
-                        }
-                        let us = t_s.elapsed().as_secs_f64() * 1e6 / data_ref.len() as f64;
-                        (hits as f64 * 100.0 / data_ref.len() as f64, us, core.state_digest_fnv1a())
-                    })
-                })
+                .map(|&sd| s.spawn(move || run_elec_seed(sd)))
                 .collect();
             hs.into_iter().map(|h| h.join().unwrap()).collect()
         });
@@ -2309,59 +2312,59 @@ fn run_suite_c() {
             })
             .collect();
 
+        let in_d = fd1.in_dim;
+        let run_fd1_seed = |sd: u64| -> (f64, f64, f64, f64, u64) {
+            let mut core = FixedCayleyCore::new(in_d, 2, sd);
+            let mut cyc = 0usize;
+            let t_s = Instant::now();
+            for pass in 0..3usize {
+                let mut order: Vec<usize> = (0..train_q.len()).collect();
+                let mut rng = splitmix64(sd.wrapping_mul(131) ^ (pass as u64 + 17));
+                for i in (1..order.len()).rev() {
+                    rng = splitmix64(rng);
+                    let j = (rng % ((i + 1) as u64)) as usize;
+                    order.swap(i, j);
+                }
+                for &uid in &order {
+                    core.reset_episode();
+                    for (qx, qy) in train_q[uid].0.iter().zip(train_q[uid].1.iter()) {
+                        let _ = core.step_supervised_reg_q(qx, *qy, true);
+                        cyc += 1;
+                    }
+                }
+            }
+            let us = t_s.elapsed().as_secs_f64() * 1e6 / cyc.max(1) as f64;
+            let mut se = 0.0_f64;
+            let mut ss = 0.0_f64;
+            let mut tp = 0usize;
+            let mut fn_c = 0usize;
+            for (qfeats, end_rul) in &test_q {
+                let mut m = core.clone();
+                m.reset_episode();
+                let mut last_p = Q39_24(0);
+                for qx in qfeats {
+                    last_p = m.step_supervised_reg_q(qx, Q39_24(0), false);
+                }
+                let p_rul = (last_p.to_f32_boundary().clamp(0.0, 1.0) * CMAPSS_RUL_MAX) as f64;
+                let y = *end_rul as f64;
+                let d = p_rul - y;
+                se += d * d;
+                ss += if d < 0.0 { (-d / 13.0).exp() - 1.0 } else { (d / 10.0).exp() - 1.0 };
+                if y <= CMAPSS_CRIT_RUL as f64 {
+                    if p_rul <= CMAPSS_CRIT_RUL as f64 { tp += 1; } else { fn_c += 1; }
+                }
+            }
+            let rmse = (se / test_q.len().max(1) as f64).sqrt();
+            let rec = if tp + fn_c > 0 { tp as f64 * 100.0 / (tp + fn_c) as f64 } else { 0.0 };
+            (rmse, ss, rec, us, core.state_digest_fnv1a())
+        };
+        #[cfg(target_arch = "wasm32")]
+        let res: Vec<(f64, f64, f64, f64, u64)> = seeds.iter().map(|&sd| run_fd1_seed(sd)).collect();
+        #[cfg(not(target_arch = "wasm32"))]
         let res: Vec<(f64, f64, f64, f64, u64)> = thread::scope(|s| {
             let hs: Vec<_> = seeds
                 .iter()
-                .map(|&sd| {
-                    let tr_ref = &train_q;
-                    let te_ref = &test_q;
-                    let in_d = fd1.in_dim;
-                    s.spawn(move || {
-                        let mut core = FixedCayleyCore::new(in_d, 2, sd);
-                        let mut cyc = 0usize;
-                        let t_s = Instant::now();
-                        for pass in 0..3usize {
-                            let mut order: Vec<usize> = (0..tr_ref.len()).collect();
-                            let mut rng = splitmix64(sd.wrapping_mul(131) ^ (pass as u64 + 17));
-                            for i in (1..order.len()).rev() {
-                                rng = splitmix64(rng);
-                                let j = (rng as usize) % (i + 1);
-                                order.swap(i, j);
-                            }
-                            for &uid in &order {
-                                core.reset_episode();
-                                for (qx, qy) in tr_ref[uid].0.iter().zip(tr_ref[uid].1.iter()) {
-                                    let _ = core.step_supervised_reg_q(qx, *qy, true);
-                                    cyc += 1;
-                                }
-                            }
-                        }
-                        let us = t_s.elapsed().as_secs_f64() * 1e6 / cyc.max(1) as f64;
-                        let mut se = 0.0_f64;
-                        let mut ss = 0.0_f64;
-                        let mut tp = 0usize;
-                        let mut fn_c = 0usize;
-                        for (qfeats, end_rul) in te_ref {
-                            let mut m = core.clone();
-                            m.reset_episode();
-                            let mut last_p = Q39_24(0);
-                            for qx in qfeats {
-                                last_p = m.step_supervised_reg_q(qx, Q39_24(0), false);
-                            }
-                            let p_rul = (last_p.to_f32_boundary().clamp(0.0, 1.0) * CMAPSS_RUL_MAX) as f64;
-                            let y = *end_rul as f64;
-                            let d = p_rul - y;
-                            se += d * d;
-                            ss += if d < 0.0 { (-d / 13.0).exp() - 1.0 } else { (d / 10.0).exp() - 1.0 };
-                            if y <= CMAPSS_CRIT_RUL as f64 {
-                                if p_rul <= CMAPSS_CRIT_RUL as f64 { tp += 1; } else { fn_c += 1; }
-                            }
-                        }
-                        let rmse = (se / te_ref.len().max(1) as f64).sqrt();
-                        let rec = if tp + fn_c > 0 { tp as f64 * 100.0 / (tp + fn_c) as f64 } else { 0.0 };
-                        (rmse, ss, rec, us, core.state_digest_fnv1a())
-                    })
-                })
+                .map(|&sd| s.spawn(move || run_fd1_seed(sd)))
                 .collect();
             hs.into_iter().map(|h| h.join().unwrap()).collect()
         });
@@ -2401,6 +2404,7 @@ struct AdaptiveSeedOut {
     final_dim: usize,
     ram_bytes: usize,
     escalations: usize,
+    esc_events: Vec<(usize, usize)>,
     min_ep_visits: usize,
     med_ep_visits: usize,
     mean_ep_visits: f64,
@@ -2426,6 +2430,7 @@ fn eval_adaptive_od_model(
     let mut ep_visits = vec![0usize; nc];
     let mut step_visits = vec![0usize; nc];
     let mut escalations = 0usize;
+    let mut esc_events: Vec<(usize, usize)> = Vec::new();
 
     for ep in 0..train_eps {
         let len = 1 + (ep % max_train_len);
@@ -2450,6 +2455,7 @@ fn eval_adaptive_od_model(
         ep_visits[last_y] += 1;
         if net.observe_episode_hit(last_pred == last_y, last_y) {
             escalations += 1;
+            esc_events.push((ep + 1, net.active_dim));
         }
     }
 
@@ -2489,6 +2495,7 @@ fn eval_adaptive_od_model(
         final_dim: net.active_dim,
         ram_bytes: net.memory_footprint_bytes(),
         escalations,
+        esc_events,
         min_ep_visits: min_ep,
         med_ep_visits: med_ep,
         mean_ep_visits: mean_ep,
@@ -2528,7 +2535,7 @@ fn summarize_suite_d(label: &str, outs: &[AdaptiveSeedOut], log_visits: bool) {
     }
 }
 
-fn run_suite_d() {
+fn run_suite_d(dump_traj: Option<&str>) {
     let t0 = Instant::now();
     println!("==========================================================================================");
     println!(" SUITE D: AdaptiveOrthogonalRtrl O(d)->SO(d+1) Ladder C_5 -> A_5 -> S_5 -> S_6");
@@ -2581,6 +2588,40 @@ fn run_suite_d() {
     });
     summarize_suite_d("Label-Shuffle Control", &r_shuf, false);
 
+    if let Some(path) = dump_traj {
+        let mut json = String::from("{\n");
+        let groups: [(&str, usize, &[AdaptiveSeedOut]); 5] = [
+            ("C_5", 2_500, &r_c5),
+            ("A_5", 6_000, &r_a5),
+            ("S_5", 12_000, &r_s5),
+            ("S_6", 48_000, &r_s6),
+            ("Label_Shuffle", 12_000, &r_shuf),
+        ];
+        for (gi, (name, total_eps, outs)) in groups.iter().enumerate() {
+            json.push_str(&format!("  \"{}\": {{\n    \"total_eps\": {},\n    \"seeds\": [\n", name, total_eps));
+            for (si, o) in outs.iter().enumerate() {
+                let evs: Vec<String> = o.esc_events.iter().map(|(ep, d)| format!("[{}, {}]", ep, d)).collect();
+                let accs: Vec<String> = o.accs.iter().map(|a| format!("{:.2}", a)).collect();
+                let comma = if si + 1 < outs.len() { "," } else { "" };
+                json.push_str(&format!(
+                    "      {{\"final_dim\": {}, \"events\": [{}], \"accs\": [{}]}}{}\n",
+                    o.final_dim,
+                    evs.join(", "),
+                    accs.join(", "),
+                    comma
+                ));
+            }
+            let gcomma = if gi + 1 < groups.len() { "," } else { "" };
+            json.push_str(&format!("    ]\n  }}{}\n", gcomma));
+        }
+        json.push_str("}\n");
+        if let Err(e) = std::fs::write(path, json) {
+            eprintln!("Failed to write trajectory dump to {path}: {e}");
+        } else {
+            println!("  -> Exported exact 10-seed Suite D d(t) trajectories to {path}");
+        }
+    }
+
     println!("\nSuite D finished in {:.2}s.", t0.elapsed().as_secs_f64());
 }
 
@@ -2592,6 +2633,7 @@ fn main() {
     let mut run_b3 = false;
     let mut run_c = false;
     let mut run_d = false;
+    let mut dump_traj: Option<String> = None;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -2615,6 +2657,10 @@ fn main() {
                     "d" | "D" => run_d = true,
                     other => eprintln!("Unknown suite: {other}"),
                 }
+            }
+            "--dump-traj" if i + 1 < args.len() => {
+                i += 1;
+                dump_traj = Some(args[i].clone());
             }
             _ => {}
         }
@@ -2641,6 +2687,6 @@ fn main() {
         run_suite_c();
     }
     if run_d {
-        run_suite_d();
+        run_suite_d(dump_traj.as_deref());
     }
 }

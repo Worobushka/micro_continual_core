@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software or formal Lean 4 proofs, please cite them using this metadata."
 title: "MicroContinualCore: Unified Axiom-Zero Continual Learning, O(d) Parity Rotors & Deterministic Q8.24 Architecture"
-version: "0.5.0"
+version: "0.5.1"
 doi: "10.5281/zenodo.24424982"
 identifiers:
   - type: doi
@@ -10,7 +10,7 @@ identifiers:
   - type: doi
     value: "10.5281/zenodo.24424983"
     description: "Zenodo archive for MicroContinualCore v0.3.0 (SUPERSEDED/RETRACTED due to methodologically flawed benchmark shortcuts; see v0.4.0+)"
-date-released: 2026-11-26
+date-released: 2026-11-28
 license: PolyForm-Noncommercial-1.0.0
 authors:
   - family-names: "İşmuhanov"

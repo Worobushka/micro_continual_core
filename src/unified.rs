@@ -18,9 +18,12 @@ use axiom_zero::{
 };
 
 use crate::algebra::{
-    fill_p4_logprob_grads as algebra_fill_p4_logprob_grads, inv_sqrt_select, nlms_step, norm3,
-    rmsnorm_band_backward, rmsnorm_band_into, rmsprop_step, rot3_apply, rot3_step_and_deriv,
-    scrub_slice_seu,
+    cross_3d_pair, cross_3d_pair_backward, fill_p4_logprob_grads as algebra_fill_p4_logprob_grads,
+    finsler_randers_contrast_2d, finsler_randers_contrast_3d, inv_sqrt_select,
+    lyapunov_backbone_gate, nlms_step, norm3, rational_lk_balance_step, rational_sat_and_deriv,
+    rmsnorm_band_backward, rmsnorm_band_into, rmsprop_step, rot2_cayley_apply,
+    rot2_cayley_backward, rot3_apply, rot3_cayley_vec_apply, rot3_cayley_vec_backward,
+    rot3_step_and_deriv, scrub_slice_seu, symplectic_j_xor_2d, symplectic_j_xor_2d_backward,
 };
 use crate::math::{
     fast_dot, fast_saxpy, fast_scale, inv_sqrt_newton_2step_f32, inv_sqrt_newton_f32,
@@ -35,6 +38,9 @@ pub const UNIFIED_B1_SLOTS: usize = 16;
 pub const UNIFIED_B1_DIM: usize = UNIFIED_B1_SLOTS * 2;
 pub const UNIFIED_B2_SLOTS: usize = 8;
 pub const UNIFIED_B2_DIM: usize = UNIFIED_B2_SLOTS * 3;
+pub const UNIFIED_NL_DIM: usize = 16;
+pub const UNIFIED_NUM_BANDS: usize = 5; // [skip, B0, B1, B2, NL(J-XOR+Cross3D+2ndMoment)]
+pub const UNIFIED_FINSLER_MU0: f32 = 0.25;
 pub const UNIFIED_MAX_BANKS: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
@@ -42,15 +48,23 @@ pub struct UnifiedCayleyConfig {
     pub raw_in_dim: usize,
     pub num_actions: usize,
     pub seed: u64,
-    // Переключатели абляции (Suite B: B1 -> B2 -> B3):
+    // Переключатели абляции (Suite B: B1 -> B2 -> B3 + v0.5.1 — каждый флаг полностью развязан!):
     pub enable_selectivity: bool,
     pub enable_local_feedback: bool,
     pub enable_bartlett_ph: bool,
     pub enable_idbd: bool,
     pub enable_surprise_rl: bool,
     pub enable_bank_switching: bool,
+    pub enable_smooth_var_norm: bool,    // Гладкий суб-единичный пол дисперсии Welford (отдельно от P4!)
+    pub enable_shared_actor_rms: bool,   // Разделяемый по классам RMSProp-буфер v_actor_w (опция сжатия RAM)
+    pub enable_idbd_binary_fix: bool,    // Фикс взаимного гашения `lerrs[0]+lerrs[1]==0` в бинарном IDBD
+    pub enable_j_xor: bool,              // P1: Симплектический J-XOR + cross_3d + 2-й момент (`step135`)
+    pub enable_bank_rotor_adapter: bool, // P2: 160 B/bank роторный адаптер (`step136`, опционально, OFF в one_config)
+    pub enable_finsler_diode: bool,      // P3: Финслер-Рандерс контрастный диод (`step137`, опционально, OFF в one_config)
+    pub enable_lyap_lk: bool,            // P4: Гейт Ляпунова + рациональный баланс Либеля–Кёрнера (`step138`)
     // Архитектура и динамика:
     pub use_band0: bool,
+    pub b0_sectors: usize,
     pub shared_backbone: bool,
     pub use_delta_channel: bool,
     pub delta_scale: f32,
@@ -87,7 +101,15 @@ impl UnifiedCayleyConfig {
             enable_idbd: false,
             enable_surprise_rl: false,
             enable_bank_switching: false,
+            enable_smooth_var_norm: false,
+            enable_shared_actor_rms: false,
+            enable_idbd_binary_fix: false,
+            enable_j_xor: false,
+            enable_bank_rotor_adapter: false,
+            enable_finsler_diode: false,
+            enable_lyap_lk: false,
             use_band0: true,
+            b0_sectors: UNIFIED_B0_SECTORS,
             shared_backbone: true,
             use_delta_channel: true,
             delta_scale: 2.0,
@@ -118,13 +140,11 @@ impl UnifiedCayleyConfig {
         c
     }
 
-    /// Финальный One-Config (B3; включает shared_backbone, use_band0=false, 4-скалярный IDBD и Bartlett PH):
-    /// общий адаптивный Master-Eq хребет `B1+B2` (`shared_backbone`, с селективностью `beta_k` и
-    /// локальной ОС `z_{t,k}(u_{t-1})`, без избыточной Полосы 0), 4-скалярный полосовой IDBD,
-    /// 4 лёгких банка Bartlett PH.
-    pub fn one_config(num_actions: usize, raw_in_dim: usize, seed: u64) -> Self {
+    /// Эталонный `v0.5.0` One-Config (`B3`, все флаги `v0.5.1` выключены) для честной абляции.
+    pub fn one_config_v050(num_actions: usize, raw_in_dim: usize, seed: u64) -> Self {
         let mut c = Self::checkpoint_b2(num_actions, raw_in_dim, seed);
         c.use_band0 = false;
+        c.b0_sectors = 0;
         c.shared_backbone = true;
         c.enable_bartlett_ph = true;
         c.enable_idbd = true;
@@ -132,6 +152,24 @@ impl UnifiedCayleyConfig {
         c.enable_bank_switching = true;
         c.idbd_lr = 0.025;
         c.max_banks = UNIFIED_MAX_BANKS;
+        c
+    }
+
+    /// Чистый One-Config `v0.5.1` (по результатам форензик-абляции leave-one-out):
+    /// включает только доказанно эффективные модули (`Band0(4)` + `smooth_var_norm` + `idbd_binary_fix`
+    /// + `P1 J-XOR` + `P4 Lyap/LK`). Модули `P2` и `P3` честно выключены по умолчанию (доступны
+    /// как верифицированные опциональные примитивы с теоремами `step136`/`step137`).
+    pub fn one_config(num_actions: usize, raw_in_dim: usize, seed: u64) -> Self {
+        let mut c = Self::one_config_v050(num_actions, raw_in_dim, seed);
+        c.use_band0 = true;
+        c.b0_sectors = 4;
+        c.enable_smooth_var_norm = true;
+        c.enable_shared_actor_rms = false;
+        c.enable_idbd_binary_fix = true;
+        c.enable_j_xor = true;
+        c.enable_bank_rotor_adapter = false;
+        c.enable_finsler_diode = false;
+        c.enable_lyap_lk = true;
         c
     }
 
@@ -156,6 +194,7 @@ impl UnifiedCayleyConfig {
 pub struct CausalInputConditioner {
     pub raw_dim: usize,
     pub use_delta: bool,
+    pub adaptive_var_floor: bool,
     pub eff_dim: usize,
     pub delta_scale: f32,
     pub count: u64,
@@ -167,13 +206,29 @@ pub struct CausalInputConditioner {
 }
 
 #[axiom_zero]
+#[inline(always)]
+fn compute_channel_inv_sd(adaptive: bool, count: u64, var: f32) -> (f32, f32) {
+    if !adaptive || count < 32 {
+        return (inv_sqrt_newton_2step_f32(sanitize_f32(var + 1.0)), 12.0_f32);
+    }
+    // Гладкий суб-единичный пол дисперсии Welford (`enable_smooth_var_norm`):
+    // предотвращает подавление суб-единичных датчиков (`var << 1`) под жёстким полом `var + 1.0`,
+    // плавно переходя к стандартному масштабу `~ 1 / sqrt(var + 1)` при `var >= 1`.
+    let v = sanitize_f32(var).max(0.0);
+    let base_inv = inv_sqrt_newton_2step_f32(sanitize_f32(v + 0.0035));
+    let smooth = total_div_unit_shifted_f32(sanitize_f32(v + 0.55), v);
+    (sanitize_f32(base_inv * smooth), 8.0_f32)
+}
+
+#[axiom_zero]
 impl CausalInputConditioner {
-    pub fn new(raw_dim: usize, use_delta: bool, delta_scale: f32) -> Self {
+    pub fn new(raw_dim: usize, use_delta: bool, delta_scale: f32, adaptive_var_floor: bool) -> Self {
         let d = raw_dim.clamp(1, UNIFIED_MAX_RAW_IN);
         let eff = if use_delta { d.saturating_mul(2) } else { d };
         Self {
             raw_dim: d,
             use_delta,
+            adaptive_var_floor,
             eff_dim: eff,
             delta_scale: sanitize_f32(delta_scale).clamp(0.1, 12.0),
             count: 0,
@@ -216,8 +271,8 @@ impl CausalInputConditioner {
             } else {
                 0.0
             };
-            let inv_sd = inv_sqrt_newton_2step_f32(sanitize_f32(var + 1.0));
-            let xn = sanitize_bounded_f32((x - mu) * inv_sd, 12.0);
+            let (inv_sd, xn_lim) = compute_channel_inv_sd(self.adaptive_var_floor, self.count, var);
+            let xn = sanitize_bounded_f32((x - mu) * inv_sd, xn_lim);
             let _ = total_set(&mut self.out_feat, i, xn);
 
             if self.use_delta {
@@ -257,22 +312,25 @@ impl CausalInputConditioner {
 #[derive(Clone)]
 pub struct Band0Clock {
     pub enabled: bool,
+    pub sectors: usize,
     pub eff_in: usize,
     pub lambdas: Vec<f32>,
     pub rot_c1: Vec<f32>,
     pub rot_c2: Vec<f32>,
     pub axis: Vec<f32>,
     pub in_dir: Vec<f32>,
-    pub proj_w: Vec<f32>, // [8 * eff_in]
+    pub proj_w: Vec<f32>, // [sectors * eff_in]
 }
 
 #[axiom_zero]
 impl Band0Clock {
-    pub fn new(eff_in: usize, seed: u64, enabled: bool) -> Self {
+    pub fn new(eff_in: usize, seed: u64, enabled: bool, n_sectors: usize) -> Self {
         let ein = eff_in.clamp(1, UNIFIED_MAX_EFF_IN);
-        if !enabled {
+        let secs = if enabled { n_sectors.min(UNIFIED_B0_SECTORS) } else { 0 };
+        if secs == 0 {
             return Self {
                 enabled: false,
+                sectors: 0,
                 eff_in: ein,
                 lambdas: Vec::new(),
                 rot_c1: Vec::new(),
@@ -282,18 +340,19 @@ impl Band0Clock {
                 proj_w: Vec::new(),
             };
         }
-        let mut lambdas = vec![0.0_f32; UNIFIED_B0_SECTORS];
-        let mut rot_c1 = vec![0.0_f32; UNIFIED_B0_SECTORS];
-        let mut rot_c2 = vec![0.0_f32; UNIFIED_B0_SECTORS];
-        let mut axis = vec![0.0_f32; UNIFIED_B0_DIM];
-        let mut in_dir = vec![0.0_f32; UNIFIED_B0_DIM];
-        let mut proj_w = vec![0.0_f32; UNIFIED_B0_SECTORS * ein];
+        let dim = secs * 3;
+        let mut lambdas = vec![0.0_f32; secs];
+        let mut rot_c1 = vec![0.0_f32; secs];
+        let mut rot_c2 = vec![0.0_f32; secs];
+        let mut axis = vec![0.0_f32; dim];
+        let mut in_dir = vec![0.0_f32; dim];
+        let mut proj_w = vec![0.0_f32; secs * ein];
 
         let mut rng = splitmix64(seed ^ 0xB0C1_0C40_55AA_1001);
         let inv_root_in = inv_sqrt_newton_f32(ein as f32);
 
-        for s in 0..UNIFIED_B0_SECTORS {
-            let frac = total_div_f32(s as f32, (UNIFIED_B0_SECTORS - 1) as f32, 0.5);
+        for s in 0..secs {
+            let frac = total_div_f32(s as f32, secs.saturating_sub(1).max(1) as f32, 0.5);
             let alpha = 1.10 - 1.00 * frac;
             let lam = total_div_unit_shifted_f32(1.0, alpha * alpha);
             let _ = total_set(&mut lambdas, s, lam);
@@ -333,6 +392,7 @@ impl Band0Clock {
 
         Self {
             enabled: true,
+            sectors: secs,
             eff_in: ein,
             lambdas,
             rot_c1,
@@ -344,10 +404,10 @@ impl Band0Clock {
     }
 
     pub fn step_into(&self, feat_x: &[f32], state: &mut [f32]) {
-        if !self.enabled || state.len() < UNIFIED_B0_DIM {
+        if !self.enabled || self.sectors == 0 || state.len() < self.sectors * 3 {
             return;
         }
-        for s in 0..UNIFIED_B0_SECTORS {
+        for s in 0..self.sectors {
             let lam = total_get_copy(&self.lambdas, s, 0.8);
             let c1 = total_get_copy(&self.rot_c1, s, 0.0);
             let c2 = total_get_copy(&self.rot_c2, s, 0.0);
@@ -506,6 +566,7 @@ pub struct UnifiedRegimeSlot {
     pub b1_beta: Vec<f32>,
     pub b1_bdelta: Vec<f32>,
     pub b1_qfb: Vec<f32>,
+    pub b1_vdrift: Vec<f32>,
     pub b1_in_w: Vec<f32>,
     pub b1_sel_w: Vec<f32>,
     pub v_b1_alpha: Vec<f32>,
@@ -513,6 +574,7 @@ pub struct UnifiedRegimeSlot {
     pub v_b1_beta: Vec<f32>,
     pub v_b1_bdelta: Vec<f32>,
     pub v_b1_qfb: Vec<f32>,
+    pub v_b1_vdrift: Vec<f32>,
     pub v_b1_in_w: Vec<f32>,
     pub v_b1_sel_w: Vec<f32>,
     // Полоса 2 (8 x 3D — пустые при bank_idx > 0 && shared_backbone):
@@ -523,6 +585,7 @@ pub struct UnifiedRegimeSlot {
     pub b2_axis: Vec<f32>,
     pub b2_in_dir: Vec<f32>,
     pub b2_qfb: Vec<f32>,
+    pub b2_vdrift: Vec<f32>,
     pub b2_in_w: Vec<f32>,
     pub b2_sel_w: Vec<f32>,
     pub v_b2_alpha: Vec<f32>,
@@ -530,26 +593,34 @@ pub struct UnifiedRegimeSlot {
     pub v_b2_beta: Vec<f32>,
     pub v_b2_bdelta: Vec<f32>,
     pub v_b2_qfb: Vec<f32>,
+    pub v_b2_vdrift: Vec<f32>,
     pub v_b2_in_w: Vec<f32>,
     pub v_b2_sel_w: Vec<f32>,
-    // Полосовые вентили [skip, B0, B1, B2]:
-    pub gate_logits: [f32; 4],
-    pub v_gates: [f32; 4],
-    // Выходные головки (Class/Actor, Reg/Critic) + 4-скалярный полосовой IDBD (`step131`):
+    // Полосовые вентили [skip, B0, B1, B2, NL]:
+    pub gate_logits: [f32; UNIFIED_NUM_BANDS],
+    pub v_gates: [f32; UNIFIED_NUM_BANDS],
+    // Персональный 160-байтный геодезический роторный адаптер банка (v0.5.1 P2, 0 байт при false):
+    pub adapter_b1_t: Vec<f32>,   // [16]: углы Кэли R_2(delta_t) in SO(2)
+    pub adapter_b2_g: Vec<f32>,   // [24]: 8 x 3D генераторов R_3(delta_g) in SO(3)
+    pub v_adapter_b1_t: Vec<f32>,
+    pub v_adapter_b2_g: Vec<f32>,
+    // Выходные головки (Class/Actor, Reg/Critic) + полосовой IDBD (`step131` + v0.5.1 NL):
     pub actor_w: Vec<f32>,  // [num_actions * feat_dim]
     pub actor_b: Vec<f32>,  // [num_actions]
     pub critic_w: Vec<f32>, // [feat_dim]
     pub critic_b: f32,
     pub v_actor_w: Vec<f32>,
     pub v_actor_b: Vec<f32>,
-    pub idbd_beta_actor: [f32; 4],
-    pub idbd_h_actor: [f32; 4],
-    pub idbd_beta_critic: [f32; 4],
-    pub idbd_h_critic: [f32; 4],
-    // Метаданные банка & Bartlett PH:
+    pub idbd_beta_actor: [f32; UNIFIED_NUM_BANDS],
+    pub idbd_h_actor: [f32; UNIFIED_NUM_BANDS],
+    pub idbd_beta_critic: [f32; UNIFIED_NUM_BANDS],
+    pub idbd_h_critic: [f32; UNIFIED_NUM_BANDS],
+    // Метаданные банка & Bartlett PH & P4 Lyapunov/LK:
     pub ph: BartlettPageHinkley,
     pub ret_ema: f32,
     pub td_var_ema: f32,
+    pub lyap_err_ema: f32,
+    pub lk_s: [f32; 3], // [actor, critic/reg, rtrl]
     pub age_eps: usize,
     pub cooldown_until: usize,
     pub last_used_ep: usize,
@@ -560,11 +631,14 @@ impl UnifiedRegimeSlot {
     pub fn new(cfg: &UnifiedCayleyConfig, eff_in: usize, bank_idx: usize) -> Self {
         let ein = eff_in.clamp(1, UNIFIED_MAX_EFF_IN);
         let na = cfg.num_actions.clamp(1, 32);
-        let b0_dim = if cfg.use_band0 { UNIFIED_B0_DIM } else { 0 };
-        let feat_dim = ein + b0_dim + UNIFIED_B1_DIM + UNIFIED_B2_DIM;
+        let b0_dim = if cfg.use_band0 { cfg.b0_sectors.min(UNIFIED_B0_SECTORS) * 3 } else { 0 };
+        let nl_dim = if cfg.enable_j_xor { UNIFIED_NL_DIM } else { 0 };
+        let feat_dim = ein + b0_dim + UNIFIED_B1_DIM + UNIFIED_B2_DIM + nl_dim;
         let has_bb = bank_idx == 0 || !cfg.shared_backbone;
+        let has_adapter = cfg.enable_bank_rotor_adapter && (!cfg.shared_backbone || bank_idx > 0);
         let has_sel = has_bb && cfg.enable_selectivity;
         let has_fb = has_sel && cfg.enable_local_feedback;
+        let has_diode = has_sel && cfg.enable_finsler_diode;
 
         let mut rng = splitmix64(
             cfg.seed
@@ -680,6 +754,7 @@ impl UnifiedRegimeSlot {
             b1_beta: if has_sel { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
             b1_bdelta: if has_sel { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
             b1_qfb: if has_fb { vec![0.0_f32; UNIFIED_B1_DIM] } else { Vec::new() },
+            b1_vdrift: if has_diode { vec![0.0_f32; UNIFIED_B1_DIM] } else { Vec::new() },
             b1_in_w,
             b1_sel_w,
             v_b1_alpha: if has_bb { vec![0.04_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
@@ -687,6 +762,7 @@ impl UnifiedRegimeSlot {
             v_b1_beta: if has_sel { vec![0.04_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
             v_b1_bdelta: if has_sel { vec![0.04_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
             v_b1_qfb: if has_fb { vec![0.04_f32; UNIFIED_B1_DIM] } else { Vec::new() },
+            v_b1_vdrift: if has_diode { vec![0.04_f32; UNIFIED_B1_DIM] } else { Vec::new() },
             v_b1_in_w: if has_bb { vec![0.04_f32; UNIFIED_B1_SLOTS * ein] } else { Vec::new() },
             v_b1_sel_w: if has_sel { vec![0.04_f32; UNIFIED_B1_SLOTS * ein] } else { Vec::new() },
             b2_alpha,
@@ -696,6 +772,7 @@ impl UnifiedRegimeSlot {
             b2_axis,
             b2_in_dir,
             b2_qfb: if has_fb { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
+            b2_vdrift: if has_diode { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             b2_in_w,
             b2_sel_w,
             v_b2_alpha: if has_bb { vec![0.04_f32; UNIFIED_B2_SLOTS] } else { Vec::new() },
@@ -703,23 +780,30 @@ impl UnifiedRegimeSlot {
             v_b2_beta: if has_sel { vec![0.04_f32; UNIFIED_B2_SLOTS] } else { Vec::new() },
             v_b2_bdelta: if has_sel { vec![0.04_f32; UNIFIED_B2_SLOTS] } else { Vec::new() },
             v_b2_qfb: if has_fb { vec![0.04_f32; UNIFIED_B2_DIM] } else { Vec::new() },
+            v_b2_vdrift: if has_diode { vec![0.04_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             v_b2_in_w: if has_bb { vec![0.04_f32; UNIFIED_B2_SLOTS * ein] } else { Vec::new() },
             v_b2_sel_w: if has_sel { vec![0.04_f32; UNIFIED_B2_SLOTS * ein] } else { Vec::new() },
-            gate_logits: [-0.25, -0.25, 0.25, 0.25],
-            v_gates: [0.04_f32; 4],
+            gate_logits: [-0.25, -0.25, 0.25, 0.25, 0.0],
+            v_gates: [0.04_f32; UNIFIED_NUM_BANDS],
+            adapter_b1_t: if has_adapter { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
+            adapter_b2_g: if has_adapter { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
+            v_adapter_b1_t: if has_adapter { vec![0.04_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
+            v_adapter_b2_g: if has_adapter { vec![0.04_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             actor_w,
             actor_b: vec![0.0_f32; na],
             critic_w: vec![0.0_f32; feat_dim],
             critic_b: 0.0,
-            v_actor_w: vec![0.04_f32; na * feat_dim],
+            v_actor_w: if cfg.enable_shared_actor_rms { vec![0.04_f32; feat_dim] } else { vec![0.04_f32; na * feat_dim] },
             v_actor_b: vec![0.04_f32; na],
-            idbd_beta_actor: [0.0_f32; 4],
-            idbd_h_actor: [0.0_f32; 4],
-            idbd_beta_critic: [0.0_f32; 4],
-            idbd_h_critic: [0.0_f32; 4],
+            idbd_beta_actor: [0.0_f32; UNIFIED_NUM_BANDS],
+            idbd_h_actor: [0.0_f32; UNIFIED_NUM_BANDS],
+            idbd_beta_critic: [0.0_f32; UNIFIED_NUM_BANDS],
+            idbd_h_critic: [0.0_f32; UNIFIED_NUM_BANDS],
             ph: BartlettPageHinkley::new(cfg.ph_delta, cfg.ph_threshold, cfg.ph_warmup),
             ret_ema: 0.5,
             td_var_ema: 0.25,
+            lyap_err_ema: 0.25,
+            lk_s: [0.5_f32; 3],
             age_eps: 0,
             cooldown_until: 0,
             last_used_ep: 0,
@@ -733,6 +817,7 @@ impl UnifiedRegimeSlot {
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b1_beta, 6.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b1_bdelta, 6.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b1_qfb, 4.0, 0.0));
+        faults = faults.saturating_add(scrub_slice_seu(&mut self.b1_vdrift, 6.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b1_in_w, 6.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b1_sel_w, 6.0, 0.0));
 
@@ -741,10 +826,13 @@ impl UnifiedRegimeSlot {
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b2_beta, 6.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b2_bdelta, 6.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b2_qfb, 4.0, 0.0));
+        faults = faults.saturating_add(scrub_slice_seu(&mut self.b2_vdrift, 6.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b2_in_w, 6.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b2_sel_w, 6.0, 0.0));
 
         faults = faults.saturating_add(scrub_slice_seu(&mut self.gate_logits, 6.0, 0.0));
+        faults = faults.saturating_add(scrub_slice_seu(&mut self.adapter_b1_t, 4.5, 0.0));
+        faults = faults.saturating_add(scrub_slice_seu(&mut self.adapter_b2_g, 4.5, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.actor_w, 8.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.actor_b, 8.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.critic_w, 8.0, 0.0));
@@ -756,6 +844,11 @@ impl UnifiedRegimeSlot {
         faults = faults.saturating_add(scrub_slice_seu(&mut self.idbd_h_actor, 4.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.idbd_beta_critic, 4.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.idbd_h_critic, 4.0, 0.0));
+        if !self.lyap_err_ema.is_finite() || self.lyap_err_ema < 0.0 || self.lyap_err_ema > 16.0 {
+            self.lyap_err_ema = 0.25;
+            faults = faults.saturating_add(1);
+        }
+        faults = faults.saturating_add(scrub_slice_seu(&mut self.lk_s, 4.0, 0.5));
         faults
     }
 
@@ -765,6 +858,7 @@ impl UnifiedRegimeSlot {
             + self.b1_beta.len()
             + self.b1_bdelta.len()
             + self.b1_qfb.len()
+            + self.b1_vdrift.len()
             + self.b1_in_w.len()
             + self.b1_sel_w.len()
             + self.v_b1_alpha.len()
@@ -772,6 +866,7 @@ impl UnifiedRegimeSlot {
             + self.v_b1_beta.len()
             + self.v_b1_bdelta.len()
             + self.v_b1_qfb.len()
+            + self.v_b1_vdrift.len()
             + self.v_b1_in_w.len()
             + self.v_b1_sel_w.len()
             + self.b2_alpha.len()
@@ -781,6 +876,7 @@ impl UnifiedRegimeSlot {
             + self.b2_axis.len()
             + self.b2_in_dir.len()
             + self.b2_qfb.len()
+            + self.b2_vdrift.len()
             + self.b2_in_w.len()
             + self.b2_sel_w.len()
             + self.v_b2_alpha.len()
@@ -788,14 +884,19 @@ impl UnifiedRegimeSlot {
             + self.v_b2_beta.len()
             + self.v_b2_bdelta.len()
             + self.v_b2_qfb.len()
+            + self.v_b2_vdrift.len()
             + self.v_b2_in_w.len()
             + self.v_b2_sel_w.len()
+            + self.adapter_b1_t.len()
+            + self.adapter_b2_g.len()
+            + self.v_adapter_b1_t.len()
+            + self.v_adapter_b2_g.len()
             + self.actor_w.len()
             + self.actor_b.len()
             + self.critic_w.len()
             + self.v_actor_w.len()
             + self.v_actor_b.len();
-        vec_floats * 4 + 24 * 4 + 96
+        vec_floats * 4 + (UNIFIED_NUM_BANDS * 6 + 4) * 4 + 96
     }
 }
 
@@ -804,16 +905,19 @@ impl UnifiedRegimeSlot {
 pub struct UnifiedRtrlWorkspace {
     pub eff_in: usize,
     pub b0_dim: usize,
+    pub nl_dim: usize,
     pub num_actions: usize,
     pub feat_dim: usize,
     // Состояния полос:
     pub b0_state: Vec<f32>,
     pub b1_state: [f32; UNIFIED_B1_DIM],
     pub b2_state: [f32; UNIFIED_B2_DIM],
+    pub nl_raw: Vec<f32>,
+    pub grad_nl_raw: Vec<f32>,
     // RMSNorm промежуточные скаляры и векторы:
-    pub norm_inv: [f32; 4],
-    pub gate_val: [f32; 4],
-    pub gate_deriv: [f32; 4],
+    pub norm_inv: [f32; UNIFIED_NUM_BANDS],
+    pub gate_val: [f32; UNIFIED_NUM_BANDS],
+    pub gate_deriv: [f32; UNIFIED_NUM_BANDS],
     pub feat_normed: Vec<f32>,
     pub feat_gated: Vec<f32>,
     // RTRL sensitivity d(u)/d(theta) для Полосы 1 (16 x 2D):
@@ -822,6 +926,7 @@ pub struct UnifiedRtrlWorkspace {
     pub s_b1_beta: Vec<f32>,
     pub s_b1_bdelta: Vec<f32>,
     pub s_b1_qfb: Vec<f32>,
+    pub s_b1_vdrift: Vec<f32>,
     pub s_b1_inw: Vec<f32>,
     pub s_b1_selw: Vec<f32>,
     // RTRL sensitivity d(u)/d(theta) для Полосы 2 (8 x 3D):
@@ -830,6 +935,7 @@ pub struct UnifiedRtrlWorkspace {
     pub s_b2_beta: Vec<f32>,
     pub s_b2_bdelta: Vec<f32>,
     pub s_b2_qfb: Vec<f32>,
+    pub s_b2_vdrift: Vec<f32>,
     pub s_b2_inw: Vec<f32>,
     pub s_b2_selw: Vec<f32>,
     // Выходы шага и рабочие градиенты:
@@ -840,13 +946,14 @@ pub struct UnifiedRtrlWorkspace {
     pub grad_feat: Vec<f32>,
     pub grad_b1_u: [f32; UNIFIED_B1_DIM],
     pub grad_b2_u: [f32; UNIFIED_B2_DIM],
-    pub g_gates: [f32; 4],
+    pub g_gates: [f32; UNIFIED_NUM_BANDS],
     // Поэлементные мгновенные градиенты для RTRL:
     pub g_b1_alpha: [f32; UNIFIED_B1_SLOTS],
     pub g_b1_omega: [f32; UNIFIED_B1_SLOTS],
     pub g_b1_beta: Vec<f32>,
     pub g_b1_bdelta: Vec<f32>,
     pub g_b1_qfb: Vec<f32>,
+    pub g_b1_vdrift: Vec<f32>,
     pub g_b1_inw: Vec<f32>,
     pub g_b1_selw: Vec<f32>,
     pub g_b2_alpha: [f32; UNIFIED_B2_SLOTS],
@@ -854,19 +961,25 @@ pub struct UnifiedRtrlWorkspace {
     pub g_b2_beta: Vec<f32>,
     pub g_b2_bdelta: Vec<f32>,
     pub g_b2_qfb: Vec<f32>,
+    pub g_b2_vdrift: Vec<f32>,
     pub g_b2_inw: Vec<f32>,
     pub g_b2_selw: Vec<f32>,
+    pub g_adapter_b1_t: Vec<f32>,
+    pub g_adapter_b2_g: Vec<f32>,
     // Eligibility traces для RL:
     pub e_actor_w: Vec<f32>,
     pub e_actor_b: Vec<f32>,
     pub e_critic_w: Vec<f32>,
     pub e_critic_b: f32,
-    pub e_gates: [f32; 4],
+    pub e_gates: [f32; UNIFIED_NUM_BANDS],
+    pub e_adapter_b1_t: Vec<f32>,
+    pub e_adapter_b2_g: Vec<f32>,
     pub e_b1_alpha: [f32; UNIFIED_B1_SLOTS],
     pub e_b1_omega: [f32; UNIFIED_B1_SLOTS],
     pub e_b1_beta: Vec<f32>,
     pub e_b1_bdelta: Vec<f32>,
     pub e_b1_qfb: Vec<f32>,
+    pub e_b1_vdrift: Vec<f32>,
     pub e_b1_inw: Vec<f32>,
     pub e_b1_selw: Vec<f32>,
     pub e_b2_alpha: [f32; UNIFIED_B2_SLOTS],
@@ -874,6 +987,7 @@ pub struct UnifiedRtrlWorkspace {
     pub e_b2_beta: Vec<f32>,
     pub e_b2_bdelta: Vec<f32>,
     pub e_b2_qfb: Vec<f32>,
+    pub e_b2_vdrift: Vec<f32>,
     pub e_b2_inw: Vec<f32>,
     pub e_b2_selw: Vec<f32>,
 }
@@ -883,21 +997,26 @@ impl UnifiedRtrlWorkspace {
     pub fn new(cfg: &UnifiedCayleyConfig, eff_in: usize, num_actions: usize) -> Self {
         let ein = eff_in.clamp(1, UNIFIED_MAX_EFF_IN);
         let na = num_actions.clamp(1, 32);
-        let b0_dim = if cfg.use_band0 { UNIFIED_B0_DIM } else { 0 };
-        let feat_dim = ein + b0_dim + UNIFIED_B1_DIM + UNIFIED_B2_DIM;
+        let b0_dim = if cfg.use_band0 { cfg.b0_sectors.min(UNIFIED_B0_SECTORS) * 3 } else { 0 };
+        let nl_dim = if cfg.enable_j_xor { UNIFIED_NL_DIM } else { 0 };
+        let feat_dim = ein + b0_dim + UNIFIED_B1_DIM + UNIFIED_B2_DIM + nl_dim;
         let sel = cfg.enable_selectivity;
         let fb = sel && cfg.enable_local_feedback;
+        let diode = sel && cfg.enable_finsler_diode;
         Self {
             eff_in: ein,
             b0_dim,
+            nl_dim,
             num_actions: na,
             feat_dim,
             b0_state: if b0_dim > 0 { vec![0.0_f32; b0_dim] } else { Vec::new() },
             b1_state: [0.0_f32; UNIFIED_B1_DIM],
             b2_state: [0.0_f32; UNIFIED_B2_DIM],
-            norm_inv: [1.0_f32; 4],
-            gate_val: [0.5_f32; 4],
-            gate_deriv: [0.0_f32; 4],
+            nl_raw: if nl_dim > 0 { vec![0.0_f32; nl_dim] } else { Vec::new() },
+            grad_nl_raw: if nl_dim > 0 { vec![0.0_f32; nl_dim] } else { Vec::new() },
+            norm_inv: [1.0_f32; UNIFIED_NUM_BANDS],
+            gate_val: [0.5_f32; UNIFIED_NUM_BANDS],
+            gate_deriv: [0.0_f32; UNIFIED_NUM_BANDS],
             feat_normed: vec![0.0_f32; feat_dim],
             feat_gated: vec![0.0_f32; feat_dim],
             s_b1_alpha: [0.0_f32; UNIFIED_B1_DIM],
@@ -905,6 +1024,7 @@ impl UnifiedRtrlWorkspace {
             s_b1_beta: if sel { vec![0.0_f32; UNIFIED_B1_DIM] } else { Vec::new() },
             s_b1_bdelta: if sel { vec![0.0_f32; UNIFIED_B1_DIM] } else { Vec::new() },
             s_b1_qfb: if fb { vec![0.0_f32; UNIFIED_B1_DIM * 2] } else { Vec::new() },
+            s_b1_vdrift: if diode { vec![0.0_f32; UNIFIED_B1_DIM * 2] } else { Vec::new() },
             s_b1_inw: vec![0.0_f32; UNIFIED_B1_SLOTS * ein * 2],
             s_b1_selw: if sel { vec![0.0_f32; UNIFIED_B1_SLOTS * ein * 2] } else { Vec::new() },
             s_b2_alpha: [0.0_f32; UNIFIED_B2_DIM],
@@ -912,6 +1032,7 @@ impl UnifiedRtrlWorkspace {
             s_b2_beta: if sel { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             s_b2_bdelta: if sel { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             s_b2_qfb: if fb { vec![0.0_f32; UNIFIED_B2_DIM * 3] } else { Vec::new() },
+            s_b2_vdrift: if diode { vec![0.0_f32; UNIFIED_B2_DIM * 3] } else { Vec::new() },
             s_b2_inw: vec![0.0_f32; UNIFIED_B2_SLOTS * ein * 3],
             s_b2_selw: if sel { vec![0.0_f32; UNIFIED_B2_SLOTS * ein * 3] } else { Vec::new() },
             logits: vec![0.0_f32; na],
@@ -921,12 +1042,13 @@ impl UnifiedRtrlWorkspace {
             grad_feat: vec![0.0_f32; feat_dim],
             grad_b1_u: [0.0_f32; UNIFIED_B1_DIM],
             grad_b2_u: [0.0_f32; UNIFIED_B2_DIM],
-            g_gates: [0.0_f32; 4],
+            g_gates: [0.0_f32; UNIFIED_NUM_BANDS],
             g_b1_alpha: [0.0_f32; UNIFIED_B1_SLOTS],
             g_b1_omega: [0.0_f32; UNIFIED_B1_SLOTS],
             g_b1_beta: if sel { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
             g_b1_bdelta: if sel { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
             g_b1_qfb: if fb { vec![0.0_f32; UNIFIED_B1_DIM] } else { Vec::new() },
+            g_b1_vdrift: if diode { vec![0.0_f32; UNIFIED_B1_DIM] } else { Vec::new() },
             g_b1_inw: vec![0.0_f32; UNIFIED_B1_SLOTS * ein],
             g_b1_selw: if sel { vec![0.0_f32; UNIFIED_B1_SLOTS * ein] } else { Vec::new() },
             g_b2_alpha: [0.0_f32; UNIFIED_B2_SLOTS],
@@ -934,18 +1056,24 @@ impl UnifiedRtrlWorkspace {
             g_b2_beta: if sel { vec![0.0_f32; UNIFIED_B2_SLOTS] } else { Vec::new() },
             g_b2_bdelta: if sel { vec![0.0_f32; UNIFIED_B2_SLOTS] } else { Vec::new() },
             g_b2_qfb: if fb { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
+            g_b2_vdrift: if diode { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             g_b2_inw: vec![0.0_f32; UNIFIED_B2_SLOTS * ein],
             g_b2_selw: if sel { vec![0.0_f32; UNIFIED_B2_SLOTS * ein] } else { Vec::new() },
+            g_adapter_b1_t: if cfg.enable_bank_rotor_adapter { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
+            g_adapter_b2_g: if cfg.enable_bank_rotor_adapter { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             e_actor_w: vec![0.0_f32; na * feat_dim],
             e_actor_b: vec![0.0_f32; na],
             e_critic_w: vec![0.0_f32; feat_dim],
             e_critic_b: 0.0,
-            e_gates: [0.0_f32; 4],
+            e_gates: [0.0_f32; UNIFIED_NUM_BANDS],
+            e_adapter_b1_t: if cfg.enable_bank_rotor_adapter { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
+            e_adapter_b2_g: if cfg.enable_bank_rotor_adapter { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             e_b1_alpha: [0.0_f32; UNIFIED_B1_SLOTS],
             e_b1_omega: [0.0_f32; UNIFIED_B1_SLOTS],
             e_b1_beta: if sel { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
             e_b1_bdelta: if sel { vec![0.0_f32; UNIFIED_B1_SLOTS] } else { Vec::new() },
             e_b1_qfb: if fb { vec![0.0_f32; UNIFIED_B1_DIM] } else { Vec::new() },
+            e_b1_vdrift: if diode { vec![0.0_f32; UNIFIED_B1_DIM] } else { Vec::new() },
             e_b1_inw: vec![0.0_f32; UNIFIED_B1_SLOTS * ein],
             e_b1_selw: if sel { vec![0.0_f32; UNIFIED_B1_SLOTS * ein] } else { Vec::new() },
             e_b2_alpha: [0.0_f32; UNIFIED_B2_SLOTS],
@@ -953,6 +1081,7 @@ impl UnifiedRtrlWorkspace {
             e_b2_beta: if sel { vec![0.0_f32; UNIFIED_B2_SLOTS] } else { Vec::new() },
             e_b2_bdelta: if sel { vec![0.0_f32; UNIFIED_B2_SLOTS] } else { Vec::new() },
             e_b2_qfb: if fb { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
+            e_b2_vdrift: if diode { vec![0.0_f32; UNIFIED_B2_DIM] } else { Vec::new() },
             e_b2_inw: vec![0.0_f32; UNIFIED_B2_SLOTS * ein],
             e_b2_selw: if sel { vec![0.0_f32; UNIFIED_B2_SLOTS * ein] } else { Vec::new() },
         }
@@ -962,11 +1091,14 @@ impl UnifiedRtrlWorkspace {
         self.b0_state.fill(0.0);
         self.b1_state = [0.0_f32; UNIFIED_B1_DIM];
         self.b2_state = [0.0_f32; UNIFIED_B2_DIM];
+        self.nl_raw.fill(0.0);
+        self.grad_nl_raw.fill(0.0);
         self.s_b1_alpha = [0.0_f32; UNIFIED_B1_DIM];
         self.s_b1_omega = [0.0_f32; UNIFIED_B1_DIM];
         self.s_b1_beta.fill(0.0);
         self.s_b1_bdelta.fill(0.0);
         self.s_b1_qfb.fill(0.0);
+        self.s_b1_vdrift.fill(0.0);
         self.s_b1_inw.fill(0.0);
         self.s_b1_selw.fill(0.0);
         self.s_b2_alpha = [0.0_f32; UNIFIED_B2_DIM];
@@ -974,18 +1106,24 @@ impl UnifiedRtrlWorkspace {
         self.s_b2_beta.fill(0.0);
         self.s_b2_bdelta.fill(0.0);
         self.s_b2_qfb.fill(0.0);
+        self.s_b2_vdrift.fill(0.0);
         self.s_b2_inw.fill(0.0);
         self.s_b2_selw.fill(0.0);
         self.e_actor_w.fill(0.0);
         self.e_actor_b.fill(0.0);
         self.e_critic_w.fill(0.0);
         self.e_critic_b = 0.0;
-        self.e_gates = [0.0_f32; 4];
+        self.e_gates = [0.0_f32; UNIFIED_NUM_BANDS];
+        self.g_adapter_b1_t.fill(0.0);
+        self.g_adapter_b2_g.fill(0.0);
+        self.e_adapter_b1_t.fill(0.0);
+        self.e_adapter_b2_g.fill(0.0);
         self.e_b1_alpha = [0.0_f32; UNIFIED_B1_SLOTS];
         self.e_b1_omega = [0.0_f32; UNIFIED_B1_SLOTS];
         self.e_b1_beta.fill(0.0);
         self.e_b1_bdelta.fill(0.0);
         self.e_b1_qfb.fill(0.0);
+        self.e_b1_vdrift.fill(0.0);
         self.e_b1_inw.fill(0.0);
         self.e_b1_selw.fill(0.0);
         self.e_b2_alpha = [0.0_f32; UNIFIED_B2_SLOTS];
@@ -993,6 +1131,7 @@ impl UnifiedRtrlWorkspace {
         self.e_b2_beta.fill(0.0);
         self.e_b2_bdelta.fill(0.0);
         self.e_b2_qfb.fill(0.0);
+        self.e_b2_vdrift.fill(0.0);
         self.e_b2_inw.fill(0.0);
         self.e_b2_selw.fill(0.0);
     }
@@ -1003,12 +1142,15 @@ impl UnifiedRtrlWorkspace {
             self.e_actor_b.fill(0.0);
             self.e_critic_w.fill(0.0);
             self.e_critic_b = 0.0;
-            self.e_gates = [0.0_f32; 4];
+            self.e_gates = [0.0_f32; UNIFIED_NUM_BANDS];
+            self.e_adapter_b1_t.fill(0.0);
+            self.e_adapter_b2_g.fill(0.0);
             self.e_b1_alpha = [0.0_f32; UNIFIED_B1_SLOTS];
             self.e_b1_omega = [0.0_f32; UNIFIED_B1_SLOTS];
             self.e_b1_beta.fill(0.0);
             self.e_b1_bdelta.fill(0.0);
             self.e_b1_qfb.fill(0.0);
+            self.e_b1_vdrift.fill(0.0);
             self.e_b1_inw.fill(0.0);
             self.e_b1_selw.fill(0.0);
             self.e_b2_alpha = [0.0_f32; UNIFIED_B2_SLOTS];
@@ -1016,6 +1158,7 @@ impl UnifiedRtrlWorkspace {
             self.e_b2_beta.fill(0.0);
             self.e_b2_bdelta.fill(0.0);
             self.e_b2_qfb.fill(0.0);
+            self.e_b2_vdrift.fill(0.0);
             self.e_b2_inw.fill(0.0);
             self.e_b2_selw.fill(0.0);
             return;
@@ -1025,11 +1168,14 @@ impl UnifiedRtrlWorkspace {
         fast_scale(&mut self.e_critic_w, decay);
         self.e_critic_b = sanitize_f32(self.e_critic_b * decay);
         for v in self.e_gates.iter_mut() { *v = sanitize_f32(*v * decay); }
+        fast_scale(&mut self.e_adapter_b1_t, decay);
+        fast_scale(&mut self.e_adapter_b2_g, decay);
         for v in self.e_b1_alpha.iter_mut() { *v = sanitize_f32(*v * decay); }
         for v in self.e_b1_omega.iter_mut() { *v = sanitize_f32(*v * decay); }
         fast_scale(&mut self.e_b1_beta, decay);
         fast_scale(&mut self.e_b1_bdelta, decay);
         fast_scale(&mut self.e_b1_qfb, decay);
+        fast_scale(&mut self.e_b1_vdrift, decay);
         fast_scale(&mut self.e_b1_inw, decay);
         fast_scale(&mut self.e_b1_selw, decay);
         for v in self.e_b2_alpha.iter_mut() { *v = sanitize_f32(*v * decay); }
@@ -1037,6 +1183,7 @@ impl UnifiedRtrlWorkspace {
         fast_scale(&mut self.e_b2_beta, decay);
         fast_scale(&mut self.e_b2_bdelta, decay);
         fast_scale(&mut self.e_b2_qfb, decay);
+        fast_scale(&mut self.e_b2_vdrift, decay);
         fast_scale(&mut self.e_b2_inw, decay);
         fast_scale(&mut self.e_b2_selw, decay);
     }
@@ -1046,11 +1193,13 @@ impl UnifiedRtrlWorkspace {
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b0_state, 128.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b1_state, 128.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.b2_state, 128.0, 0.0));
+        faults = faults.saturating_add(scrub_slice_seu(&mut self.nl_raw, 128.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b1_alpha, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b1_omega, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b1_beta, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b1_bdelta, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b1_qfb, 64.0, 0.0));
+        faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b1_vdrift, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b1_inw, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b1_selw, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b2_alpha, 64.0, 0.0));
@@ -1058,6 +1207,7 @@ impl UnifiedRtrlWorkspace {
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b2_beta, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b2_bdelta, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b2_qfb, 64.0, 0.0));
+        faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b2_vdrift, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b2_inw, 64.0, 0.0));
         faults = faults.saturating_add(scrub_slice_seu(&mut self.s_b2_selw, 64.0, 0.0));
         faults
@@ -1065,16 +1215,20 @@ impl UnifiedRtrlWorkspace {
 
     pub fn memory_bytes(&self) -> usize {
         let vfloats = self.b0_state.len()
+            + self.nl_raw.len()
+            + self.grad_nl_raw.len()
             + self.feat_normed.len()
             + self.feat_gated.len()
             + self.s_b1_beta.len()
             + self.s_b1_bdelta.len()
             + self.s_b1_qfb.len()
+            + self.s_b1_vdrift.len()
             + self.s_b1_inw.len()
             + self.s_b1_selw.len()
             + self.s_b2_beta.len()
             + self.s_b2_bdelta.len()
             + self.s_b2_qfb.len()
+            + self.s_b2_vdrift.len()
             + self.s_b2_inw.len()
             + self.s_b2_selw.len()
             + self.logits.len()
@@ -1084,41 +1238,235 @@ impl UnifiedRtrlWorkspace {
             + self.g_b1_beta.len()
             + self.g_b1_bdelta.len()
             + self.g_b1_qfb.len()
+            + self.g_b1_vdrift.len()
             + self.g_b1_inw.len()
             + self.g_b1_selw.len()
             + self.g_b2_beta.len()
             + self.g_b2_bdelta.len()
             + self.g_b2_qfb.len()
+            + self.g_b2_vdrift.len()
             + self.g_b2_inw.len()
             + self.g_b2_selw.len()
+            + self.g_adapter_b1_t.len()
+            + self.g_adapter_b2_g.len()
             + self.e_actor_w.len()
             + self.e_actor_b.len()
             + self.e_critic_w.len()
+            + self.e_adapter_b1_t.len()
+            + self.e_adapter_b2_g.len()
             + self.e_b1_beta.len()
             + self.e_b1_bdelta.len()
             + self.e_b1_qfb.len()
+            + self.e_b1_vdrift.len()
             + self.e_b1_inw.len()
             + self.e_b1_selw.len()
             + self.e_b2_beta.len()
             + self.e_b2_bdelta.len()
             + self.e_b2_qfb.len()
+            + self.e_b2_vdrift.len()
             + self.e_b2_inw.len()
             + self.e_b2_selw.len();
         let fixed_floats = UNIFIED_B1_DIM * 4
             + UNIFIED_B2_DIM * 4
             + UNIFIED_B1_SLOTS * 4
             + UNIFIED_B2_SLOTS * 4
-            + 24;
+            + UNIFIED_NUM_BANDS * 5
+            + 8;
         (vfloats + fixed_floats) * 4
     }
 }
 
-/// Обновление 4-скалярного полосового рационального мета-шага IDBD (`step131`, 0% `exp`).
+/// Компактный нелинейный блок P1 (`16` признаков):
+/// - `0..6`: 3 пары симплектического `J`-XOR (`slow-fast q-q`, `fast-fast q-q`, `slow-fast (q,p)`);
+/// - `6..12`: 2 кросс-произведения `Band 2` (`slot 0 × slot 4`, `slot 3 × slot 7`);
+/// - `12..16`: 4 безсмещённых 2-х момента энергии (`slow-midfast`, `mid-fast`, `e12-e13`, `e14-e15`).
+#[axiom_zero]
+#[inline]
+fn compute_nl_features(b1_n: &[f32], b2_n: &[f32], out_nl: &mut [f32], exact: bool) {
+    if out_nl.len() < UNIFIED_NL_DIM {
+        return;
+    }
+    // 1. 3 пары symplectic_j_xor_2d на Band 1
+    let p0 = symplectic_j_xor_2d(
+        (total_get_copy(b1_n, 0, 0.0), total_get_copy(b1_n, 2, 0.0)),
+        (total_get_copy(b1_n, 16, 0.0), total_get_copy(b1_n, 18, 0.0)),
+        exact,
+    );
+    let _ = total_set(out_nl, 0, p0.0);
+    let _ = total_set(out_nl, 1, p0.1);
+
+    let p1 = symplectic_j_xor_2d(
+        (total_get_copy(b1_n, 24, 0.0), total_get_copy(b1_n, 26, 0.0)),
+        (total_get_copy(b1_n, 28, 0.0), total_get_copy(b1_n, 30, 0.0)),
+        exact,
+    );
+    let _ = total_set(out_nl, 2, p1.0);
+    let _ = total_set(out_nl, 3, p1.1);
+
+    let p2 = symplectic_j_xor_2d(
+        (total_get_copy(b1_n, 4, 0.0), total_get_copy(b1_n, 5, 0.0)),
+        (total_get_copy(b1_n, 20, 0.0), total_get_copy(b1_n, 21, 0.0)),
+        exact,
+    );
+    let _ = total_set(out_nl, 4, p2.0);
+    let _ = total_set(out_nl, 5, p2.1);
+
+    // 2. 2 кросс-произведения cross_3d_pair на Band 2 (slow × fast, mid × fastest)
+    let c0 = cross_3d_pair(
+        (total_get_copy(b2_n, 0, 0.0), total_get_copy(b2_n, 1, 0.0), total_get_copy(b2_n, 2, 0.0)),
+        (total_get_copy(b2_n, 12, 0.0), total_get_copy(b2_n, 13, 0.0), total_get_copy(b2_n, 14, 0.0)),
+    );
+    let _ = total_set(out_nl, 6, c0.0);
+    let _ = total_set(out_nl, 7, c0.1);
+    let _ = total_set(out_nl, 8, c0.2);
+
+    let c1 = cross_3d_pair(
+        (total_get_copy(b2_n, 9, 0.0), total_get_copy(b2_n, 10, 0.0), total_get_copy(b2_n, 11, 0.0)),
+        (total_get_copy(b2_n, 21, 0.0), total_get_copy(b2_n, 22, 0.0), total_get_copy(b2_n, 23, 0.0)),
+    );
+    let _ = total_set(out_nl, 9, c1.0);
+    let _ = total_set(out_nl, 10, c1.1);
+    let _ = total_set(out_nl, 11, c1.2);
+
+    // 3. 4 канала 2-го момента (энергия слотов Band 1 без постоянного смещения)
+    let mut sq = [0.0_f32; 4];
+    for qg in 0..4usize {
+        let base = qg * 8;
+        let mut s = 0.0_f32;
+        for i in 0..8usize {
+            let v = total_get_copy(b1_n, base + i, 0.0);
+            s = sanitize_f32(s + v * v);
+        }
+        let _ = total_set(&mut sq, qg, s);
+    }
+    let _ = total_set(out_nl, 12, sanitize_bounded_f32(0.125 * (total_get_copy(&sq, 0, 0.0) - total_get_copy(&sq, 2, 0.0)), 64.0));
+    let _ = total_set(out_nl, 13, sanitize_bounded_f32(0.125 * (total_get_copy(&sq, 1, 0.0) - total_get_copy(&sq, 3, 0.0)), 64.0));
+
+    let e12 = sanitize_f32(
+        total_get_copy(b1_n, 24, 0.0) * total_get_copy(b1_n, 24, 0.0)
+            + total_get_copy(b1_n, 25, 0.0) * total_get_copy(b1_n, 25, 0.0),
+    );
+    let e13 = sanitize_f32(
+        total_get_copy(b1_n, 26, 0.0) * total_get_copy(b1_n, 26, 0.0)
+            + total_get_copy(b1_n, 27, 0.0) * total_get_copy(b1_n, 27, 0.0),
+    );
+    let e14 = sanitize_f32(
+        total_get_copy(b1_n, 28, 0.0) * total_get_copy(b1_n, 28, 0.0)
+            + total_get_copy(b1_n, 29, 0.0) * total_get_copy(b1_n, 29, 0.0),
+    );
+    let e15 = sanitize_f32(
+        total_get_copy(b1_n, 30, 0.0) * total_get_copy(b1_n, 30, 0.0)
+            + total_get_copy(b1_n, 31, 0.0) * total_get_copy(b1_n, 31, 0.0),
+    );
+    let _ = total_set(out_nl, 14, sanitize_bounded_f32(0.5 * (e12 - e13), 64.0));
+    let _ = total_set(out_nl, 15, sanitize_bounded_f32(0.5 * (e14 - e15), 64.0));
+}
+
+/// Точный обратный проход через `compute_nl_features`: прибавляет градиенты к `grad_b1_n` и `grad_b2_n`.
+#[axiom_zero]
+#[inline]
+fn compute_nl_features_backward(
+    b1_n: &[f32],
+    b2_n: &[f32],
+    g_nl: &[f32],
+    grad_b1_n: &mut [f32],
+    grad_b2_n: &mut [f32],
+    exact: bool,
+) {
+    if g_nl.len() < UNIFIED_NL_DIM {
+        return;
+    }
+    let add_at = |buf: &mut [f32], idx: usize, delta: f32| {
+        let cur = total_get_copy(buf, idx, 0.0);
+        let _ = total_set(buf, idx, sanitize_f32(cur + delta));
+    };
+
+    // 1. Обратный проход 3 пар J-XOR
+    let (gu0, gv0) = symplectic_j_xor_2d_backward(
+        (total_get_copy(b1_n, 0, 0.0), total_get_copy(b1_n, 2, 0.0)),
+        (total_get_copy(b1_n, 16, 0.0), total_get_copy(b1_n, 18, 0.0)),
+        (total_get_copy(g_nl, 0, 0.0), total_get_copy(g_nl, 1, 0.0)),
+        exact,
+    );
+    add_at(grad_b1_n, 0, gu0.0);
+    add_at(grad_b1_n, 2, gu0.1);
+    add_at(grad_b1_n, 16, gv0.0);
+    add_at(grad_b1_n, 18, gv0.1);
+
+    let (gu1, gv1) = symplectic_j_xor_2d_backward(
+        (total_get_copy(b1_n, 24, 0.0), total_get_copy(b1_n, 26, 0.0)),
+        (total_get_copy(b1_n, 28, 0.0), total_get_copy(b1_n, 30, 0.0)),
+        (total_get_copy(g_nl, 2, 0.0), total_get_copy(g_nl, 3, 0.0)),
+        exact,
+    );
+    add_at(grad_b1_n, 24, gu1.0);
+    add_at(grad_b1_n, 26, gu1.1);
+    add_at(grad_b1_n, 28, gv1.0);
+    add_at(grad_b1_n, 30, gv1.1);
+
+    let (gu2, gv2) = symplectic_j_xor_2d_backward(
+        (total_get_copy(b1_n, 4, 0.0), total_get_copy(b1_n, 5, 0.0)),
+        (total_get_copy(b1_n, 20, 0.0), total_get_copy(b1_n, 21, 0.0)),
+        (total_get_copy(g_nl, 4, 0.0), total_get_copy(g_nl, 5, 0.0)),
+        exact,
+    );
+    add_at(grad_b1_n, 4, gu2.0);
+    add_at(grad_b1_n, 5, gu2.1);
+    add_at(grad_b1_n, 20, gv2.0);
+    add_at(grad_b1_n, 21, gv2.1);
+
+    // 2. Обратный проход 2 кросс-произведений Band 2
+    let (gcu0, gcv0) = cross_3d_pair_backward(
+        (total_get_copy(b2_n, 0, 0.0), total_get_copy(b2_n, 1, 0.0), total_get_copy(b2_n, 2, 0.0)),
+        (total_get_copy(b2_n, 12, 0.0), total_get_copy(b2_n, 13, 0.0), total_get_copy(b2_n, 14, 0.0)),
+        (total_get_copy(g_nl, 6, 0.0), total_get_copy(g_nl, 7, 0.0), total_get_copy(g_nl, 8, 0.0)),
+    );
+    add_at(grad_b2_n, 0, gcu0.0);
+    add_at(grad_b2_n, 1, gcu0.1);
+    add_at(grad_b2_n, 2, gcu0.2);
+    add_at(grad_b2_n, 12, gcv0.0);
+    add_at(grad_b2_n, 13, gcv0.1);
+    add_at(grad_b2_n, 14, gcv0.2);
+
+    let (gcu1, gcv1) = cross_3d_pair_backward(
+        (total_get_copy(b2_n, 9, 0.0), total_get_copy(b2_n, 10, 0.0), total_get_copy(b2_n, 11, 0.0)),
+        (total_get_copy(b2_n, 21, 0.0), total_get_copy(b2_n, 22, 0.0), total_get_copy(b2_n, 23, 0.0)),
+        (total_get_copy(g_nl, 9, 0.0), total_get_copy(g_nl, 10, 0.0), total_get_copy(g_nl, 11, 0.0)),
+    );
+    add_at(grad_b2_n, 9, gcu1.0);
+    add_at(grad_b2_n, 10, gcu1.1);
+    add_at(grad_b2_n, 11, gcu1.2);
+    add_at(grad_b2_n, 21, gcv1.0);
+    add_at(grad_b2_n, 22, gcv1.1);
+    add_at(grad_b2_n, 23, gcv1.2);
+
+    // 3. Обратный проход 4 каналов 2-го момента
+    let g12 = total_get_copy(g_nl, 12, 0.0);
+    let g13 = total_get_copy(g_nl, 13, 0.0);
+    let g14 = total_get_copy(g_nl, 14, 0.0);
+    let g15 = total_get_copy(g_nl, 15, 0.0);
+    for i in 0..8usize {
+        add_at(grad_b1_n, i, 0.25 * g12 * total_get_copy(b1_n, i, 0.0));
+        add_at(grad_b1_n, 16 + i, -0.25 * g12 * total_get_copy(b1_n, 16 + i, 0.0));
+        add_at(grad_b1_n, 8 + i, 0.25 * g13 * total_get_copy(b1_n, 8 + i, 0.0));
+        add_at(grad_b1_n, 24 + i, -0.25 * g13 * total_get_copy(b1_n, 24 + i, 0.0));
+    }
+    add_at(grad_b1_n, 24, g14 * total_get_copy(b1_n, 24, 0.0));
+    add_at(grad_b1_n, 25, g14 * total_get_copy(b1_n, 25, 0.0));
+    add_at(grad_b1_n, 26, -g14 * total_get_copy(b1_n, 26, 0.0));
+    add_at(grad_b1_n, 27, -g14 * total_get_copy(b1_n, 27, 0.0));
+    add_at(grad_b1_n, 28, g15 * total_get_copy(b1_n, 28, 0.0));
+    add_at(grad_b1_n, 29, g15 * total_get_copy(b1_n, 29, 0.0));
+    add_at(grad_b1_n, 30, -g15 * total_get_copy(b1_n, 30, 0.0));
+    add_at(grad_b1_n, 31, -g15 * total_get_copy(b1_n, 31, 0.0));
+}
+
+/// Обновление полосового рационального мета-шага IDBD (`step131`, 0% `exp`).
 #[axiom_zero]
 #[inline]
 fn update_band_idbd(
-    beta_arr: &mut [f32; 4],
-    h_arr: &mut [f32; 4],
+    beta_arr: &mut [f32; UNIFIED_NUM_BANDS],
+    h_arr: &mut [f32; UNIFIED_NUM_BANDS],
     band: usize,
     mean_u: f32,
     mean_f2: f32,
@@ -1163,10 +1511,15 @@ pub struct UnifiedCayleyCore {
 #[axiom_zero]
 impl UnifiedCayleyCore {
     pub fn new(cfg: UnifiedCayleyConfig) -> Self {
-        let in_cond = CausalInputConditioner::new(cfg.raw_in_dim, cfg.use_delta_channel, cfg.delta_scale);
+        let in_cond = CausalInputConditioner::new(
+            cfg.raw_in_dim,
+            cfg.use_delta_channel,
+            cfg.delta_scale,
+            cfg.enable_smooth_var_norm,
+        );
         let eff_in = in_cond.eff_dim;
         let na = cfg.num_actions.clamp(1, 32);
-        let band0 = Band0Clock::new(eff_in, cfg.seed, cfg.use_band0);
+        let band0 = Band0Clock::new(eff_in, cfg.seed, cfg.use_band0, cfg.b0_sectors);
         let nb = cfg.max_banks.clamp(1, UNIFIED_MAX_BANKS);
         let mut slots = Vec::with_capacity(nb);
         for bi in 0..nb {
@@ -1226,6 +1579,15 @@ impl UnifiedCayleyCore {
             if let Some(v) = slot.actor_w.get_mut(0) {
                 *v = f32::from_bits(v.to_bits() ^ (1u32 << 30));
             }
+            if let Some(v) = slot.critic_w.get_mut(0) {
+                *v = f32::from_bits(v.to_bits() ^ (1u32 << 30));
+            }
+            if let Some(v) = slot.adapter_b1_t.get_mut(0) {
+                *v = f32::from_bits(v.to_bits() ^ (1u32 << 30));
+            }
+            if let Some(v) = slot.adapter_b2_g.get_mut(0) {
+                *v = f32::from_bits(v.to_bits() ^ (1u32 << 30));
+            }
         }
         if let Some(v) = self.ws.b1_state.get_mut(0) {
             *v = f32::from_bits(v.to_bits() ^ (1u32 << 30));
@@ -1269,6 +1631,7 @@ impl UnifiedCayleyCore {
         let exact = self.cfg.exact_inv_sqrt;
         let sel_on = self.cfg.enable_selectivity;
         let fb_on = sel_on && self.cfg.enable_local_feedback;
+        let diode_on = sel_on && self.cfg.enable_finsler_diode;
         let min_a2 = self.cfg.min_alpha_sq;
 
         let active = self.active_slot.min(self.slots.len().saturating_sub(1));
@@ -1289,31 +1652,57 @@ impl UnifiedCayleyCore {
                     m_in = sanitize_bounded_f32(fast_dot(ws, &self.in_cond.out_feat), 32.0);
                 }
 
-                let (delta, d_delta_darg, z_pre, beta_k, q0, q1, inv_r, inv_r3, uhat0, uhat1) = if sel_on {
+                let (delta, d_delta_darg, z_pre, beta_k, eff_q0, eff_q1, inv_r, inv_r3, uhat0, uhat1, dt_dm, dt_dv0, dt_dv1) = if sel_on {
                     let beta_k = total_get_copy(&bb.b1_beta, k, 0.0);
                     let b_d = total_get_copy(&bb.b1_bdelta, k, 0.0);
                     let mut sel_in = 0.0_f32;
                     if let Some(sw) = bb.b1_sel_w.get(woff..woff + ein) {
                         sel_in = sanitize_bounded_f32(fast_dot(sw, &self.in_cond.out_feat), 16.0);
                     }
-                    let (q0, q1, inv_r, inv_r3, uhat0, uhat1, fb_term) = if fb_on {
-                        let q0 = total_get_copy(&bb.b1_qfb, u_off, 0.0);
-                        let q1 = total_get_copy(&bb.b1_qfb, u_off + 1, 0.0);
+                    let (inv_r, inv_r3, uhat0, uhat1) = if fb_on || diode_on {
                         let r2 = sanitize_f32(u0 * u0 + u1 * u1 + 1.0);
                         let inv_r = inv_sqrt_select(r2, exact);
                         let inv_r3 = inv_r * inv_r * inv_r;
-                        let uhat0 = u0 * inv_r;
-                        let uhat1 = u1 * inv_r;
-                        (q0, q1, inv_r, inv_r3, uhat0, uhat1, q0 * uhat0 + q1 * uhat1)
+                        (inv_r, inv_r3, u0 * inv_r, u1 * inv_r)
                     } else {
-                        (0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+                        (1.0, 1.0, 0.0, 0.0)
                     };
-                    let z = sanitize_bounded_f32(b_d + sel_in + fb_term, 10.0);
+                    let (q0, q1, fb_term) = if fb_on {
+                        let q0 = total_get_copy(&bb.b1_qfb, u_off, 0.0);
+                        let q1 = total_get_copy(&bb.b1_qfb, u_off + 1, 0.0);
+                        (q0, q1, q0 * uhat0 + q1 * uhat1)
+                    } else {
+                        (0.0, 0.0, 0.0)
+                    };
+                    let (diode_term, dt_dd0, dt_dd1, dt_dm, dt_dv0, dt_dv1) = if diode_on {
+                        let v0 = total_get_copy(&bb.b1_vdrift, u_off, 0.0);
+                        let v1 = total_get_copy(&bb.b1_vdrift, u_off + 1, 0.0);
+                        let (x_imp, dx_dm) = rational_sat_and_deriv(m_in, exact);
+                        let (asym, da_dd, da_dv) = finsler_randers_contrast_2d(
+                            (v0, v1),
+                            (x_imp - uhat0, -uhat1),
+                            UNIFIED_FINSLER_MU0,
+                            exact,
+                        );
+                        (
+                            asym,
+                            da_dd.0,
+                            da_dd.1,
+                            sanitize_f32(da_dd.0 * dx_dm),
+                            da_dv.0,
+                            da_dv.1,
+                        )
+                    } else {
+                        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                    };
+                    let eff_q0 = sanitize_f32(q0 - dt_dd0);
+                    let eff_q1 = sanitize_f32(q1 - dt_dd1);
+                    let z = sanitize_bounded_f32(b_d + sel_in + fb_term + diode_term, 10.0);
                     let arg = sanitize_bounded_f32(beta_k * z, 10.0);
                     let (del, ddel) = rational_pos_and_deriv(arg);
-                    (del, ddel, z, beta_k, q0, q1, inv_r, inv_r3, uhat0, uhat1)
+                    (del, ddel, z, beta_k, eff_q0, eff_q1, inv_r, inv_r3, uhat0, uhat1, dt_dm, dt_dv0, dt_dv1)
                 } else {
-                    (1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0)
+                    (1.0_f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 };
 
                 let eff_a2 = a_k * a_k + min_a2;
@@ -1352,14 +1741,14 @@ impl UnifiedCayleyCore {
                         let d_gin_ddel = total_div_f32(1.0, (1.0 + 0.5 * delta) * (1.0 + 0.5 * delta), 0.0);
                         d_u_ddel0 = d_lam_ddel * ru0 + lam * w_k * d_ru_dth0 + d_gin_ddel * m_in;
                         d_u_ddel1 = d_lam_ddel * ru1 + lam * w_k * d_ru_dth1;
-                        if fb_on {
+                        if fb_on || diode_on {
                             let scale_fb = d_delta_darg * beta_k;
                             let duh00 = inv_r - u0 * u0 * inv_r3;
                             let duh01 = -u0 * u1 * inv_r3;
                             let duh10 = -u1 * u0 * inv_r3;
                             let duh11 = inv_r - u1 * u1 * inv_r3;
-                            let dg_du0 = scale_fb * (q0 * duh00 + q1 * duh10);
-                            let dg_du1 = scale_fb * (q0 * duh01 + q1 * duh11);
+                            let dg_du0 = scale_fb * (eff_q0 * duh00 + eff_q1 * duh10);
+                            let dg_du1 = scale_fb * (eff_q0 * duh01 + eff_q1 * duh11);
                             j00 = sanitize_f32(j00 + d_u_ddel0 * dg_du0);
                             j01 = sanitize_f32(j01 + d_u_ddel0 * dg_du1);
                             j10 = sanitize_f32(j10 + d_u_ddel1 * dg_du0);
@@ -1381,10 +1770,12 @@ impl UnifiedCayleyCore {
                     step_tr2!(self.ws.s_b1_alpha, u_off, d_u_da0, d_u_da1);
                     step_tr2!(self.ws.s_b1_omega, u_off, d_u_dw0, d_u_dw1);
 
+                    let ddel_dm = if diode_on { sanitize_f32(d_delta_darg * beta_k * dt_dm) } else { 0.0 };
                     for j in 0..ein {
                         let xj = total_get_copy(&self.in_cond.out_feat, j, 0.0);
                         let tr_off = (woff + j) * 2;
-                        step_tr2!(self.ws.s_b1_inw, tr_off, g_in * xj, 0.0);
+                        let dm_x = ddel_dm * xj;
+                        step_tr2!(self.ws.s_b1_inw, tr_off, g_in * xj + d_u_ddel0 * dm_x, d_u_ddel1 * dm_x);
                         if sel_on {
                             let ddel_ds = d_delta_darg * beta_k * xj;
                             step_tr2!(self.ws.s_b1_selw, tr_off, d_u_ddel0 * ddel_ds, d_u_ddel1 * ddel_ds);
@@ -1402,6 +1793,13 @@ impl UnifiedCayleyCore {
                             let qtr_off = u_off * 2;
                             step_tr2!(self.ws.s_b1_qfb, qtr_off, d_u_ddel0 * ddel_dq0, d_u_ddel1 * ddel_dq0);
                             step_tr2!(self.ws.s_b1_qfb, qtr_off + 2, d_u_ddel0 * ddel_dq1, d_u_ddel1 * ddel_dq1);
+                        }
+                        if diode_on {
+                            let ddel_dv0 = d_delta_darg * beta_k * dt_dv0;
+                            let ddel_dv1 = d_delta_darg * beta_k * dt_dv1;
+                            let vtr_off = u_off * 2;
+                            step_tr2!(self.ws.s_b1_vdrift, vtr_off, d_u_ddel0 * ddel_dv0, d_u_ddel1 * ddel_dv0);
+                            step_tr2!(self.ws.s_b1_vdrift, vtr_off + 2, d_u_ddel0 * ddel_dv1, d_u_ddel1 * ddel_dv1);
                         }
                     }
                 }
@@ -1437,34 +1835,67 @@ impl UnifiedCayleyCore {
                     m_in = sanitize_bounded_f32(fast_dot(ws, &self.in_cond.out_feat), 32.0);
                 }
 
-                let (delta, d_delta_darg, z_pre, beta_s, qfb, inv_r, inv_r3, uhat) = if sel_on {
+                let (delta, d_delta_darg, z_pre, beta_s, eff_q, inv_r, inv_r3, uhat, dt_dm, dt_dv) = if sel_on {
                     let beta_s = total_get_copy(&bb.b2_beta, s, 0.0);
                     let b_d = total_get_copy(&bb.b2_bdelta, s, 0.0);
                     let mut sel_in = 0.0_f32;
                     if let Some(sw) = bb.b2_sel_w.get(woff..woff + ein) {
                         sel_in = sanitize_bounded_f32(fast_dot(sw, &self.in_cond.out_feat), 16.0);
                     }
-                    let (qfb, inv_r, inv_r3, uhat, fb_term) = if fb_on {
+                    let (inv_r, inv_r3, uhat) = if fb_on || diode_on {
+                        let r2 = sanitize_f32(u.0 * u.0 + u.1 * u.1 + u.2 * u.2 + 1.0);
+                        let inv_r = inv_sqrt_select(r2, exact);
+                        let inv_r3 = inv_r * inv_r * inv_r;
+                        (inv_r, inv_r3, (u.0 * inv_r, u.1 * inv_r, u.2 * inv_r))
+                    } else {
+                        (1.0, 1.0, (0.0, 0.0, 0.0))
+                    };
+                    let (qfb, fb_term) = if fb_on {
                         let qfb = (
                             total_get_copy(&bb.b2_qfb, off, 0.0),
                             total_get_copy(&bb.b2_qfb, off + 1, 0.0),
                             total_get_copy(&bb.b2_qfb, off + 2, 0.0),
                         );
-                        let r2 = sanitize_f32(u.0 * u.0 + u.1 * u.1 + u.2 * u.2 + 1.0);
-                        let inv_r = inv_sqrt_select(r2, exact);
-                        let inv_r3 = inv_r * inv_r * inv_r;
-                        let uhat = (u.0 * inv_r, u.1 * inv_r, u.2 * inv_r);
-                        let fb = qfb.0 * uhat.0 + qfb.1 * uhat.1 + qfb.2 * uhat.2;
-                        (qfb, inv_r, inv_r3, uhat, fb)
+                        (qfb, qfb.0 * uhat.0 + qfb.1 * uhat.1 + qfb.2 * uhat.2)
                     } else {
-                        ((0.0, 0.0, 0.0), 1.0, 1.0, (0.0, 0.0, 0.0), 0.0)
+                        ((0.0, 0.0, 0.0), 0.0)
                     };
-                    let z = sanitize_bounded_f32(b_d + sel_in + fb_term, 10.0);
+                    let (diode_term, dt_dd, dt_dm, dt_dv) = if diode_on {
+                        let vdr = (
+                            total_get_copy(&bb.b2_vdrift, off, 0.0),
+                            total_get_copy(&bb.b2_vdrift, off + 1, 0.0),
+                            total_get_copy(&bb.b2_vdrift, off + 2, 0.0),
+                        );
+                        let (x_imp, dx_dm) = rational_sat_and_deriv(m_in, exact);
+                        let innov = (
+                            x_imp * d_dir.0 - uhat.0,
+                            x_imp * d_dir.1 - uhat.1,
+                            x_imp * d_dir.2 - uhat.2,
+                        );
+                        let (asym, da_dd, da_dv) = finsler_randers_contrast_3d(
+                            vdr,
+                            innov,
+                            UNIFIED_FINSLER_MU0,
+                            exact,
+                        );
+                        let dt_dm_val = sanitize_f32(
+                            (da_dd.0 * d_dir.0 + da_dd.1 * d_dir.1 + da_dd.2 * d_dir.2) * dx_dm,
+                        );
+                        (asym, da_dd, dt_dm_val, da_dv)
+                    } else {
+                        (0.0, (0.0, 0.0, 0.0), 0.0, (0.0, 0.0, 0.0))
+                    };
+                    let eff_q = (
+                        sanitize_f32(qfb.0 - dt_dd.0),
+                        sanitize_f32(qfb.1 - dt_dd.1),
+                        sanitize_f32(qfb.2 - dt_dd.2),
+                    );
+                    let z = sanitize_bounded_f32(b_d + sel_in + fb_term + diode_term, 10.0);
                     let arg = sanitize_bounded_f32(beta_s * z, 10.0);
                     let (del, ddel) = rational_pos_and_deriv(arg);
-                    (del, ddel, z, beta_s, qfb, inv_r, inv_r3, uhat)
+                    (del, ddel, z, beta_s, eff_q, inv_r, inv_r3, uhat, dt_dm, dt_dv)
                 } else {
-                    (1.0_f32, 0.0, 0.0, 0.0, (0.0, 0.0, 0.0), 1.0, 1.0, (0.0, 0.0, 0.0))
+                    (1.0_f32, 0.0, 0.0, 0.0, (0.0, 0.0, 0.0), 1.0, 1.0, (0.0, 0.0, 0.0), 0.0, (0.0, 0.0, 0.0))
                 };
 
                 let eff_a2 = a_s * a_s + min_a2;
@@ -1494,12 +1925,12 @@ impl UnifiedCayleyCore {
                             d_lam_ddel * ru.1 + lam * w_s * dr_dth.1 + d_gin_ddel * m_in * d_dir.1,
                             d_lam_ddel * ru.2 + lam * w_s * dr_dth.2 + d_gin_ddel * m_in * d_dir.2,
                         );
-                        if fb_on {
+                        if fb_on || diode_on {
                             let scale_fb = d_delta_darg * beta_s;
-                            let qu = qfb.0 * u.0 + qfb.1 * u.1 + qfb.2 * u.2;
-                            dg_du0 = scale_fb * (qfb.0 * inv_r - u.0 * qu * inv_r3);
-                            dg_du1 = scale_fb * (qfb.1 * inv_r - u.1 * qu * inv_r3);
-                            dg_du2 = scale_fb * (qfb.2 * inv_r - u.2 * qu * inv_r3);
+                            let qu = eff_q.0 * u.0 + eff_q.1 * u.1 + eff_q.2 * u.2;
+                            dg_du0 = scale_fb * (eff_q.0 * inv_r - u.0 * qu * inv_r3);
+                            dg_du1 = scale_fb * (eff_q.1 * inv_r - u.1 * qu * inv_r3);
+                            dg_du2 = scale_fb * (eff_q.2 * inv_r - u.2 * qu * inv_r3);
                         }
                     }
 
@@ -1511,7 +1942,7 @@ impl UnifiedCayleyCore {
                                 total_get_copy(&$arr, $base + 2, 0.0),
                             );
                             let rp = rot3_apply(e, c1, c2, p);
-                            let fb_proj = if fb_on {
+                            let fb_proj = if fb_on || diode_on {
                                 dg_du0 * p.0 + dg_du1 * p.1 + dg_du2 * p.2
                             } else {
                                 0.0
@@ -1525,11 +1956,19 @@ impl UnifiedCayleyCore {
                     step_tr3!(self.ws.s_b2_alpha, off, d_u_da.0, d_u_da.1, d_u_da.2);
                     step_tr3!(self.ws.s_b2_omega, off, d_u_dw.0, d_u_dw.1, d_u_dw.2);
 
+                    let ddel_dm = if diode_on { sanitize_f32(d_delta_darg * beta_s * dt_dm) } else { 0.0 };
                     for j in 0..ein {
                         let xj = total_get_copy(&self.in_cond.out_feat, j, 0.0);
                         let tr_off = (woff + j) * 3;
                         let gx = g_in * xj;
-                        step_tr3!(self.ws.s_b2_inw, tr_off, gx * d_dir.0, gx * d_dir.1, gx * d_dir.2);
+                        let dm_x = ddel_dm * xj;
+                        step_tr3!(
+                            self.ws.s_b2_inw,
+                            tr_off,
+                            gx * d_dir.0 + d_u_ddel.0 * dm_x,
+                            gx * d_dir.1 + d_u_ddel.1 * dm_x,
+                            gx * d_dir.2 + d_u_ddel.2 * dm_x
+                        );
                         if sel_on {
                             let dds = d_delta_darg * beta_s * xj;
                             step_tr3!(self.ws.s_b2_selw, tr_off, d_u_ddel.0 * dds, d_u_ddel.1 * dds, d_u_ddel.2 * dds);
@@ -1549,6 +1988,14 @@ impl UnifiedCayleyCore {
                             let ddq2 = d_delta_darg * beta_s * uhat.2;
                             step_tr3!(self.ws.s_b2_qfb, (off + 2) * 3, d_u_ddel.0 * ddq2, d_u_ddel.1 * ddq2, d_u_ddel.2 * ddq2);
                         }
+                        if diode_on {
+                            let ddv0 = d_delta_darg * beta_s * dt_dv.0;
+                            step_tr3!(self.ws.s_b2_vdrift, off * 3, d_u_ddel.0 * ddv0, d_u_ddel.1 * ddv0, d_u_ddel.2 * ddv0);
+                            let ddv1 = d_delta_darg * beta_s * dt_dv.1;
+                            step_tr3!(self.ws.s_b2_vdrift, (off + 1) * 3, d_u_ddel.0 * ddv1, d_u_ddel.1 * ddv1, d_u_ddel.2 * ddv1);
+                            let ddv2 = d_delta_darg * beta_s * dt_dv.2;
+                            step_tr3!(self.ws.s_b2_vdrift, (off + 2) * 3, d_u_ddel.0 * ddv2, d_u_ddel.1 * ddv2, d_u_ddel.2 * ddv2);
+                        }
                     }
                 }
 
@@ -1558,25 +2005,77 @@ impl UnifiedCayleyCore {
             }
         }
 
-        // ---------- Newton RMSNorm + Band Gates [skip, B0, B1, B2] + Головки из active слота ----------
+        // ---------- Newton RMSNorm + [опц. NL J-XOR/Cross3D/2ndMoment] + Band Gates + Головки ----------
         if let Some(slot) = self.slots.get(active) {
             let off_b0 = ein;
             let off_b1 = off_b0 + b0_dim;
             let off_b2 = off_b1 + UNIFIED_B1_DIM;
+            let off_nl = off_b2 + UNIFIED_B2_DIM;
+            let nl_dim = self.ws.nl_dim;
             let n0 = rmsnorm_band_into(&self.in_cond.out_feat, &mut self.ws.feat_normed, 0, 0.5, exact);
             let n1 = if b0_dim > 0 {
                 rmsnorm_band_into(&self.ws.b0_state, &mut self.ws.feat_normed, off_b0, 0.05, exact)
             } else {
                 1.0
             };
-            let n2 = rmsnorm_band_into(&self.ws.b1_state, &mut self.ws.feat_normed, off_b1, 0.05, exact);
-            let n3 = rmsnorm_band_into(&self.ws.b2_state, &mut self.ws.feat_normed, off_b2, 0.05, exact);
+            let slot_has_ad = self.cfg.enable_bank_rotor_adapter && !slot.adapter_b1_t.is_empty();
+            let n2 = if slot_has_ad {
+                let mut b1_eff = [0.0_f32; UNIFIED_B1_DIM];
+                for k in 0..UNIFIED_B1_SLOTS {
+                    let off = k * 2;
+                    let u = (
+                        total_get_copy(&self.ws.b1_state, off, 0.0),
+                        total_get_copy(&self.ws.b1_state, off + 1, 0.0),
+                    );
+                    let r = rot2_cayley_apply(total_get_copy(&slot.adapter_b1_t, k, 0.0), u);
+                    let _ = total_set(&mut b1_eff, off, r.0);
+                    let _ = total_set(&mut b1_eff, off + 1, r.1);
+                }
+                rmsnorm_band_into(&b1_eff, &mut self.ws.feat_normed, off_b1, 0.05, exact)
+            } else {
+                rmsnorm_band_into(&self.ws.b1_state, &mut self.ws.feat_normed, off_b1, 0.05, exact)
+            };
+            let n3 = if slot_has_ad {
+                let mut b2_eff = [0.0_f32; UNIFIED_B2_DIM];
+                for s in 0..UNIFIED_B2_SLOTS {
+                    let off = s * 3;
+                    let u = (
+                        total_get_copy(&self.ws.b2_state, off, 0.0),
+                        total_get_copy(&self.ws.b2_state, off + 1, 0.0),
+                        total_get_copy(&self.ws.b2_state, off + 2, 0.0),
+                    );
+                    let g = (
+                        total_get_copy(&slot.adapter_b2_g, off, 0.0),
+                        total_get_copy(&slot.adapter_b2_g, off + 1, 0.0),
+                        total_get_copy(&slot.adapter_b2_g, off + 2, 0.0),
+                    );
+                    let r = rot3_cayley_vec_apply(g, u);
+                    let _ = total_set(&mut b2_eff, off, r.0);
+                    let _ = total_set(&mut b2_eff, off + 1, r.1);
+                    let _ = total_set(&mut b2_eff, off + 2, r.2);
+                }
+                rmsnorm_band_into(&b2_eff, &mut self.ws.feat_normed, off_b2, 0.05, exact)
+            } else {
+                rmsnorm_band_into(&self.ws.b2_state, &mut self.ws.feat_normed, off_b2, 0.05, exact)
+            };
+            let n4 = if nl_dim > 0 {
+                if let (Some(b1n), Some(b2n)) = (
+                    self.ws.feat_normed.get(off_b1..off_b2),
+                    self.ws.feat_normed.get(off_b2..off_nl),
+                ) {
+                    compute_nl_features(b1n, b2n, &mut self.ws.nl_raw, exact);
+                }
+                rmsnorm_band_into(&self.ws.nl_raw, &mut self.ws.feat_normed, off_nl, 0.05, exact)
+            } else {
+                1.0
+            };
             let _ = total_set(&mut self.ws.norm_inv, 0, n0);
             let _ = total_set(&mut self.ws.norm_inv, 1, n1);
             let _ = total_set(&mut self.ws.norm_inv, 2, n2);
             let _ = total_set(&mut self.ws.norm_inv, 3, n3);
+            let _ = total_set(&mut self.ws.norm_inv, 4, n4);
 
-            for b in 0..4usize {
+            for b in 0..UNIFIED_NUM_BANDS {
                 let gl = total_get_copy(&slot.gate_logits, b, 0.0);
                 let (gp, dgp) = rational_pos_and_deriv(gl);
                 let _ = total_set(&mut self.ws.gate_val, b, 0.5 * gp);
@@ -1587,6 +2086,7 @@ impl UnifiedCayleyCore {
             let g1 = total_get_copy(&self.ws.gate_val, 1, 0.5);
             let g2 = total_get_copy(&self.ws.gate_val, 2, 0.5);
             let g3 = total_get_copy(&self.ws.gate_val, 3, 0.5);
+            let g4 = total_get_copy(&self.ws.gate_val, 4, 0.5);
             if let (Some(dst), Some(src)) = (self.ws.feat_gated.get_mut(0..ein), self.ws.feat_normed.get(0..ein)) {
                 for (d, &s) in dst.iter_mut().zip(src.iter()) { *d = s * g0; }
             }
@@ -1598,9 +2098,14 @@ impl UnifiedCayleyCore {
             if let (Some(dst), Some(src)) = (self.ws.feat_gated.get_mut(off_b1..off_b2), self.ws.feat_normed.get(off_b1..off_b2)) {
                 for (d, &s) in dst.iter_mut().zip(src.iter()) { *d = s * g2; }
             }
-            let fdim_all = off_b2 + UNIFIED_B2_DIM;
-            if let (Some(dst), Some(src)) = (self.ws.feat_gated.get_mut(off_b2..fdim_all), self.ws.feat_normed.get(off_b2..fdim_all)) {
+            if let (Some(dst), Some(src)) = (self.ws.feat_gated.get_mut(off_b2..off_nl), self.ws.feat_normed.get(off_b2..off_nl)) {
                 for (d, &s) in dst.iter_mut().zip(src.iter()) { *d = s * g3; }
+            }
+            if nl_dim > 0 {
+                let fdim_all = off_nl + nl_dim;
+                if let (Some(dst), Some(src)) = (self.ws.feat_gated.get_mut(off_nl..fdim_all), self.ws.feat_normed.get(off_nl..fdim_all)) {
+                    for (d, &s) in dst.iter_mut().zip(src.iter()) { *d = s * g4; }
+                }
             }
 
             let na = slot.num_actions;
@@ -1621,15 +2126,19 @@ impl UnifiedCayleyCore {
         }
     }
 
-    /// Обратный проход через головки, вентили полос, 2-шаговый Ньютон RMSNorm и проецирование на трассы RTRL.
+    /// Обратный проход через головки, вентили полос, 2-шаговый Ньютон RMSNorm, NL J-XOR и проецирование на трассы RTRL.
     pub fn compute_instant_rtrl_grads(&mut self, logit_errs: &[f32], reg_err: f32) {
         let active = self.active_slot.min(self.slots.len().saturating_sub(1));
         let ein = self.ws.eff_in;
         let off_b0 = ein;
         let off_b1 = off_b0 + self.ws.b0_dim;
         let off_b2 = off_b1 + UNIFIED_B1_DIM;
+        let off_nl = off_b2 + UNIFIED_B2_DIM;
+        let nl_dim = self.ws.nl_dim;
+        let exact = self.cfg.exact_inv_sqrt;
         let sel_on = self.cfg.enable_selectivity;
         let fb_on = sel_on && self.cfg.enable_local_feedback;
+        let diode_on = sel_on && self.cfg.enable_finsler_diode;
 
         self.ws.grad_feat.fill(0.0);
         if let Some(slot) = self.slots.get(active) {
@@ -1649,8 +2158,14 @@ impl UnifiedCayleyCore {
             }
         }
 
-        let bounds = [(0usize, off_b0), (off_b0, off_b1), (off_b1, off_b2), (off_b2, self.ws.feat_dim)];
-        for b in 0..4usize {
+        let bounds = [
+            (0usize, off_b0),
+            (off_b0, off_b1),
+            (off_b1, off_b2),
+            (off_b2, off_nl),
+            (off_nl, self.ws.feat_dim),
+        ];
+        for b in 0..UNIFIED_NUM_BANDS {
             let (lo, hi) = total_get_copy(&bounds, b, (0, 0));
             let dg = total_get_copy(&self.ws.gate_deriv, b, 0.0);
             let mut dot_g = 0.0_f32;
@@ -1662,7 +2177,7 @@ impl UnifiedCayleyCore {
             let _ = total_set(&mut self.ws.g_gates, b, sanitize_f32(dg * dot_g));
         }
 
-        for b in 0..4usize {
+        for b in 0..UNIFIED_NUM_BANDS {
             let (lo, hi) = total_get_copy(&bounds, b, (0, 0));
             let gv = total_get_copy(&self.ws.gate_val, b, 0.5);
             if let Some(sub) = self.ws.grad_feat.get_mut(lo..hi) {
@@ -1672,11 +2187,88 @@ impl UnifiedCayleyCore {
             }
         }
 
+        if nl_dim > 0 {
+            if let (Some(gnl), Some(nnl)) = (
+                self.ws.grad_feat.get(off_nl..self.ws.feat_dim),
+                self.ws.feat_normed.get(off_nl..self.ws.feat_dim),
+            ) {
+                rmsnorm_band_backward(gnl, nnl, total_get_copy(&self.ws.norm_inv, 4, 1.0), &mut self.ws.grad_nl_raw);
+            }
+            let mut add_b1 = [0.0_f32; UNIFIED_B1_DIM];
+            let mut add_b2 = [0.0_f32; UNIFIED_B2_DIM];
+            if let (Some(b1n), Some(b2n)) = (
+                self.ws.feat_normed.get(off_b1..off_b2),
+                self.ws.feat_normed.get(off_b2..off_nl),
+            ) {
+                compute_nl_features_backward(b1n, b2n, &self.ws.grad_nl_raw, &mut add_b1, &mut add_b2, exact);
+            }
+            if let Some(gb1) = self.ws.grad_feat.get_mut(off_b1..off_b2) {
+                for (d, &a) in gb1.iter_mut().zip(add_b1.iter()) {
+                    *d = sanitize_f32(*d + a);
+                }
+            }
+            if let Some(gb2) = self.ws.grad_feat.get_mut(off_b2..off_nl) {
+                for (d, &a) in gb2.iter_mut().zip(add_b2.iter()) {
+                    *d = sanitize_f32(*d + a);
+                }
+            }
+        }
+
         if let (Some(gn1), Some(n1)) = (self.ws.grad_feat.get(off_b1..off_b2), self.ws.feat_normed.get(off_b1..off_b2)) {
             rmsnorm_band_backward(gn1, n1, total_get_copy(&self.ws.norm_inv, 2, 1.0), &mut self.ws.grad_b1_u);
         }
-        if let (Some(gn2), Some(n2)) = (self.ws.grad_feat.get(off_b2..self.ws.feat_dim), self.ws.feat_normed.get(off_b2..self.ws.feat_dim)) {
+        if let (Some(gn2), Some(n2)) = (self.ws.grad_feat.get(off_b2..off_nl), self.ws.feat_normed.get(off_b2..off_nl)) {
             rmsnorm_band_backward(gn2, n2, total_get_copy(&self.ws.norm_inv, 3, 1.0), &mut self.ws.grad_b2_u);
+        }
+
+        if self.cfg.enable_bank_rotor_adapter {
+            if let Some(slot) = self.slots.get(active) {
+                if !slot.adapter_b1_t.is_empty() {
+                    for k in 0..UNIFIED_B1_SLOTS {
+                        let off = k * 2;
+                        let u = (
+                            total_get_copy(&self.ws.b1_state, off, 0.0),
+                            total_get_copy(&self.ws.b1_state, off + 1, 0.0),
+                        );
+                        let gr = (
+                            total_get_copy(&self.ws.grad_b1_u, off, 0.0),
+                            total_get_copy(&self.ws.grad_b1_u, off + 1, 0.0),
+                        );
+                        let (gu, gt) = rot2_cayley_backward(total_get_copy(&slot.adapter_b1_t, k, 0.0), u, gr);
+                        let _ = total_set(&mut self.ws.g_adapter_b1_t, k, gt);
+                        let _ = total_set(&mut self.ws.grad_b1_u, off, gu.0);
+                        let _ = total_set(&mut self.ws.grad_b1_u, off + 1, gu.1);
+                    }
+                    for s in 0..UNIFIED_B2_SLOTS {
+                        let off = s * 3;
+                        let u = (
+                            total_get_copy(&self.ws.b2_state, off, 0.0),
+                            total_get_copy(&self.ws.b2_state, off + 1, 0.0),
+                            total_get_copy(&self.ws.b2_state, off + 2, 0.0),
+                        );
+                        let g = (
+                            total_get_copy(&slot.adapter_b2_g, off, 0.0),
+                            total_get_copy(&slot.adapter_b2_g, off + 1, 0.0),
+                            total_get_copy(&slot.adapter_b2_g, off + 2, 0.0),
+                        );
+                        let gr = (
+                            total_get_copy(&self.ws.grad_b2_u, off, 0.0),
+                            total_get_copy(&self.ws.grad_b2_u, off + 1, 0.0),
+                            total_get_copy(&self.ws.grad_b2_u, off + 2, 0.0),
+                        );
+                        let (gu, gg) = rot3_cayley_vec_backward(g, u, gr);
+                        let _ = total_set(&mut self.ws.g_adapter_b2_g, off, gg.0);
+                        let _ = total_set(&mut self.ws.g_adapter_b2_g, off + 1, gg.1);
+                        let _ = total_set(&mut self.ws.g_adapter_b2_g, off + 2, gg.2);
+                        let _ = total_set(&mut self.ws.grad_b2_u, off, gu.0);
+                        let _ = total_set(&mut self.ws.grad_b2_u, off + 1, gu.1);
+                        let _ = total_set(&mut self.ws.grad_b2_u, off + 2, gu.2);
+                    }
+                } else {
+                    self.ws.g_adapter_b1_t.fill(0.0);
+                    self.ws.g_adapter_b2_g.fill(0.0);
+                }
+            }
         }
 
         // Band 1
@@ -1703,6 +2295,11 @@ impl UnifiedCayleyCore {
                     let qtr = u_off * 2;
                     let _ = total_set(&mut self.ws.g_b1_qfb, u_off, gb0 * total_get_copy(&self.ws.s_b1_qfb, qtr, 0.0) + gb1 * total_get_copy(&self.ws.s_b1_qfb, qtr + 1, 0.0));
                     let _ = total_set(&mut self.ws.g_b1_qfb, u_off + 1, gb0 * total_get_copy(&self.ws.s_b1_qfb, qtr + 2, 0.0) + gb1 * total_get_copy(&self.ws.s_b1_qfb, qtr + 3, 0.0));
+                }
+                if diode_on {
+                    let vtr = u_off * 2;
+                    let _ = total_set(&mut self.ws.g_b1_vdrift, u_off, gb0 * total_get_copy(&self.ws.s_b1_vdrift, vtr, 0.0) + gb1 * total_get_copy(&self.ws.s_b1_vdrift, vtr + 1, 0.0));
+                    let _ = total_set(&mut self.ws.g_b1_vdrift, u_off + 1, gb0 * total_get_copy(&self.ws.s_b1_vdrift, vtr + 2, 0.0) + gb1 * total_get_copy(&self.ws.s_b1_vdrift, vtr + 3, 0.0));
                 }
             }
         }
@@ -1735,24 +2332,36 @@ impl UnifiedCayleyCore {
                         let _ = total_set(&mut self.ws.g_b2_qfb, off + c_i, dot3(&self.ws.s_b2_qfb, qtr));
                     }
                 }
+                if diode_on {
+                    for c_i in 0..3usize {
+                        let vtr = (off + c_i) * 3;
+                        let _ = total_set(&mut self.ws.g_b2_vdrift, off + c_i, dot3(&self.ws.s_b2_vdrift, vtr));
+                    }
+                }
             }
         }
     }
 
-    fn apply_rmsprop_rtrl_scaled(&mut self, use_elig: bool, grad_scale: f32, lr_mult: f32) {
+    fn apply_rmsprop_rtrl_scaled(&mut self, use_elig: bool, grad_scale: f32, lr_mult: f32, bb_gate: f32) {
         let active = self.active_slot.min(self.slots.len().saturating_sub(1));
         let bb_idx = self.backbone_idx(active);
         let lr = sanitize_f32(self.cfg.rtrl_lr * lr_mult);
         let wd = self.cfg.weight_decay;
         let sel_on = self.cfg.enable_selectivity;
         let fb_on = sel_on && self.cfg.enable_local_feedback;
+        let diode_on = sel_on && self.cfg.enable_finsler_diode;
         let exact = self.cfg.exact_inv_sqrt;
         let u_lim = self.cfg.unitary_limit;
         let ein = self.ws.eff_in;
 
-        // 1. Полосовые вентили принадлежат активному слоту режима
+        // 1. Полосовые вентили и 160-байтный роторный адаптер принадлежат активному слоту режима
+        let nl_on = self.ws.nl_dim > 0;
+        let ad_on = self.cfg.enable_bank_rotor_adapter;
         if let Some(slot) = self.slots.get_mut(active) {
-            for b in 0..4usize {
+            for b in 0..UNIFIED_NUM_BANDS {
+                if b == 4 && !nl_on {
+                    continue;
+                }
                 let raw_g = if use_elig {
                     total_get_copy(&self.ws.e_gates, b, 0.0)
                 } else {
@@ -1762,9 +2371,37 @@ impl UnifiedCayleyCore {
                     rmsprop_step(p, v, raw_g * grad_scale, lr * 1.5, wd * 0.25, 4.0, exact);
                 }
             }
+            if ad_on && !slot.adapter_b1_t.is_empty() {
+                let ad_lr = sanitize_f32(lr * 0.50);
+                for k in 0..UNIFIED_B1_SLOTS {
+                    let g = if use_elig {
+                        total_get_copy(&self.ws.e_adapter_b1_t, k, 0.0)
+                    } else {
+                        total_get_copy(&self.ws.g_adapter_b1_t, k, 0.0)
+                    };
+                    if let (Some(p), Some(v)) = (slot.adapter_b1_t.get_mut(k), slot.v_adapter_b1_t.get_mut(k)) {
+                        rmsprop_step(p, v, g * grad_scale, ad_lr, wd * 0.5, 4.0, exact);
+                    }
+                }
+                for i in 0..UNIFIED_B2_DIM {
+                    let g = if use_elig {
+                        total_get_copy(&self.ws.e_adapter_b2_g, i, 0.0)
+                    } else {
+                        total_get_copy(&self.ws.g_adapter_b2_g, i, 0.0)
+                    };
+                    if let (Some(p), Some(v)) = (slot.adapter_b2_g.get_mut(i), slot.v_adapter_b2_g.get_mut(i)) {
+                        rmsprop_step(p, v, g * grad_scale, ad_lr, wd * 0.5, 4.0, exact);
+                    }
+                }
+            }
         }
 
-        // 2. Рекуррентный хребет B1+B2 обновляется в bb_idx (`0` при `shared_backbone`)
+        // 2. Рекуррентный хребет B1+B2 обновляется в bb_idx (`0` при `shared_backbone`).
+        // Защита якоря (P2) + рациональный гейт Ляпунова (P4, `step138`):
+        // при переключении в банк `active > 0` общий хребет мягко демпфируется (`0.60 * lr`),
+        // а при аномальном всплеске ошибки дополнительно приглушается гейтом `bb_gate in (0, 1]`.
+        let anchor_scale = if self.cfg.shared_backbone && ad_on && active > 0 { 0.60_f32 } else { 1.0_f32 };
+        let lr = sanitize_f32(lr * anchor_scale * sanitize_f32(bb_gate).clamp(0.30, 1.0));
         if let Some(bb) = self.slots.get_mut(bb_idx) {
             for k in 0..UNIFIED_B1_SLOTS {
                 if !u_lim {
@@ -1806,6 +2443,15 @@ impl UnifiedCayleyCore {
                             let gq = if use_elig { total_get_copy(&self.ws.e_b1_qfb, qoff + ci, 0.0) } else { total_get_copy(&self.ws.g_b1_qfb, qoff + ci, 0.0) };
                             if let (Some(p), Some(v)) = (bb.b1_qfb.get_mut(qoff + ci), bb.v_b1_qfb.get_mut(qoff + ci)) {
                                 rmsprop_step(p, v, gq * grad_scale, lr * 0.85, wd * 2.0, 2.5, exact);
+                            }
+                        }
+                    }
+                    if diode_on {
+                        let voff = k * 2;
+                        for ci in 0..2usize {
+                            let gv = if use_elig { total_get_copy(&self.ws.e_b1_vdrift, voff + ci, 0.0) } else { total_get_copy(&self.ws.g_b1_vdrift, voff + ci, 0.0) };
+                            if let (Some(p), Some(v)) = (bb.b1_vdrift.get_mut(voff + ci), bb.v_b1_vdrift.get_mut(voff + ci)) {
+                                rmsprop_step(p, v, gv * grad_scale, lr * 0.85, wd * 2.0, 4.0, exact);
                             }
                         }
                     }
@@ -1855,6 +2501,15 @@ impl UnifiedCayleyCore {
                             }
                         }
                     }
+                    if diode_on {
+                        let voff = s * 3;
+                        for ci in 0..3usize {
+                            let gv = if use_elig { total_get_copy(&self.ws.e_b2_vdrift, voff + ci, 0.0) } else { total_get_copy(&self.ws.g_b2_vdrift, voff + ci, 0.0) };
+                            if let (Some(p), Some(v)) = (bb.b2_vdrift.get_mut(voff + ci), bb.v_b2_vdrift.get_mut(voff + ci)) {
+                                rmsprop_step(p, v, gv * grad_scale, lr * 0.85, wd * 2.0, 4.0, exact);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1885,19 +2540,36 @@ impl UnifiedCayleyCore {
     fn apply_rl_td_update(&mut self, td_err: f32) {
         let active = self.active_slot.min(self.slots.len().saturating_sub(1));
         let mut surp_mult = 1.0_f32;
+        let mut g_lyap = 1.0_f32;
+        let mut w_act_rl = 1.0_f32;
+        let mut w_rtrl_rl = 1.0_f32;
+        let td_sq = sanitize_f32(td_err * td_err);
         if let Some(slot) = self.slots.get_mut(active) {
             if self.cfg.enable_surprise_rl {
-                let st = total_div_f32(td_err * td_err, slot.td_var_ema + 0.05, 1.0);
+                let st = total_div_f32(td_sq, slot.td_var_ema + 0.05, 1.0);
                 surp_mult = total_div_f32(1.0 + 1.5 * st, 1.0 + 0.75 * st, 1.0).clamp(1.0, 2.0);
-                slot.td_var_ema = sanitize_f32(0.98 * slot.td_var_ema + 0.02 * td_err * td_err).clamp(0.01, 4.0);
+                slot.td_var_ema = sanitize_f32(0.98 * slot.td_var_ema + 0.02 * td_sq).clamp(0.01, 4.0);
+            }
+            if self.cfg.enable_lyap_lk {
+                g_lyap = lyapunov_backbone_gate(td_sq, slot.lyap_err_ema, 0.50, 3.0, 0.25);
+                slot.lyap_err_ema = sanitize_f32(0.98 * slot.lyap_err_ema + 0.02 * td_sq).clamp(0.15, 4.0);
+                // Гомоскедастическая балансировка Либеля-Кёрнера для RL:
+                // на плотном шумном RL (RepeatPrev, E[td^2]~1.0) автоматически гасит перерегулирование,
+                // а на разреженном/спокойном RL (CartPole, T-Maze, E[td^2]~0.02) слегка ускоряет адаптацию!
+                if let Some(sa) = slot.lk_s.get_mut(0) {
+                    w_act_rl = rational_lk_balance_step(sa, td_sq, 0.015, 0.45, 0.45, 1.25);
+                }
+                if let Some(sr) = slot.lk_s.get_mut(2) {
+                    w_rtrl_rl = rational_lk_balance_step(sr, td_sq, 0.015, 0.45, 0.45, 1.20);
+                }
             }
         }
         self.last_surp = surp_mult;
 
         let feat_norm_sq = sanitize_f32(fast_dot(&self.ws.feat_gated, &self.ws.feat_gated));
         let inv_nlms = total_div_unit_shifted_f32(1.0, feat_norm_sq);
-        let ro_lr = sanitize_f32(self.cfg.ro_lr * 4.5 * surp_mult * inv_nlms);
-        let c_lr = sanitize_f32(self.cfg.critic_lr * 3.0 * inv_nlms);
+        let ro_lr = sanitize_f32(self.cfg.ro_lr * 4.5 * surp_mult * w_act_rl * inv_nlms);
+        let c_lr = sanitize_f32(self.cfg.critic_lr * 3.0 * w_act_rl * inv_nlms);
         let wd = self.cfg.weight_decay;
         let na = self.ws.num_actions;
         let fdim = self.ws.feat_dim;
@@ -1931,7 +2603,7 @@ impl UnifiedCayleyCore {
                 }
             }
         }
-        self.apply_rmsprop_rtrl_scaled(true, td_err, surp_mult);
+        self.apply_rmsprop_rtrl_scaled(true, td_err, sanitize_f32(surp_mult * w_rtrl_rl), g_lyap);
     }
 
     /// Точный градиент log p_target по всем логитам рационального p4 softmax (учитывает сдвиг на max_l).
@@ -1962,51 +2634,111 @@ impl UnifiedCayleyCore {
             Self::fill_p4_logprob_grads(&self.ws.logits, &self.ws.probs, &self.ws.psis, target_class, &mut lerrs);
             self.compute_instant_rtrl_grads(lerrs.get(..na).unwrap_or(&[]), 0.0);
 
-            let ro_lr = self.cfg.ro_lr;
+            let ro_lr_base = self.cfg.ro_lr;
             let wd = self.cfg.weight_decay;
             let exact = self.cfg.exact_inv_sqrt;
             let use_idbd = self.cfg.enable_idbd;
             let idbd_lr = self.cfg.idbd_lr;
+            let lk_on = self.cfg.enable_lyap_lk;
+            let p_tgt = total_get_copy(&self.ws.probs, target_class, 0.0).clamp(0.0, 1.0);
+            let cls_err_sq = sanitize_f32((1.0 - p_tgt) * (1.0 - p_tgt));
+            let mut w_actor = 1.0_f32;
+            let mut w_rtrl = 1.0_f32;
+            let mut g_lyap = 1.0_f32;
             let fdim = self.ws.feat_dim;
             let off_b0 = self.ws.eff_in;
             let off_b1 = off_b0 + self.ws.b0_dim;
             let off_b2 = off_b1 + UNIFIED_B1_DIM;
-            let bounds = [(0usize, off_b0), (off_b0, off_b1), (off_b1, off_b2), (off_b2, fdim)];
+            let off_nl = off_b2 + UNIFIED_B2_DIM;
+            let bounds = [
+                (0usize, off_b0),
+                (off_b0, off_b1),
+                (off_b1, off_b2),
+                (off_b2, off_nl),
+                (off_nl, fdim),
+            ];
 
             if let Some(slot) = self.slots.get_mut(active) {
-                let mut band_gains = [1.0_f32; 4];
+                if lk_on {
+                    g_lyap = lyapunov_backbone_gate(cls_err_sq, slot.lyap_err_ema, 0.80, 2.5, 0.05);
+                    slot.lyap_err_ema = sanitize_f32(0.98 * slot.lyap_err_ema + 0.02 * cls_err_sq).clamp(0.02, 2.0);
+                    if let Some(sa) = slot.lk_s.get_mut(0) {
+                        w_actor = rational_lk_balance_step(sa, cls_err_sq, 0.015, 0.35, 0.70, 1.40);
+                    }
+                    if let Some(sr) = slot.lk_s.get_mut(2) {
+                        w_rtrl = rational_lk_balance_step(sr, cls_err_sq, 0.015, 0.35, 0.65, 1.35);
+                    }
+                }
+                let ro_lr = sanitize_f32(ro_lr_base * w_actor);
+                let mut band_gains = [1.0_f32; UNIFIED_NUM_BANDS];
                 if use_idbd {
-                    for b in 0..4usize {
+                    for b in 0..UNIFIED_NUM_BANDS {
                         let (gp, _) = rational_pos_and_deriv(total_get_copy(&slot.idbd_beta_actor, b, 0.0));
                         let _ = total_set(&mut band_gains, b, gp);
                     }
                 }
-                let mut band_u = [0.0_f32; 4];
-                let mut band_f2 = [0.0_f32; 4];
-                let mut band_cnt = [0usize; 4];
+                let mut band_u = [0.0_f32; UNIFIED_NUM_BANDS];
+                let mut band_f2 = [0.0_f32; UNIFIED_NUM_BANDS];
+                let mut band_cnt = [0usize; UNIFIED_NUM_BANDS];
+
+                let shared_v = self.cfg.enable_shared_actor_rms && slot.v_actor_w.len() == fdim;
+                if shared_v {
+                    let mut mean_e2 = 0.0_f32;
+                    for c in 0..na {
+                        let ec = total_get_copy(&lerrs, c, 0.0);
+                        mean_e2 = sanitize_f32(mean_e2 + ec * ec);
+                    }
+                    mean_e2 = sanitize_f32(mean_e2 * total_div_f32(1.0, na.max(1) as f32, 0.5));
+                    for i in 0..fdim {
+                        let f_i = total_get_copy(&self.ws.feat_gated, i, 0.0);
+                        let g2 = sanitize_f32(mean_e2 * f_i * f_i);
+                        if let Some(vw) = slot.v_actor_w.get_mut(i) {
+                            *vw = sanitize_f32(0.98 * (*vw) + 0.02 * g2).clamp(0.0, 64.0);
+                        }
+                    }
+                }
 
                 for c in 0..na {
                     let ec = total_get_copy(&lerrs, c, 0.0);
                     let off = c * fdim;
-                    for b in 0..4usize {
+                    // При `enable_idbd_binary_fix` IDBD отслеживает фиксированную координату `c == 0`,
+                    // устраняя точное взаимное гашение `lerrs[0] + lerrs[1] == 0` на бинарных потоках.
+                    let track_idbd = use_idbd && (!self.cfg.enable_idbd_binary_fix || c == 0);
+                    for b in 0..UNIFIED_NUM_BANDS {
                         let (lo, hi) = total_get_copy(&bounds, b, (0, 0));
                         let eff_lr = sanitize_f32(ro_lr * total_get_copy(&band_gains, b, 1.0));
                         for i in lo..hi {
                             let f_i = total_get_copy(&self.ws.feat_gated, i, 0.0);
                             let g = ec * f_i;
                             let idx = off + i;
-                            if use_idbd {
-                                let v_cur = total_get_copy(&slot.v_actor_w, idx, 0.04);
+                            if shared_v {
+                                let v_cur = total_get_copy(&slot.v_actor_w, i, 0.04);
                                 let u_i = sanitize_bounded_f32(g * inv_sqrt_select(v_cur + 0.04, exact), 3.0);
-                                let prev_u = total_get_copy(&band_u, b, 0.0);
-                                let prev_f2 = total_get_copy(&band_f2, b, 0.0);
-                                let prev_cnt = total_get_copy(&band_cnt, b, 0);
-                                let _ = total_set(&mut band_u, b, prev_u + u_i);
-                                let _ = total_set(&mut band_f2, b, prev_f2 + f_i * f_i);
-                                let _ = total_set(&mut band_cnt, b, prev_cnt + 1);
-                            }
-                            if let (Some(pw), Some(vw)) = (slot.actor_w.get_mut(idx), slot.v_actor_w.get_mut(idx)) {
-                                rmsprop_step(pw, vw, g, eff_lr, wd, 8.0, exact);
+                                if track_idbd {
+                                    let prev_u = total_get_copy(&band_u, b, 0.0);
+                                    let prev_f2 = total_get_copy(&band_f2, b, 0.0);
+                                    let prev_cnt = total_get_copy(&band_cnt, b, 0);
+                                    let _ = total_set(&mut band_u, b, prev_u + u_i);
+                                    let _ = total_set(&mut band_f2, b, prev_f2 + f_i * f_i);
+                                    let _ = total_set(&mut band_cnt, b, prev_cnt + 1);
+                                }
+                                if let Some(pw) = slot.actor_w.get_mut(idx) {
+                                    nlms_step(pw, u_i, eff_lr, wd, 8.0);
+                                }
+                            } else {
+                                if track_idbd {
+                                    let v_cur = total_get_copy(&slot.v_actor_w, idx, 0.04);
+                                    let u_i = sanitize_bounded_f32(g * inv_sqrt_select(v_cur + 0.04, exact), 3.0);
+                                    let prev_u = total_get_copy(&band_u, b, 0.0);
+                                    let prev_f2 = total_get_copy(&band_f2, b, 0.0);
+                                    let prev_cnt = total_get_copy(&band_cnt, b, 0);
+                                    let _ = total_set(&mut band_u, b, prev_u + u_i);
+                                    let _ = total_set(&mut band_f2, b, prev_f2 + f_i * f_i);
+                                    let _ = total_set(&mut band_cnt, b, prev_cnt + 1);
+                                }
+                                if let (Some(pw), Some(vw)) = (slot.actor_w.get_mut(idx), slot.v_actor_w.get_mut(idx)) {
+                                    rmsprop_step(pw, vw, g, eff_lr, wd, 8.0, exact);
+                                }
                             }
                         }
                     }
@@ -2016,7 +2748,7 @@ impl UnifiedCayleyCore {
                 }
 
                 if use_idbd {
-                    for b in 0..4usize {
+                    for b in 0..UNIFIED_NUM_BANDS {
                         let cnt = total_get_copy(&band_cnt, b, 0);
                         if cnt > 0 {
                             let inv_c = total_div_f32(1.0, cnt as f32, 0.0);
@@ -2033,7 +2765,7 @@ impl UnifiedCayleyCore {
                     }
                 }
             }
-            self.apply_rmsprop_rtrl_scaled(false, 1.0, 1.0);
+            self.apply_rmsprop_rtrl_scaled(false, 1.0, w_rtrl, g_lyap);
         }
 
         (pred, conf)
@@ -2047,6 +2779,7 @@ impl UnifiedCayleyCore {
 
         if eff_train && has_target {
             let err = sanitize_bounded_f32(target_y - pred, 2.0);
+            let err_sq = sanitize_f32(err * err);
             self.compute_instant_rtrl_grads(&[], err);
 
             let active = self.active_slot.min(self.slots.len().saturating_sub(1));
@@ -2056,24 +2789,58 @@ impl UnifiedCayleyCore {
             let wd = self.cfg.weight_decay;
             let use_idbd = self.cfg.enable_idbd;
             let idbd_lr = self.cfg.idbd_lr;
+            let lk_on = self.cfg.enable_lyap_lk;
+            let mut w_crit = 1.0_f32;
+            let mut w_rtrl = 1.0_f32;
+            let mut g_lyap = 1.0_f32;
+            let mut rtrl_scale = 0.15_f32;
             let fdim = self.ws.feat_dim;
             let off_b0 = self.ws.eff_in;
             let off_b1 = off_b0 + self.ws.b0_dim;
             let off_b2 = off_b1 + UNIFIED_B1_DIM;
-            let bounds = [(0usize, off_b0), (off_b0, off_b1), (off_b1, off_b2), (off_b2, fdim)];
+            let off_nl = off_b2 + UNIFIED_B2_DIM;
+            let bounds = [
+                (0usize, off_b0),
+                (off_b0, off_b1),
+                (off_b1, off_b2),
+                (off_b2, off_nl),
+                (off_nl, fdim),
+            ];
 
             if let Some(slot) = self.slots.get_mut(active) {
-                for b in 0..4usize {
+                if lk_on {
+                    g_lyap = lyapunov_backbone_gate(err_sq, slot.lyap_err_ema, 0.60, 3.0, 0.05);
+                    slot.lyap_err_ema = sanitize_f32(0.98 * slot.lyap_err_ema + 0.02 * err_sq).clamp(0.01, 2.0);
+                    if let Some(sc) = slot.lk_s.get_mut(1) {
+                        w_crit = rational_lk_balance_step(sc, err_sq, 0.015, 0.08, 0.65, 1.10);
+                    }
+                    if let Some(sr) = slot.lk_s.get_mut(2) {
+                        w_rtrl = rational_lk_balance_step(sr, err_sq, 0.015, 0.08, 0.65, 1.15);
+                    }
+                    rtrl_scale = sanitize_f32(0.15 * w_rtrl);
+                }
+
+                // Чистый балансированный NLMS с рациональным LK-весом и сдержанным IDBD (0.70..1.20),
+                // без ручных штрафов отдельных полос.
+                let base_reg_lr = if lk_on {
+                    sanitize_f32(0.16 * self.cfg.critic_lr * inv_nlms * w_crit)
+                } else {
+                    eff_reg_lr
+                };
+                for b in 0..UNIFIED_NUM_BANDS {
                     let (lo, hi) = total_get_copy(&bounds, b, (0, 0));
                     if hi <= lo {
                         continue;
                     }
-                    let gain = if use_idbd {
+                    let inv_c = total_div_f32(1.0, (hi - lo) as f32, 0.0);
+                    let raw_gain = if use_idbd {
                         rational_pos_and_deriv(total_get_copy(&slot.idbd_beta_critic, b, 0.0)).0
                     } else {
                         1.0
                     };
-                    let step_lr = sanitize_f32(eff_reg_lr * gain);
+                    let gain = if lk_on { raw_gain.clamp(0.70, 1.20) } else { raw_gain };
+                    let step_lr = sanitize_f32(base_reg_lr * gain);
+                    let wd_b = wd * 0.5;
                     let mut sum_u = 0.0_f32;
                     let mut sum_f2 = 0.0_f32;
                     for i in lo..hi {
@@ -2084,25 +2851,24 @@ impl UnifiedCayleyCore {
                             sum_f2 += f_i * f_i;
                         }
                         if let Some(pw) = slot.critic_w.get_mut(i) {
-                            nlms_step(pw, g, step_lr, wd * 0.5, 8.0);
+                            nlms_step(pw, g, step_lr, wd_b, 8.0);
                         }
                     }
                     if use_idbd {
-                        let inv_c = total_div_f32(1.0, (hi - lo) as f32, 0.0);
                         update_band_idbd(
                             &mut slot.idbd_beta_critic,
                             &mut slot.idbd_h_critic,
                             b,
                             sum_u * inv_c,
                             sum_f2 * inv_c,
-                            eff_reg_lr,
+                            base_reg_lr,
                             idbd_lr,
                         );
                     }
                 }
-                nlms_step(&mut slot.critic_b, err, 0.5 * eff_reg_lr, 0.0, 4.0);
+                nlms_step(&mut slot.critic_b, err, 0.5 * base_reg_lr, 0.0, 4.0);
             }
-            self.apply_rmsprop_rtrl_scaled(false, 1.0, 0.15);
+            self.apply_rmsprop_rtrl_scaled(false, 1.0, rtrl_scale, g_lyap);
         }
         pred
     }
@@ -2127,11 +2893,13 @@ impl UnifiedCayleyCore {
         let mut b0 = [0.0_f32; UNIFIED_B0_DIM];
         let mut b1 = [0.0_f32; UNIFIED_B1_DIM];
         let mut b2 = [0.0_f32; UNIFIED_B2_DIM];
-        let mut fnorm = [0.0_f32; UNIFIED_MAX_EFF_IN + UNIFIED_B0_DIM + UNIFIED_B1_DIM + UNIFIED_B2_DIM];
+        let mut fnorm = [0.0_f32; UNIFIED_MAX_EFF_IN + UNIFIED_B0_DIM + UNIFIED_B1_DIM + UNIFIED_B2_DIM + UNIFIED_NL_DIM];
+        let mut nl_buf = [0.0_f32; UNIFIED_NL_DIM];
 
         let rdim = self.in_cond.raw_dim;
         let ein = self.ws.eff_in;
         let b0_dim = self.ws.b0_dim;
+        let nl_dim = self.ws.nl_dim;
         let inv_cnt_m1 = if self.in_cond.count > 1 {
             total_div_f32(1.0, (self.in_cond.count - 1) as f32, 0.0)
         } else {
@@ -2140,6 +2908,7 @@ impl UnifiedCayleyCore {
         let exact = self.cfg.exact_inv_sqrt;
         let sel_on = self.cfg.enable_selectivity;
         let fb_on = sel_on && self.cfg.enable_local_feedback;
+        let diode_on = sel_on && self.cfg.enable_finsler_diode;
         let min_a2 = self.cfg.min_alpha_sq;
         let mut has_prev = false;
 
@@ -2149,7 +2918,8 @@ impl UnifiedCayleyCore {
                 let mu = total_get_copy(&self.in_cond.mean, i, 0.0);
                 let m2i = total_get_copy(&self.in_cond.m2, i, 0.0);
                 let var = if self.in_cond.count >= 2 { sanitize_f32(m2i * inv_cnt_m1).max(0.0) } else { 0.0 };
-                let xn = sanitize_bounded_f32((x - mu) * inv_sqrt_newton_2step_f32(var + 1.0), 12.0);
+                let (inv_sd, xn_lim) = compute_channel_inv_sd(self.in_cond.adaptive_var_floor, self.in_cond.count, var);
+                let xn = sanitize_bounded_f32((x - mu) * inv_sd, xn_lim);
                 let _ = total_set(&mut eff_x, i, xn);
                 if self.in_cond.use_delta {
                     let px = total_get_copy(&prev_x, i, 0.0);
@@ -2161,8 +2931,10 @@ impl UnifiedCayleyCore {
             }
             has_prev = true;
             let eff_slice = eff_x.get(..ein).unwrap_or(&[]);
-            if self.band0.enabled {
-                self.band0.step_into(eff_slice, &mut b0);
+            if self.band0.enabled && b0_dim > 0 {
+                if let Some(b0_sub) = b0.get_mut(..b0_dim) {
+                    self.band0.step_into(eff_slice, b0_sub);
+                }
             }
             for k in 0..UNIFIED_B1_SLOTS {
                 let u_off = k * 2;
@@ -2178,11 +2950,27 @@ impl UnifiedCayleyCore {
                     if let Some(sw) = bb.b1_sel_w.get(woff..woff + ein) {
                         sel_in = sanitize_bounded_f32(fast_dot(sw, eff_slice), 16.0);
                     }
-                    let fb = if fb_on {
+                    let (uhat0, uhat1) = if fb_on || diode_on {
                         let inv_r = inv_sqrt_select(sanitize_f32(u0 * u0 + u1 * u1 + 1.0), exact);
-                        (total_get_copy(&bb.b1_qfb, u_off, 0.0) * u0 + total_get_copy(&bb.b1_qfb, u_off + 1, 0.0) * u1) * inv_r
+                        (u0 * inv_r, u1 * inv_r)
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    let fb = if fb_on {
+                        total_get_copy(&bb.b1_qfb, u_off, 0.0) * uhat0 + total_get_copy(&bb.b1_qfb, u_off + 1, 0.0) * uhat1
                     } else { 0.0 };
-                    let z = sanitize_bounded_f32(total_get_copy(&bb.b1_bdelta, k, 0.0) + sel_in + fb, 10.0);
+                    let diode = if diode_on {
+                        let v0 = total_get_copy(&bb.b1_vdrift, u_off, 0.0);
+                        let v1 = total_get_copy(&bb.b1_vdrift, u_off + 1, 0.0);
+                        let (x_imp, _) = rational_sat_and_deriv(m_in, exact);
+                        finsler_randers_contrast_2d(
+                            (v0, v1),
+                            (x_imp - uhat0, -uhat1),
+                            UNIFIED_FINSLER_MU0,
+                            exact,
+                        ).0
+                    } else { 0.0 };
+                    let z = sanitize_bounded_f32(total_get_copy(&bb.b1_bdelta, k, 0.0) + sel_in + fb + diode, 10.0);
                     rational_pos_and_deriv(sanitize_bounded_f32(total_get_copy(&bb.b1_beta, k, 0.0) * z, 10.0)).0
                 } else { 1.0 };
                 let a = total_get_copy(&bb.b1_alpha, k, 0.2);
@@ -2210,11 +2998,35 @@ impl UnifiedCayleyCore {
                     if let Some(sw) = bb.b2_sel_w.get(woff..woff + ein) {
                         sel_in = sanitize_bounded_f32(fast_dot(sw, eff_slice), 16.0);
                     }
-                    let fb = if fb_on {
+                    let uhat = if fb_on || diode_on {
                         let inv_r = inv_sqrt_select(sanitize_f32(u.0 * u.0 + u.1 * u.1 + u.2 * u.2 + 1.0), exact);
-                        (total_get_copy(&bb.b2_qfb, off, 0.0) * u.0 + total_get_copy(&bb.b2_qfb, off + 1, 0.0) * u.1 + total_get_copy(&bb.b2_qfb, off + 2, 0.0) * u.2) * inv_r
+                        (u.0 * inv_r, u.1 * inv_r, u.2 * inv_r)
+                    } else {
+                        (0.0, 0.0, 0.0)
+                    };
+                    let fb = if fb_on {
+                        total_get_copy(&bb.b2_qfb, off, 0.0) * uhat.0 + total_get_copy(&bb.b2_qfb, off + 1, 0.0) * uhat.1 + total_get_copy(&bb.b2_qfb, off + 2, 0.0) * uhat.2
                     } else { 0.0 };
-                    let z = sanitize_bounded_f32(total_get_copy(&bb.b2_bdelta, s_idx, 0.0) + sel_in + fb, 10.0);
+                    let diode = if diode_on {
+                        let vdr = (
+                            total_get_copy(&bb.b2_vdrift, off, 0.0),
+                            total_get_copy(&bb.b2_vdrift, off + 1, 0.0),
+                            total_get_copy(&bb.b2_vdrift, off + 2, 0.0),
+                        );
+                        let (x_imp, _) = rational_sat_and_deriv(m_in, exact);
+                        let innov = (
+                            x_imp * dd.0 - uhat.0,
+                            x_imp * dd.1 - uhat.1,
+                            x_imp * dd.2 - uhat.2,
+                        );
+                        finsler_randers_contrast_3d(
+                            vdr,
+                            innov,
+                            UNIFIED_FINSLER_MU0,
+                            exact,
+                        ).0
+                    } else { 0.0 };
+                    let z = sanitize_bounded_f32(total_get_copy(&bb.b2_bdelta, s_idx, 0.0) + sel_in + fb + diode, 10.0);
                     rational_pos_and_deriv(sanitize_bounded_f32(total_get_copy(&bb.b2_beta, s_idx, 0.0) * z, 10.0)).0
                 } else { 1.0 };
                 let a = total_get_copy(&bb.b2_alpha, s_idx, 0.2);
@@ -2231,17 +3043,51 @@ impl UnifiedCayleyCore {
         let off_b0 = ein;
         let off_b1 = off_b0 + b0_dim;
         let off_b2 = off_b1 + UNIFIED_B1_DIM;
+        let off_nl = off_b2 + UNIFIED_B2_DIM;
+        if self.cfg.enable_bank_rotor_adapter && !slot.adapter_b1_t.is_empty() {
+            for k in 0..UNIFIED_B1_SLOTS {
+                let off = k * 2;
+                let u = (total_get_copy(&b1, off, 0.0), total_get_copy(&b1, off + 1, 0.0));
+                let r = rot2_cayley_apply(total_get_copy(&slot.adapter_b1_t, k, 0.0), u);
+                let _ = total_set(&mut b1, off, r.0);
+                let _ = total_set(&mut b1, off + 1, r.1);
+            }
+            for s in 0..UNIFIED_B2_SLOTS {
+                let off = s * 3;
+                let u = (
+                    total_get_copy(&b2, off, 0.0),
+                    total_get_copy(&b2, off + 1, 0.0),
+                    total_get_copy(&b2, off + 2, 0.0),
+                );
+                let g = (
+                    total_get_copy(&slot.adapter_b2_g, off, 0.0),
+                    total_get_copy(&slot.adapter_b2_g, off + 1, 0.0),
+                    total_get_copy(&slot.adapter_b2_g, off + 2, 0.0),
+                );
+                let r = rot3_cayley_vec_apply(g, u);
+                let _ = total_set(&mut b2, off, r.0);
+                let _ = total_set(&mut b2, off + 1, r.1);
+                let _ = total_set(&mut b2, off + 2, r.2);
+            }
+        }
         let _ = rmsnorm_band_into(eff_x.get(..ein).unwrap_or(&[]), &mut fnorm, 0, 0.5, exact);
         if b0_dim > 0 {
-            let _ = rmsnorm_band_into(&b0, &mut fnorm, off_b0, 0.05, exact);
+            let _ = rmsnorm_band_into(b0.get(..b0_dim).unwrap_or(&[]), &mut fnorm, off_b0, 0.05, exact);
         }
         let _ = rmsnorm_band_into(&b1, &mut fnorm, off_b1, 0.05, exact);
         let _ = rmsnorm_band_into(&b2, &mut fnorm, off_b2, 0.05, exact);
+        if nl_dim > 0 {
+            if let (Some(b1n), Some(b2n)) = (fnorm.get(off_b1..off_b2), fnorm.get(off_b2..off_nl)) {
+                compute_nl_features(b1n, b2n, &mut nl_buf, exact);
+            }
+            let _ = rmsnorm_band_into(&nl_buf, &mut fnorm, off_nl, 0.05, exact);
+        }
 
         let g0 = 0.5 * rational_pos_and_deriv(total_get_copy(&slot.gate_logits, 0, 0.0)).0;
         let g1 = 0.5 * rational_pos_and_deriv(total_get_copy(&slot.gate_logits, 1, 0.0)).0;
         let g2 = 0.5 * rational_pos_and_deriv(total_get_copy(&slot.gate_logits, 2, 0.0)).0;
         let g3 = 0.5 * rational_pos_and_deriv(total_get_copy(&slot.gate_logits, 3, 0.0)).0;
+        let g4 = 0.5 * rational_pos_and_deriv(total_get_copy(&slot.gate_logits, 4, 0.0)).0;
         let scale_band = |buf: &mut [f32], lo: usize, hi: usize, g: f32| {
             if let Some(sub) = buf.get_mut(lo..hi) {
                 for v in sub.iter_mut() {
@@ -2254,7 +3100,10 @@ impl UnifiedCayleyCore {
             scale_band(&mut fnorm, off_b0, off_b1, g1);
         }
         scale_band(&mut fnorm, off_b1, off_b2, g2);
-        scale_band(&mut fnorm, off_b2, slot.feat_dim, g3);
+        scale_band(&mut fnorm, off_b2, off_nl, g3);
+        if nl_dim > 0 {
+            scale_band(&mut fnorm, off_nl, slot.feat_dim, g4);
+        }
 
         let mut best_c = 0usize;
         let mut best_l = -1e30_f32;
@@ -2357,11 +3206,14 @@ impl UnifiedCayleyCore {
                 }
             };
             add_bounded(&mut self.ws.e_gates, &self.ws.g_gates);
+            add_bounded(&mut self.ws.e_adapter_b1_t, &self.ws.g_adapter_b1_t);
+            add_bounded(&mut self.ws.e_adapter_b2_g, &self.ws.g_adapter_b2_g);
             add_bounded(&mut self.ws.e_b1_alpha, &self.ws.g_b1_alpha);
             add_bounded(&mut self.ws.e_b1_omega, &self.ws.g_b1_omega);
             add_bounded(&mut self.ws.e_b1_beta, &self.ws.g_b1_beta);
             add_bounded(&mut self.ws.e_b1_bdelta, &self.ws.g_b1_bdelta);
             add_bounded(&mut self.ws.e_b1_qfb, &self.ws.g_b1_qfb);
+            add_bounded(&mut self.ws.e_b1_vdrift, &self.ws.g_b1_vdrift);
             fast_saxpy(&mut self.ws.e_b1_inw, &self.ws.g_b1_inw, 1.0);
             fast_saxpy(&mut self.ws.e_b1_selw, &self.ws.g_b1_selw, 1.0);
             add_bounded(&mut self.ws.e_b2_alpha, &self.ws.g_b2_alpha);
@@ -2369,6 +3221,7 @@ impl UnifiedCayleyCore {
             add_bounded(&mut self.ws.e_b2_beta, &self.ws.g_b2_beta);
             add_bounded(&mut self.ws.e_b2_bdelta, &self.ws.g_b2_bdelta);
             add_bounded(&mut self.ws.e_b2_qfb, &self.ws.g_b2_qfb);
+            add_bounded(&mut self.ws.e_b2_vdrift, &self.ws.g_b2_vdrift);
             fast_saxpy(&mut self.ws.e_b2_inw, &self.ws.g_b2_inw, 1.0);
             fast_saxpy(&mut self.ws.e_b2_selw, &self.ws.g_b2_selw, 1.0);
         }
@@ -2447,15 +3300,21 @@ impl UnifiedCayleyCore {
             ns.age_eps = 0;
             ns.ret_ema = 0.5;
             ns.td_var_ema = 0.25;
+            ns.lyap_err_ema = 0.25;
+            ns.lk_s = [0.5_f32; 3];
             ns.cooldown_until = ep.saturating_add(20);
             ns.last_used_ep = ep;
             ns.actor_b.fill(0.0);
             ns.critic_w.fill(0.0);
             ns.critic_b = 0.0;
-            ns.idbd_beta_actor = [0.0_f32; 4];
-            ns.idbd_h_actor = [0.0_f32; 4];
-            ns.idbd_beta_critic = [0.0_f32; 4];
-            ns.idbd_h_critic = [0.0_f32; 4];
+            ns.adapter_b1_t.fill(0.0);
+            ns.adapter_b2_g.fill(0.0);
+            ns.v_adapter_b1_t.fill(0.04);
+            ns.v_adapter_b2_g.fill(0.04);
+            ns.idbd_beta_actor = [0.0_f32; UNIFIED_NUM_BANDS];
+            ns.idbd_h_actor = [0.0_f32; UNIFIED_NUM_BANDS];
+            ns.idbd_beta_critic = [0.0_f32; UNIFIED_NUM_BANDS];
+            ns.idbd_h_critic = [0.0_f32; UNIFIED_NUM_BANDS];
         }
     }
 

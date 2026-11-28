@@ -20,7 +20,9 @@ use micro_continual_core::rtrl::AlgebraicSelectiveCayley;
 use micro_continual_core::stream_baselines::{
     NoChangePersistent, OnlineGaussianNaiveBayes, OnlineLruStream, OnlineMlpAdam, TabularBinnedPH,
 };
-use micro_continual_core::{MicroContinualCore, MicroCoreConfig};
+use micro_continual_core::{
+    MicroContinualCore, MicroCoreConfig, UnifiedCayleyConfig, UnifiedCayleyCore,
+};
 
 #[derive(Default, Clone)]
 struct StreamMetrics {
@@ -616,6 +618,48 @@ fn eval_lru_stream(
     )
 }
 
+fn eval_unified_stream(
+    data: &[(Vec<f32>, usize)],
+    num_classes: usize,
+    drifts: &[usize],
+    ret_range: (usize, usize),
+    rec_target: f64,
+    cfg_fn: fn(usize, usize, u64) -> UnifiedCayleyConfig,
+    seed: u64,
+) -> StreamMetrics {
+    let in_dim = data.first().map(|d| d.0.len()).unwrap_or(1);
+    let mut core = UnifiedCayleyCore::new(cfg_fn(num_classes, in_dim, seed));
+    core.start_episode();
+    let mut hits = Vec::with_capacity(data.len());
+    let t0 = Instant::now();
+    for (x, y) in data {
+        let pred = core.step_supervised_class(x, *y, true, true, false).0;
+        hits.push(pred == *y);
+    }
+    let elapsed_us = t0.elapsed().as_nanos() as f64 / 1000.0;
+
+    let mut probe = UnifiedCayleyCore::new(cfg_fn(num_classes, in_dim, seed));
+    probe.start_episode();
+    let mut bad_x = vec![0.0_f32; in_dim];
+    if !bad_x.is_empty() { bad_x[0] = f32::NAN; }
+    if bad_x.len() > 1 { bad_x[1] = 1e28; }
+    probe.inject_weight_bit30_seu(0);
+    let (_, conf) = probe.step_supervised_class(&bad_x, 0, false, false, true);
+    let seu_safe = conf.is_finite()
+        && probe.ws.b1_state.iter().all(|v| v.is_finite())
+        && probe.ws.b2_state.iter().all(|v| v.is_finite());
+
+    finalize_metrics(
+        &hits,
+        drifts,
+        ret_range,
+        rec_target,
+        core.memory_footprint_bytes() as f64 / 1024.0,
+        elapsed_us,
+        seu_safe,
+    )
+}
+
 fn eval_persist(
     data: &[(Vec<f32>, usize)],
     drifts: &[usize],
@@ -682,6 +726,8 @@ where
     println!("{}", "-".repeat(108));
 
     let mut r_mic = Vec::new();
+    let mut r_u50 = Vec::new();
+    let mut r_u51 = Vec::new();
     let mut r_mlp = Vec::new();
     let mut r_nb = Vec::new();
     let mut r_tab = Vec::new();
@@ -690,6 +736,8 @@ where
     for seed in 1..=10u64 {
         let (data, drifts, ret_r) = gen_fn(seed);
         r_mic.push(eval_micro(&data, num_classes, &drifts, ret_r, rec_target, false, seed));
+        r_u50.push(eval_unified_stream(&data, num_classes, &drifts, ret_r, rec_target, UnifiedCayleyConfig::one_config_v050, seed));
+        r_u51.push(eval_unified_stream(&data, num_classes, &drifts, ret_r, rec_target, UnifiedCayleyConfig::one_config, seed));
         r_mlp.push(eval_mlp(&data, num_classes, &drifts, ret_r, rec_target, seed));
         r_nb.push(eval_nb(&data, num_classes, &drifts, ret_r, rec_target));
         r_tab.push(eval_tab(&data, num_classes, &drifts, ret_r, rec_target));
@@ -697,6 +745,8 @@ where
     }
     let persist_acc = r_nc.iter().map(|m| m.prequential_acc).sum::<f64>() / (r_nc.len() as f64);
     print_row("MicroContinualCore", &r_mic, persist_acc);
+    print_row("Unified v0.5.0 (B3)", &r_u50, persist_acc);
+    print_row("Unified v0.5.1 (OneCfg)", &r_u51, persist_acc);
     print_row("Online MLP (H=32)+Adam", &r_mlp, persist_acc);
     print_row("Online Gaussian NB", &r_nb, persist_acc);
     print_row("Tabular Binned + PH", &r_tab, persist_acc);

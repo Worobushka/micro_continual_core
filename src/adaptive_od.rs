@@ -88,14 +88,17 @@ pub struct AdaptiveOrthogonalRtrl {
 
     // Точные онлайн RTRL-чувствительности: [((frame * ADAPTIVE_MAX_COLS + col) * num_inputs + g) * ADAPTIVE_PARAMS_PER_CH + p_idx]
     pub sens: Vec<[f32; ADAPTIVE_STATE_DIM]>,
+    pub m_theta: Vec<f32>,   // Моментум первого порядка (P5, аналог NonAbelianO4Rtrl)
     pub rms_theta: Vec<f32>, // [frame * num_inputs * ADAPTIVE_PARAMS_PER_CH]
 
     // Многоколончатая сферическая метрика прототипов: [(frame * num_classes + c) * ADAPTIVE_MAX_COLS + col]
     pub proto: Vec<[f32; ADAPTIVE_STATE_DIM]>,
     pub proto_visits: Vec<f32>, // [frame * num_classes]
+    pub col_visit_offset: [f32; ADAPTIVE_MAX_COLS], // Смещение счётчика посещений для свежеоткрытого столбца
     pub frame_acc_ema: Vec<f32>,
 
     pub proto_scale: f32,
+    pub proto_center_beta: f32, // Задача-независимое притяжение к центру прототипа (сжатие ошибки соотношений)
     pub lambda_par: f32,
     pub comm_w: f32,
     pub solo_w: f32,
@@ -109,7 +112,7 @@ pub struct AdaptiveOrthogonalRtrl {
     pub lerrs: Vec<f32>,
     pub comb_logits: Vec<f32>,
 
-    // 2-масштабная блоковая эскалация без оракулов (`fast_ema`/`slow_ema` + 5-sigma Z^2; `ultra_slow_ema` — телеметрия)
+    // 2-масштабная блоковая эскалация без оракулов (`fast_ema`/`slow_ema` + 5-sigma Z^2 + утилизация оболочки)
     pub class_counts: Vec<f32>,
     pub total_class_obs: f32,
     pub seen_classes: usize,
@@ -123,6 +126,9 @@ pub struct AdaptiveOrthogonalRtrl {
     pub total_eps: usize,
     pub win_hits: usize,
     pub win_total: usize,
+    pub prev_active_dim: usize,
+    pub prev_active_planes: usize,
+    pub plateau_streak: usize,
     pub upgrade_seed: u64,
 }
 
@@ -471,11 +477,14 @@ impl AdaptiveOrthogonalRtrl {
             h_vec,
             betas,
             sens: vec![[0.0_f32; ADAPTIVE_STATE_DIM]; f * ADAPTIVE_MAX_COLS * ni * ADAPTIVE_PARAMS_PER_CH],
+            m_theta: vec![0.0_f32; f * ni * ADAPTIVE_PARAMS_PER_CH],
             rms_theta: vec![0.04_f32; f * ni * ADAPTIVE_PARAMS_PER_CH],
             proto,
             proto_visits: vec![0.0_f32; f * nc],
+            col_visit_offset: [0.0_f32; ADAPTIVE_MAX_COLS],
             frame_acc_ema: vec![0.05_f32; f],
             proto_scale: 12.0,
+            proto_center_beta: 1.2,
             lambda_par: 0.8,
             comm_w: 0.08,
             solo_w: 0.55,
@@ -499,6 +508,9 @@ impl AdaptiveOrthogonalRtrl {
             total_eps: 0,
             win_hits: 0,
             win_total: 0,
+            prev_active_dim: 0,
+            prev_active_planes: 0,
+            plateau_streak: 0,
             upgrade_seed: seed ^ 0x9E37_79B9_7F4A_7C15,
         }
     }
@@ -511,6 +523,7 @@ impl AdaptiveOrthogonalRtrl {
             + self.h_vec.len() * core::mem::size_of::<[f32; ADAPTIVE_D_MAX]>()
             + self.betas.len() * 4
             + self.sens.len() * core::mem::size_of::<[f32; ADAPTIVE_STATE_DIM]>()
+            + self.m_theta.len() * 4
             + self.rms_theta.len() * 4
             + self.proto.len() * core::mem::size_of::<[f32; ADAPTIVE_STATE_DIM]>()
             + self.proto_visits.len() * 4
@@ -649,7 +662,9 @@ impl AdaptiveOrthogonalRtrl {
             for m in 0..n_frames {
                 let u_cols = total_get_copy(&cur, m, zero_cols);
                 let fa = total_get_copy(&self.frame_acc_ema, m, 0.05);
-                let wm = 0.25 + fa * fa;
+                let ex = (fa - 0.30).max(0.0);
+                let ex2 = ex * ex;
+                let wm = 0.02 + ex2 * ex2;
                 let p_off = (m * self.num_classes + c) * ADAPTIVE_MAX_COLS;
                 let mut sum_dot = 0.0_f32;
                 for col in 0..ADAPTIVE_MAX_COLS {
@@ -716,6 +731,23 @@ impl AdaptiveOrthogonalRtrl {
         let n_new = planes_for_dim(new_d);
         let zero_cols = [[0.0_f32; ADAPTIVE_STATE_DIM]; ADAPTIVE_MAX_COLS];
 
+        // Смещение счётчика посещений для плавного размораживания прототипов в новом измерении (0 скачка логитов!)
+        {
+            let mut sum_vis = 0.0_f32;
+            let mut cnt_vis = 0.0_f32;
+            for idx in 0..self.proto_visits.len() {
+                let v = total_get_copy(&self.proto_visits, idx, 0.0);
+                if v > 0.0 {
+                    sum_vis += v;
+                    cnt_vis += 1.0;
+                }
+            }
+            let mean_vis = if cnt_vis > 0.0 { total_div_f32(sum_vis, cnt_vis, 0.0) } else { 0.0 };
+            for col in 0..ADAPTIVE_MAX_COLS {
+                let _ = total_set(&mut self.col_visit_offset, col, mean_vis);
+            }
+        }
+
         for m in 0..self.frames {
             for g in 0..self.num_inputs {
                 let ch = m * self.num_inputs + g;
@@ -733,12 +765,14 @@ impl AdaptiveOrthogonalRtrl {
                 let _ = total_set(&mut hv, old_d, vsign);
                 let _ = total_set(&mut self.h_vec, ch, hv);
 
-                // Новые плоскости стартуют с нулевого RMSProp для быстрого выхода из 1e-9 седла
+                // P5: Новые плоскости стартуют со свежим демпфированным RMSProp = 0.04 и обнулённым моментумом
                 let rms_base = ch * ADAPTIVE_PARAMS_PER_CH;
                 for k in n_old..n_new {
-                    let _ = total_set(&mut self.rms_theta, rms_base + k, 0.0);
+                    let _ = total_set(&mut self.rms_theta, rms_base + k, 0.04);
+                    let _ = total_set(&mut self.m_theta, rms_base + k, 0.0);
                 }
-                let _ = total_set(&mut self.rms_theta, rms_base + ADAPTIVE_MAX_PLANES + old_d, 0.0);
+                let _ = total_set(&mut self.rms_theta, rms_base + ADAPTIVE_MAX_PLANES + old_d, 0.04);
+                let _ = total_set(&mut self.m_theta, rms_base + ADAPTIVE_MAX_PLANES + old_d, 0.0);
             }
             if old_d < 4 {
                 let mut cols = total_get_copy(&self.state, m, zero_cols);
@@ -773,6 +807,9 @@ impl AdaptiveOrthogonalRtrl {
             }
         }
 
+        self.prev_active_dim = old_d;
+        self.prev_active_planes = n_old;
+        self.plateau_streak = 0;
         self.active_dim = new_d;
         self.eps_in_dim = 0;
         self.win_hits = 0;
@@ -783,6 +820,36 @@ impl AdaptiveOrthogonalRtrl {
         self.ultra_slow_ema = self.slow_ema;
         self.fast_ema = self.slow_ema;
         true
+    }
+
+    /// Проверяет, исчерпана ли геометрическая ёмкость вновь открытой оболочки плоскостей текущего `active_dim` (P5).
+    /// Возвращает `(active_ratio, mean_shell_energy)` по плоскостям `planes_for_dim(d-1)..planes_for_dim(d)`.
+    pub fn current_shell_utilization(&self) -> (f32, f32) {
+        let d = self.active_dim;
+        if d <= 2 {
+            return (1.0, 1.0);
+        }
+        let n_prev = planes_for_dim(d - 1);
+        let n_cur = planes_for_dim(d);
+        let mut active_cnt = 0usize;
+        let mut total_cnt = 0usize;
+        let mut sum_sq = 0.0_f32;
+        for ch in 0..self.planes.len() {
+            let pl = total_get_copy(&self.planes, ch, [0.0_f32; ADAPTIVE_MAX_PLANES]);
+            for k in n_prev..n_cur {
+                let t = total_get_copy(&pl, k, 0.0);
+                if t.abs() > 0.06 {
+                    active_cnt = active_cnt.saturating_add(1);
+                }
+                sum_sq += t * t;
+                total_cnt = total_cnt.saturating_add(1);
+            }
+        }
+        if total_cnt == 0 {
+            return (1.0, 1.0);
+        }
+        let inv_tot = total_div_f32(1.0, total_cnt as f32, 0.0);
+        ((active_cnt as f32) * inv_tot, sum_sq * inv_tot)
     }
 
     pub fn observe_episode_hit(&mut self, hit: bool, target_class: usize) -> bool {
@@ -832,19 +899,44 @@ impl AdaptiveOrthogonalRtrl {
             emp_chance = sum_sq.clamp(0.0005, 0.99);
         }
 
-        let min_dwell = (6 * self.seen_classes.max(5)).clamp(450, 2400);
+        // P5: Размерно-зависимый dwell + проверка утилизации текущей оболочки плоскостей
+        let seen = self.seen_classes.max(5);
+        let (min_dwell, max_block_acc, max_slow_ema, plateau_eps) = match self.active_dim {
+            2 => ((5 * seen).clamp(450, 900), 0.88_f32, 0.89_f32, 0.015_f32),
+            3 => ((14 * seen).clamp(1000, 1800), 0.86_f32, 0.87_f32, 0.012_f32),
+            4 => ((36 * seen).clamp(2400, 4800), 0.84_f32, 0.85_f32, 0.010_f32),
+            _ => ((36 * seen).clamp(3200, 6000), 0.80_f32, 0.82_f32, 0.010_f32),
+        };
+        let (active_ratio, mean_shell_e) = self.current_shell_utilization();
+        let shell_utilized = self.active_dim <= 2 || (active_ratio >= 0.30 && mean_shell_e >= 0.010);
+
         let acc_win = total_div_f32(self.win_hits as f32, self.win_total as f32, 0.0);
         let margin = acc_win - emp_chance;
         let z2_ok = (margin * margin) * (self.win_total as f32) > 25.0 * emp_chance * (1.0 - emp_chance);
 
-        let should_upgrade = self.eps_in_dim >= min_dwell
-            && cur_block < 0.90
-            && self.slow_ema < 0.91
-            && cur_block <= self.prev_block_acc + 0.012
-            && (self.fast_ema - self.slow_ema).abs() < 0.03
+        let still_climbing = self.fast_ema > self.slow_ema + 0.015;
+        let slow_creep_exit = self.active_dim == 2
+            && self.eps_in_dim >= min_dwell.saturating_mul(2)
+            && cur_block < 0.78
+            && !still_climbing;
+        let is_plateau_block = cur_block < max_block_acc
+            && self.slow_ema < max_slow_ema
+            && !still_climbing
+            && (cur_block <= self.prev_block_acc + plateau_eps || slow_creep_exit)
+            && ((self.fast_ema - self.slow_ema).abs() < 0.035 || slow_creep_exit)
             && cur_block > emp_chance * 1.6
             && (cur_block - emp_chance) > 0.004
-            && z2_ok;
+            && z2_ok
+            && shell_utilized;
+
+        if self.eps_in_dim >= min_dwell && is_plateau_block {
+            self.plateau_streak = self.plateau_streak.saturating_add(1);
+        } else {
+            self.plateau_streak = 0;
+        }
+        // В d = 2 требуем 2 подряд плато-блока (исключает преждевременный выход из O(2) на циклич. группах C_7 и др.)
+        let need_streak = if self.active_dim == 2 { 2usize } else { 1usize };
+        let should_upgrade = self.plateau_streak >= need_streak;
 
         self.block_hits = 0;
         self.block_total = 0;
@@ -1060,10 +1152,36 @@ impl AdaptiveOrthogonalRtrl {
 
         // 2. Комбинированный прогноз, Per-Frame Solo + сферическая метрика прототипов с отталкиванием
         self.comb_logits.fill(0.0);
-        let par_warmup = if self.total_eps >= 200 {
-            1.0_f32
+        // P5: Мягкий отложенный регуляризатор чётности (Мина №2): в d=2 держит честный O(2) (lambda_par*1.0),
+        // в d>=3 не защёлкивает чётность до сходимости пространственных плоскостей!
+        let par_warmup = if d <= 2 {
+            if self.total_eps >= 200 {
+                1.0_f32
+            } else {
+                total_div_f32(self.total_eps as f32, 200.0, 0.0)
+            }
+        } else if self.slow_ema > 0.88 || self.eps_in_dim > 2600 {
+            0.075_f32
         } else {
-            total_div_f32(self.total_eps as f32, 200.0, 0.0)
+            0.012_f32
+        };
+        // P5: Якорный LR для старых плоскостей + прогрев для новых плоскостей (сохраняет подгруппу при d -> d+1)
+        let (old_lr_mult, new_lr_mult) = if self.prev_active_planes > 0 {
+            if self.eps_in_dim < 400 {
+                (0.55_f32, 2.20_f32)
+            } else if self.eps_in_dim < 1200 {
+                (0.85_f32, 1.35_f32)
+            } else {
+                (1.0_f32, 1.0_f32)
+            }
+        } else {
+            (1.0_f32, 1.0_f32)
+        };
+        // P5: Плавная рампа center-pull при d >= 3 (в d <= 2 выключена для точных углов O(2) на L = 500)
+        let center_ramp = if d <= 2 {
+            0.0_f32
+        } else {
+            total_div_f32(self.eps_in_dim as f32, 400.0, 1.0).min(1.0)
         };
         let eff_scale = self.proto_scale * ADAPTIVE_COL_LOGIT_SCALE;
         let solo_mix = self.solo_w;
@@ -1101,6 +1219,23 @@ impl AdaptiveOrthogonalRtrl {
             if has_target && target < self.num_classes {
                 let hit_f = if best_fm_c == target { 1.0_f32 } else { 0.0_f32 };
                 let _ = total_set(&mut self.frame_acc_ema, m, fa + 0.02 * (hit_f - fa));
+
+                let vis = total_get_copy(&self.proto_visits, base_m + target, 0.0);
+                let tgt_off = (base_m + target) * ADAPTIVE_MAX_COLS;
+
+                // P5: Ленивая инициализация прототипа при первом визите класса (аналог NonAbelianO4Rtrl, 0 оракулов)
+                if vis == 0.0 && (lr_head > 0.0 || lr_rot > 0.0) {
+                    let _ = total_set(&mut self.proto_visits, base_m + target, 1.0);
+                    for col in 0..ADAPTIVE_MAX_COLS {
+                        if !is_col_active(col, d) {
+                            continue;
+                        }
+                        let mut uc = total_get_copy(&u_cols, col, [0.0_f32; ADAPTIVE_STATE_DIM]);
+                        normalize_state_active_nonzero(&mut uc, d);
+                        let _ = total_set(&mut self.proto, tgt_off + col, uc);
+                    }
+                    continue;
+                }
 
                 rational_probs_p4_into(&self.frame_logits, &mut self.frame_probs, &mut self.frame_psi);
                 fill_p4_logprob_grads(
@@ -1142,17 +1277,88 @@ impl AdaptiveOrthogonalRtrl {
                     }
                 }
 
+                // P5: Задача-независимое притяжение состояния к центру прототипа (до обновления proto)
+                if self.proto_center_beta > 0.0 && center_ramp > 0.0 && lr_rot > 0.0 {
+                    for col in 0..ADAPTIVE_MAX_COLS {
+                        if !is_col_active(col, d) {
+                            continue;
+                        }
+                        let col_off = total_get_copy(&self.col_visit_offset, col, 0.0);
+                        let vis_col = (vis - col_off).max(0.0);
+                        let tp = total_get_copy(&self.proto, tgt_off + col, [0.0_f32; ADAPTIVE_STATE_DIM]);
+                        if vis_col >= 2.0 && vec_norm_active(&tp, d) > 0.25 {
+                            let uc = total_get_copy(&u_cols, col, [0.0_f32; ADAPTIVE_STATE_DIM]);
+                            let c_gate = total_div_f32(vis_col, vis_col + 4.0, 0.0);
+                            let c_eff = self.proto_center_beta * center_ramp * c_gate * mod_w;
+                            let mut gu = total_get_copy(&grad_cols, col, [0.0_f32; ADAPTIVE_STATE_DIM]);
+                            for i in 0..ADAPTIVE_D_MAX {
+                                if i < d {
+                                    let g0 = total_get_copy(&gu, i, 0.0);
+                                    let pv = total_get_copy(&tp, i, 0.0);
+                                    let uv = total_get_copy(&uc, i, 0.0);
+                                    let _ = total_set(&mut gu, i, g0 + c_eff * (pv - uv));
+                                }
+                            }
+                            let gp0 = total_get_copy(&gu, ADAPTIVE_PARITY_AXIS, 0.0);
+                            let pvp = total_get_copy(&tp, ADAPTIVE_PARITY_AXIS, 0.0);
+                            let uvp = total_get_copy(&uc, ADAPTIVE_PARITY_AXIS, 0.0);
+                            let _ = total_set(&mut gu, ADAPTIVE_PARITY_AXIS, gp0 + c_eff * (pvp - uvp));
+                            let _ = total_set(&mut grad_cols, col, gu);
+                        }
+                    }
+                }
+
+                // P5: Кросс-энтропийное разделение прототипов (раздвигает конфузоров и исключает коллапс center-pull)
+                if lr_head > 0.0 {
+                    for c in 0..self.num_classes {
+                        let ec = total_get_copy(&self.lerrs, c, 0.0);
+                        if ec.abs() < 1.0e-4 && c != target {
+                            continue;
+                        }
+                        if c != target && total_get_copy(&self.proto_visits, base_m + c, 0.0) == 0.0 {
+                            continue;
+                        }
+                        let st_ce = (lr_head * eff_scale * ec).clamp(-0.25, 0.25);
+                        if st_ce.abs() <= 1.0e-6 {
+                            continue;
+                        }
+                        let p_off = (base_m + c) * ADAPTIVE_MAX_COLS;
+                        for col in 0..ADAPTIVE_MAX_COLS {
+                            if !is_col_active(col, d) {
+                                continue;
+                            }
+                            let mut pr_vec = total_get_copy(&self.proto, p_off + col, [0.0_f32; ADAPTIVE_STATE_DIM]);
+                            if vec_norm_active(&pr_vec, d) <= 1.0e-6 {
+                                continue;
+                            }
+                            let uc = total_get_copy(&u_cols, col, [0.0_f32; ADAPTIVE_STATE_DIM]);
+                            for i in 0..ADAPTIVE_D_MAX {
+                                if i < d {
+                                    let pv = total_get_copy(&pr_vec, i, 0.0);
+                                    let uv = total_get_copy(&uc, i, 0.0);
+                                    let _ = total_set(&mut pr_vec, i, pv + st_ce * uv);
+                                }
+                            }
+                            let pvp = total_get_copy(&pr_vec, ADAPTIVE_PARITY_AXIS, 0.0);
+                            let uvp = total_get_copy(&uc, ADAPTIVE_PARITY_AXIS, 0.0);
+                            let _ = total_set(&mut pr_vec, ADAPTIVE_PARITY_AXIS, pvp + st_ce * uvp);
+                            normalize_state_active_nonzero(&mut pr_vec, d);
+                            let _ = total_set(&mut self.proto, p_off + col, pr_vec);
+                        }
+                    }
+                }
+
                 // Счётчик посещений цели + подтягивание активных столбцов цели к u_cols
-                let vis = total_get_copy(&self.proto_visits, base_m + target, 0.0);
                 let _ = total_set(&mut self.proto_visits, base_m + target, vis + 1.0);
-                let alpha_vis = total_div_unit_shifted_f32(0.28, 0.02 * vis).max(0.005);
-                let tgt_off = (base_m + target) * ADAPTIVE_MAX_COLS;
                 for col in 0..ADAPTIVE_MAX_COLS {
                     if !is_col_active(col, d) {
                         continue;
                     }
+                    let col_off = total_get_copy(&self.col_visit_offset, col, 0.0);
+                    let vis_col = (vis - col_off).max(0.0);
                     let mut tp = total_get_copy(&self.proto, tgt_off + col, [0.0_f32; ADAPTIVE_STATE_DIM]);
                     let uc = total_get_copy(&u_cols, col, [0.0_f32; ADAPTIVE_STATE_DIM]);
+                    let alpha_vis = total_div_unit_shifted_f32(0.32, 0.02 * vis_col).max(0.005);
                     for i in 0..ADAPTIVE_D_MAX {
                         if i < d {
                             let pv = total_get_copy(&tp, i, 0.0);
@@ -1228,7 +1434,7 @@ impl AdaptiveOrthogonalRtrl {
                     }
                 }
 
-                // Мягкое RTRL-обновление с демпфером 0.04 (0.12*lr_rot для p_rot!) и saddle escape 1e-22
+                // P5: Мягкое RTRL-обновление с 3-уровневым якорным LR (old_lr_mult / new_lr_mult), моментумом и saddle escape
                 for gx in 0..self.num_inputs {
                     let ch_x = m * self.num_inputs + gx;
                     let rms_base = ch_x * ADAPTIVE_PARAMS_PER_CH;
@@ -1245,15 +1451,25 @@ impl AdaptiveOrthogonalRtrl {
                             let gu = total_get_copy(&grad_cols, col, [0.0_f32; ADAPTIVE_STATE_DIM]);
                             gp += dot_active(&gu, &svec, d);
                         }
-                        gp = gp.clamp(-4.0, 4.0);
-                        let old_rms = total_get_copy(&self.rms_theta, rms_base + k, 0.04);
-                        let new_rms = 0.98 * old_rms + 0.02 * gp * gp;
-                        let _ = total_set(&mut self.rms_theta, rms_base + k, new_rms);
                         let cur_t = total_get_copy(&pl, k, 0.0);
-                        let saddle = cur_t.abs() <= 0.002;
-                        let damp = if saddle { 1.0e-22 } else { 0.04 };
-                        let raw_step = lr_rot * gp * inv_sqrt_newton_2step_f32(new_rms + damp);
-                        let step = if saddle { raw_step.clamp(-lr_rot, lr_rot) } else { raw_step.clamp(-3.0 * lr_rot, 3.0 * lr_rot) };
+                        let is_new_plane = self.prev_active_planes > 0 && k >= self.prev_active_planes;
+                        gp = gp.clamp(-4.0, 4.0);
+                        let old_m = total_get_copy(&self.m_theta, rms_base + k, 0.0);
+                        let new_m = 0.80 * old_m + 0.20 * gp;
+                        let _ = total_set(&mut self.m_theta, rms_base + k, new_m);
+                        let old_rms = total_get_copy(&self.rms_theta, rms_base + k, 0.04);
+                        let new_rms = 0.99 * old_rms + 0.01 * gp * gp;
+                        let _ = total_set(&mut self.rms_theta, rms_base + k, new_rms);
+                        let saddle_th = if is_new_plane && self.eps_in_dim < 500 { 0.08_f32 } else { 0.002_f32 };
+                        let saddle = cur_t.abs() <= saddle_th;
+                        let lr_k = lr_rot * if is_new_plane { new_lr_mult } else { old_lr_mult };
+                        let (g_num, rms_eff) = if saddle {
+                            (gp, 0.02 * gp * gp + 1.0e-22)
+                        } else {
+                            (new_m, new_rms + 0.02)
+                        };
+                        let raw_step = lr_k * g_num * inv_sqrt_newton_2step_f32(rms_eff);
+                        let step = if saddle { raw_step.clamp(-lr_k, lr_k) } else { raw_step.clamp(-2.5 * lr_k, 2.5 * lr_k) };
                         let _ = total_set(&mut pl, k, (cur_t + step).clamp(-3.5, 3.5));
                     }
                     let _ = total_set(&mut self.planes, ch_x, pl);
@@ -1272,20 +1488,30 @@ impl AdaptiveOrthogonalRtrl {
                             gp += dot_active(&gu, &svec, d);
                         }
                         gp = gp.clamp(-4.0, 4.0);
+                        let old_m = total_get_copy(&self.m_theta, rms_base + p_idx, 0.0);
+                        let new_m = 0.80 * old_m + 0.20 * gp;
+                        let _ = total_set(&mut self.m_theta, rms_base + p_idx, new_m);
                         let old_rms = total_get_copy(&self.rms_theta, rms_base + p_idx, 0.04);
-                        let new_rms = 0.98 * old_rms + 0.02 * gp * gp;
+                        let new_rms = 0.99 * old_rms + 0.01 * gp * gp;
                         let _ = total_set(&mut self.rms_theta, rms_base + p_idx, new_rms);
                         let cur_v = total_get_copy(&hv, a, 0.0);
-                        let saddle = cur_v.abs() <= 0.002;
-                        let damp = if saddle { 1.0e-22 } else { 0.04 };
-                        let raw_step = lr_rot * gp * inv_sqrt_newton_2step_f32(new_rms + damp);
-                        let step = if saddle { raw_step.clamp(-lr_rot, lr_rot) } else { raw_step.clamp(-3.0 * lr_rot, 3.0 * lr_rot) };
+                        let is_new_axis = self.prev_active_dim > 0 && a >= self.prev_active_dim;
+                        let saddle_th = if is_new_axis && self.eps_in_dim < 500 { 0.08_f32 } else { 0.002_f32 };
+                        let saddle = cur_v.abs() <= saddle_th;
+                        let lr_a = lr_rot * if is_new_axis { new_lr_mult } else { old_lr_mult };
+                        let (g_num, rms_eff) = if saddle {
+                            (gp, 0.02 * gp * gp + 1.0e-22)
+                        } else {
+                            (new_m, new_rms + 0.02)
+                        };
+                        let raw_step = lr_a * g_num * inv_sqrt_newton_2step_f32(rms_eff);
+                        let step = if saddle { raw_step.clamp(-lr_a, lr_a) } else { raw_step.clamp(-2.5 * lr_a, 2.5 * lr_a) };
                         let _ = total_set(&mut hv, a, (cur_v + step).clamp(-2.0, 2.0));
                     }
                     hv = normalized_hv_active(&hv, d);
                     let _ = total_set(&mut self.h_vec, ch_x, hv);
 
-                    // Замедленный шаг чётности 0.35 * lr_rot (пространственные оси сходятся первыми)
+                    // Замедленный шаг чётности 0.25 * lr_rot с моментумом (пространственные оси сходятся первыми)
                     let b_idx = ADAPTIVE_MAX_PLANES + ADAPTIVE_D_MAX;
                     let mut gb = 0.0_f32;
                     for col in 0..ADAPTIVE_MAX_COLS {
@@ -1301,11 +1527,14 @@ impl AdaptiveOrthogonalRtrl {
                     let (cp_x, sp_x, d1_x) = parity_rot_params(cur_p);
                     let reg_grad = -8.0 * self.lambda_par * par_warmup * sp_x * cp_x * d1_x;
                     let tot_gb = (gb + reg_grad).clamp(-4.0, 4.0);
+                    let old_mb = total_get_copy(&self.m_theta, rms_base + b_idx, 0.0);
+                    let new_mb = 0.80 * old_mb + 0.20 * tot_gb;
+                    let _ = total_set(&mut self.m_theta, rms_base + b_idx, new_mb);
                     let old_rms = total_get_copy(&self.rms_theta, rms_base + b_idx, 0.04);
-                    let new_rms = 0.98 * old_rms + 0.02 * tot_gb * tot_gb;
+                    let new_rms = 0.99 * old_rms + 0.01 * tot_gb * tot_gb;
                     let _ = total_set(&mut self.rms_theta, rms_base + b_idx, new_rms);
-                    let lr_par = 0.35 * lr_rot;
-                    let step_b = lr_par * tot_gb * inv_sqrt_newton_2step_f32(new_rms + 0.04);
+                    let lr_par = 0.25 * lr_rot;
+                    let step_b = (lr_par * new_mb * inv_sqrt_newton_2step_f32(new_rms + 0.02)).clamp(-2.5 * lr_par, 2.5 * lr_par);
                     let _ = total_set(&mut self.betas, ch_x, (cur_p + step_b).clamp(-0.08, 1.08));
                 }
 
@@ -1409,7 +1638,9 @@ impl AdaptiveOrthogonalRtrl {
             for m in 0..n_frames {
                 let u_cols = total_get_copy(&cur, m, zero_cols);
                 let fa = total_get_copy(&self.frame_acc_ema, m, 0.05);
-                let wm = 0.25 + fa * fa;
+                let ex = (fa - 0.30).max(0.0);
+                let ex2 = ex * ex;
+                let wm = 0.02 + ex2 * ex2;
                 let p_off = (m * self.num_classes + c) * ADAPTIVE_MAX_COLS;
                 let mut sum_dot = 0.0_f32;
                 for col in 0..ADAPTIVE_MAX_COLS {

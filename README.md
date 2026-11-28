@@ -1,9 +1,9 @@
-# MicroContinualCore v0.5.0
+# MicroContinualCore v0.5.1
 
-**Zero-Transcendental & Zero-`sqrt` Algebraic Online Continual RL, Parity-Bridged $\mathrm{O}(d)$ Rotors & Deterministic `Q8.24` Engine in Rust (`#[axiom_zero]`) with 68 Constructive 0-Axiom Lean 4 Proofs**
+**Zero-Transcendental & Zero-`sqrt` Algebraic Online Continual RL, Parity-Bridged $\mathrm{O}(d)$ Rotors & Cross-Architecture Deterministic `Q8.24` Engine in Rust (`#[axiom_zero]`) with 72 Constructive 0-Axiom Lean 4 Proofs**
 
 **Authors:** Adrian Aleksandrovich İşmuhanov ([ORCID `0009-0002-4761-1952`](https://orcid.org/0009-0002-4761-1952)) & Sofia Sidorenko ([ORCID `0009-0006-5368-062X`](https://orcid.org/0009-0006-5368-062X))  
-**Zenodo Concept DOI:** [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982) | **License:** [`PolyForm-Noncommercial-1.0.0`](LICENSE) *(embedded `crates/axiom_zero`: `MIT OR Apache-2.0`)* | **Release Notes:** [RELEASE_NOTES_v0.5.0.md](RELEASE_NOTES_v0.5.0.md)
+**Zenodo Concept DOI:** [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982) | **License:** [`PolyForm-Noncommercial-1.0.0`](LICENSE) *(embedded `crates/axiom_zero`: `MIT OR Apache-2.0`)* | **Release Notes:** [RELEASE_NOTES_v0.5.1.md](RELEASE_NOTES_v0.5.1.md)
 
 > [!CAUTION]
 > **Scientific Integrity & Retraction Notice for `v0.3.0` (`10.5281/zenodo.24424983`):**  
@@ -13,7 +13,7 @@
 
 ## Overview
 
-`micro_continual_core` (`v0.5.0`) is a compact (`2.3–738 KB` RAM; `4.9–454 KB` for `f32` cores with frozen `i8` encoder), single-pass online continual learning and reinforcement learning engine written in Rust:
+`micro_continual_core` (`v0.5.1`) is a compact (`2.3–738 KB` RAM; `4.9–454 KB` for `f32` cores with frozen `i8` encoder; `30.3–38.2 KB` for `UnifiedCayleyCore One-Config`), single-pass online continual learning and reinforcement learning engine written in Rust:
 - **`#[axiom_zero]` Core Contract:** Enforced at compile time by `axiom_zero_macros` across all 10 core modules (`src/algebra.rs`, `src/unified.rs`, `src/fixed_point.rs` *(integer core; float I/O converters sit strictly at the boundary)*, `src/adaptive_od.rs`, `src/core.rs`, `src/rtrl.rs`, `src/math.rs`, `src/belief.rs`, `src/memory.rs`, and `src/env_hard_pomdp.rs`):
   - **0% transcendental functions (`[E012]`) and 0% `.sqrt()` (`[E013]`):** `.exp()`, `.exp2()`, `.ln()`, `.log()`, `.sin()`, `.cos()`, `.tan()`, `.sinh()`, `.cosh()`, `.tanh()`, `.asin()`, `.acos()`, `.atan()`, `.powf()`, and `.sqrt()` fail compilation inside `#[axiom_zero]`, including via UFCS paths and inside macro-body tokens.
   - **Total arithmetic & indexing:** Direct `/`, `%`, and `slice[i]` indexing are forbidden; all divisions and lookups use total helpers (`total_div_f32`, `total_div_unit_shifted_f32`, `total_div_i64`, `total_div_i128`, `total_get_copy`, `total_set`).
@@ -22,7 +22,7 @@
 - **2D Rational Cayley & Algebraic Selective Cayley (`AlgebraicSelectiveCayley`):** 0%-transcendental 2D complex-plane rational oscillators with exact $O(U \cdot d_{\text{in}})$ RTRL, piecewise-rational $C^1$-smooth input-selective step $\Delta(z) = \min(2,\; 1 + z_c)$ for $z_c \ge 0$ and $\max(0.05,\; \frac{1}{1 - z_c + 0.5 z_c^2})$ for $z_c < 0$ (`rational_pos_and_deriv`, strictly bounded in $[0.05, 2.0]$ without `exp` or `sqrt`), causal online Welford standardization, supervised classification & continuous regression, online TD($\lambda$) RL, and Bit-30 SEU scrubbing.
 - **Page-Hinkley Multi-Bank Regime Controller with Causal Parallel Probing (`parallel_bank_probe`):** Automatic drift detection (guarded to multi-bank `banks.len() > 1`), bank freezing, causal 6-step parallel read-only bank scoring (`Par6`) across up to 32 banks in `O(1)` step latency, and immediate retention on regime returns.
 - **Hardware IEEE-754 Bit-Flip SEU Scrubbing:** Built-in state and weight register corruption detection and recovery (`scrub_state_seu`, `scrub_weight_seu`, `total_seu_faults()`).
-- **Constructive Lean 4 Proofs (`proofs/MicroContinualCoreProofs.lean`):** **68** verified `#print axioms` checks (`step01`–`step134`) with **0 axioms** (not even `propext` or `Quot.sound`) over exact constructive integers (`Balance`), covering $\mathrm{SO}(3)$ orthogonality & $\det R(g) = +1$, quartic rational softmax positivity, selective Cayley contraction, dual derivatives, Newton `inv_sqrt`/`sqrt` bounds, `Q8.24`/`Q39.24` arithmetic, `Q1.14` hypersphere prototype margin preservation, and non-degenerate 4-Householder $\mathrm{SO}(5)$ watershed isometry.
+- **Constructive Lean 4 Proofs (`proofs/MicroContinualCoreProofs.lean`):** **72** verified `#print axioms` checks (`step01`–`step138`) with **0 axioms** (not even `propext` or `Quot.sound`) over exact constructive integers (`Balance`), covering $\mathrm{SO}(3)$ orthogonality & $\det R(g) = +1$, quartic rational softmax positivity, selective Cayley contraction, dual derivatives, Newton `inv_sqrt`/`sqrt` bounds, `Q8.24`/`Q39.24` arithmetic, `Q1.14` hypersphere prototype margin preservation, non-degenerate 4-Householder $\mathrm{SO}(5)$ watershed isometry, symplectic `J`-XOR antisymmetry (`step135`), bank rotor adapter isometry (`step136`), Finsler-Randers diode positivity/asymmetry (`step137`), and Lyapunov/Liebel–Koerner channel balance (`step138`).
 
 ---
 
@@ -100,6 +100,25 @@ All `v0.5.0` kernels (`src/algebra.rs`, `src/unified.rs`, `src/fixed_point.rs` *
 
 ---
 
+## What's New in `v0.5.1` (Forensic-Sanitized Algebraic Upgrades, Decoupled LOO Pruning, Blind OOD Groups, `wasm32-wasip1` Determinism & 72 Lean 4 Proofs)
+
+Building directly on `v0.5.0` under the same strict `#[axiom_zero]` (`[E012]` + `[E013]`), 0-heap-allocation (`zero_alloc_unified`), and 0-axiom Lean 4 contracts (**72/72** checks `step01`–`step138`, **46/46** core tests passing under both default and `--features strict_deterministic`):
+
+- **Clean `UnifiedCayleyCore One-Config` (`src/algebra.rs`, `src/unified.rs`):** Every ablation flag is strictly decoupled (`use_band0`, `enable_smooth_var_norm`, `enable_shared_actor_rms`, `enable_idbd_binary_fix`, `enable_j_xor`, `enable_bank_rotor_adapter`, `enable_finsler_diode`, `enable_lyap_lk`). Following a ruthless decoupled leave-one-out audit, default `one_config()` keeps only the empirically proven combination — **4-sector `Band 0` + smooth sub-unit variance floor (`var + 0.0035`) + `P1` Symplectic `J`-XOR (`step135`) + `P4` Lyapunov/LK channel balance (`1.25/(1+s^2)`, `step138`)** + `critic_w` Bit-30 SEU targeting — while **filtering `P2` (`step136`) and `P3` (`step137`) OFF by default** (retained as formally verified, FD/SEU/0-alloc-tested optional primitives). All inside **`35.6 / 38.2 KB ≤ 40 KB`** (`ELEC2` raw / `+y_{t-1}`), **`30.3 KB`** (`Add mod p`), and **`31.6 KB ≤ 32 KB`** (`RepeatPrev`), `6000/6000` Causal Prefix Invariance:
+  - **`ELEC2`:** `84.96% → 89.36%` raw (**`+4.40 pp`**), `+y_{t-1}`: `85.24% → 89.75±0.50%` (**`+4.51 pp`**), `Label-Shuffle = 54.48±0.17%` *(honestly attributed primarily to `smooth_var_norm`: `+3.55 pp` in LOO)*.
+  - **`CartPole 2D / +dx`:** `64.2 → 135.4` (Frozen Eval **`176.0 / 161.2`**) and `91.0 → 123.8` (Frozen Eval **`163.7 / 94.4`**) *(driven by `P1 J-XOR`: `+61.6 st` in LOO)*.
+  - **`RepeatPrev K=4 / 8 / 16 / 24`:** `77.8% / 64.6% (+6.6 pp) / 40.3% (+7.2 pp) / 31.0% (+3.6 pp)` *(driven by `P4 Lyap/LK` `+4.8 pp` + `smooth_var_norm` `+4.2 pp` in LOO)*.
+  - **Bit-Serial `Add mod 997 / 9973`:** `53.0 / 53.5% → 65.67±3.12% / 57.05±4.42%` (**`+12.7 / +3.6 pp`**, `Shuf = 48.5% / 52.4%`, `P1 J-XOR` `+9.80 pp` in LOO); **`Dyck-2`:** `87.8%` (`Depth>=3: 88.5%`, `Shuf = 33.1%`); **`Waves`:** `90.5% ABC / 90.8% ZS / 89.7% Flip / 75.7% Ret12 (+3.4 pp)`; zero-gate **`T-Maze L=15`:** `93.6 / 93.5%` (`L=5: 97.8 / 99.2%`); **Step 2 Streams:** `STAGGER 91.6% → 93.4±0.6% (+1.8 pp)` (`SEA/Hyp/RBF`: `80.8/77.2/91.1%`).
+  - **`NASA C-MAPSS` (Honest Gap):** `FD001 = 24.46`, `FD004 = 28.90` (`SEU = 27.26±1.35`, `EW-Rec = 49.6%`, `any_nan = false`, `RUL-Shuffle = 41.27±0.97`), still trailing specialized `v0.4.1 PURE 2L` (`19.51 / 23.33`).
+- **`AdaptiveOrthogonalRtrl` (`P5` in `src/adaptive_od.rs`, Placebo-Free):** Removed the non-contributing `lambda_delta_rank` placebo; retains **3-tier anchor/warmup LR + shell-utilization & 2-block plateau/climbing gating + smooth `center_ramp` + CE/center-pull + `m_theta`**:
+  - **Suite D (10 seeds):** **`Label-Shuffle`:** **`d = 2.00±0.00`** (`0` false esc); **`C_5`:** **`d = 2.00±0.00`**, **`99.0±2.0% @ L=500`** (**`+10.2 pp`**); **`A_5`:** **`d = 3.10±0.32`** (`9/10` exact `d=3`, down from `4.80`), **`94.9% / 90.8% / 85.2% (+44.5 pp) / 63.2% (+38.0 pp) / 38.4% / 20.6%`**; **`S_5`:** **`d = 4.20±0.42`** (**`8/10` exact `d=4`!** down from `5.80`), `82.2% / 46.9% (+8.8 pp) / 8.8%`; **`S_6` (`246.6 KB`):** **`d = 5.50±0.53`** (`5/10` exact `d=5`), **`93.0% (+15.8 pp) / 42.7% (+16.9 pp) / 4.5% (6.4×)`**.
+  - **Blind OOD Groups (5 seeds, zero tuning exposure):** **`D_5` ($\mathrm{O}(2)$):** `d = 2.20`, **`99.1% @ L=500`**; **`A_4` ($\mathrm{SO}(3)$):** **`d = 3.00 [5/5 exact!]`**, **`86.0% @ L=500`**; **`S_4` ($\mathrm{O}(3)$):** `d = 2.80`, **`96.6% → 46.9% @ L=500`**.
+  - *Honest Remaining Limits:* (a) On `S_5` `12k`, `V_4` 3D collision hysteresis still trails fixed `O(4)` at `L=30..500`, and a `24k`-episode clock-runout check reaches `d = 5.00 [4..6]` (proving `min_dwell` partially caps `d` at `12k`) while lifting `L=500` to `22.4%`; (b) blind OOD 2-generator `C_7` (`d = 2.40`) drifts to `0.0% @ L=500` from inverse-angle random walk.
+- **Cross-Architecture `wasm32-wasip1` Determinism (`P6.1`, `scripts/run_wasm_suite_c.mjs`):** All **4/4** 64-bit FNV-1a digests (`0x38030f12b5509866`, `0xe89e5db12b6719d2`, `0x614d2e87b5a2d524`, `0x285502bbee2b296d`) verified **100% bit-identical** across `x86_64` default release, `x86_64 --features strict_deterministic`, and `wasm32-wasip1` (Node.js WASI).
+- **Publication Audit (`P6.2`–`P6.3`):** Updated **Table 1A** (with standalone rows for `Band 0`, `smooth_var_norm`, and LOO-filtered `P2`/`P3`), **Section 6** (full decoupled LOO + blind OOD tables) in [PAPER.md](PAPER.md), and 3 synchronized visual figures (`scripts/plot_v051_figures.py`): [assets/v051_o4_orbits_and_watershed.png](assets/v051_o4_orbits_and_watershed.png), [assets/v051_unified_ablation_ladder.png](assets/v051_unified_ablation_ladder.png), and [assets/v051_adaptive_od_trajectories.png](assets/v051_adaptive_od_trajectories.png).
+
+---
+
 ## Reproducing All Verifications & Benchmarks
 
 > **External Dataset Prerequisites:** All synthetic, group-theory, RL, fixed-point, and prime-field suites run out of the box with zero downloads. To also run the real-data **ELEC2** and **NASA C-MAPSS** sections (which are gracefully skipped if missing), place the gitignored external files in the repository root:
@@ -107,23 +126,28 @@ All `v0.5.0` kernels (`src/algebra.rs`, `src/unified.rs`, `src/fixed_point.rs` *
 > - `CMAPSSData/` — official NASA C-MAPSS turbofan degradation files (`train_FD001..4.txt`, `test_FD001..4.txt`, `RUL_FD001..4.txt`).
 
 ```bash
-# 1. Verify all 68 constructive Lean 4 theorems (0 axioms) & v0.5.0 code invariants
+# 1. Verify all 72 constructive Lean 4 theorems (0 axioms) & v0.5.1 code invariants
 lean proofs/MicroContinualCoreProofs.lean
 python scripts/audit_v050_invariants.py
 
-# 2. Verify #[axiom_zero] (20 compile_fail incl. [E013] sqrt ban), 41 core tests (default + strict_deterministic), and 0-alloc hot paths
+# 2. Verify #[axiom_zero] (20 compile_fail incl. [E013] sqrt ban), 46 core tests (default + strict_deterministic), and 0-alloc hot paths
 cargo test --release --manifest-path crates/axiom_zero/Cargo.toml
 cargo test --release --lib
 cargo test --release --features strict_deterministic --lib
 cargo test --release --test zero_alloc_unified
 
-# 3. Run Causal Prefix Invariance, Label-Shuffle leakage audit, v0.5.0 master suite (Suites A/B/C/D) & Prime-Field suite (p997 & p9973)
+# 3. Run Causal Prefix Invariance, Label-Shuffle leakage audit, v0.5.1 master suite (Suites A/B/C/D) & Prime-Field suite (p997 & p9973)
 cargo run --release --bin bench_forensic_audit
 cargo run --release --bin bench_step8_v050 -- --all
 cargo run --release --features strict_deterministic --bin bench_step8_v050 -- --suite c
 cargo run --release --bin bench_step9_prime_arith
 
-# 4. Run v0.4.0 regression suites (`bench_step5_v040` & `bench_step6_scaling` support `-- --filter <substr>`)
+# 4. Cross-architecture wasm32-wasip1 Suite C determinism & v0.5.1 figure rendering
+cargo build --release --target wasm32-wasip1 --bin bench_step8_v050
+node scripts/run_wasm_suite_c.mjs
+python scripts/plot_v051_figures.py
+
+# 5. Run v0.4.0 regression suites (`bench_step5_v040` & `bench_step6_scaling` support `-- --filter <substr>`)
 cargo run --release --bin bench_step1
 cargo run --release --bin bench_step2_streams
 cargo run --release --bin bench_step3_pomdp_rl
@@ -133,7 +157,7 @@ cargo run --release --bin bench_step5_v040
 cargo run --release --bin bench_step6_scaling
 cargo run --release --bin bench_step7_nasa_fleet
 
-# 5. Independent external verification & NASA visual rendering (optional)
+# 6. Independent external verification & NASA visual rendering (optional)
 python scripts/bench_elec2_river.py
 python scripts/bench_cartpole_pytorch.py --quick
 python scripts/bench_nasa_external.py --backend all
@@ -151,4 +175,4 @@ python scripts/plot_nasa_fleet.py
   - **Root crate (`micro_continual_core`), benchmarks (`src/bin/`), and Lean 4 proofs (`proofs/`):** Licensed under **`PolyForm-Noncommercial-1.0.0`** — see [LICENSE](LICENSE). *(Note: the conflicting `licenses/LICENSE-AGPL-3.0-only.txt` from `v0.3.0` has been removed.)*
   - **Commercial Licensing:** For commercial licensing inquiries, contact [mrwerdin@gmail.com](mailto:mrwerdin@gmail.com).
   - **Embedded `crates/axiom_zero` & `crates/axiom_zero/axiom_zero_macros`:** Dual-licensed under **`MIT OR Apache-2.0`** — see [crates/axiom_zero/LICENSE-MIT](crates/axiom_zero/LICENSE-MIT) and [crates/axiom_zero/LICENSE-APACHE](crates/axiom_zero/LICENSE-APACHE).
-- **Citation:** See [CITATION.cff](CITATION.cff). Always cite the Zenodo concept DOI [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982) or the `v0.5.0` release (`v0.4.0+`); **do NOT cite `v0.3.0` (`10.5281/zenodo.24424983`)**, which is retracted/superseded.
+- **Citation:** See [CITATION.cff](CITATION.cff). Always cite the Zenodo concept DOI [`10.5281/zenodo.24424982`](https://doi.org/10.5281/zenodo.24424982) or the `v0.5.1` release (`v0.4.0+`); **do NOT cite `v0.3.0` (`10.5281/zenodo.24424983`)**, which is retracted/superseded.

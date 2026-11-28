@@ -440,3 +440,395 @@ pub fn nlms_step(param: &mut f32, grad: f32, eff_lr: f32, wd: f32, lim: f32) {
     let decayed = if wd > 0.0 { *param * (1.0 - wd) } else { *param };
     *param = sanitize_f32(decayed + eff_lr * g).clamp(-lim, lim);
 }
+
+/// Рациональная алгебраическая сатурация `sigma_rat(z) = z / sqrt(1 + z^2)` и точная производная `(1 + z^2)^(-3/2)`
+/// (0% `tanh`, 0% `.sqrt()`, строго нечётная, C^infinity).
+#[axiom_zero]
+#[inline(always)]
+pub fn rational_sat_and_deriv(z: f32, exact: bool) -> (f32, f32) {
+    let zc = sanitize_bounded_f32(z, 32.0);
+    let r = inv_sqrt_select(sanitize_f32(1.0 + zc * zc), exact);
+    let s = sanitize_f32(zc * r);
+    let ds = sanitize_f32(r * r * r);
+    (s, ds)
+}
+
+/// Чисто рациональная сатурация `sigma_abs(z) = z / (1 + |z|)` и производная `1 / (1 + |z|)^2` (0% `tanh`, 0% `.sqrt()`).
+#[axiom_zero]
+#[inline(always)]
+pub fn rational_abs_sat_and_deriv(z: f32) -> (f32, f32) {
+    let zc = sanitize_bounded_f32(z, 32.0);
+    let inv = total_div_unit_shifted_f32(1.0, zc.abs());
+    (sanitize_f32(zc * inv), sanitize_f32(inv * inv))
+}
+
+/// Симплектический антисимметричный `J`-XOR для пары 2D векторов `u = (u0, u1)`, `v = (v0, v1)`:
+/// `Omega_XOR(u, v) = u ⊙ sigma_rat(J v) - v ⊙ sigma_rat(J u)`, где `J(q, p) = (-p, q)`.
+/// Гарантирует точную антисимметрию `Omega(u, v) = -Omega(v, u)` и `Omega(u, u) = 0` (`step135`).
+#[axiom_zero]
+#[inline(always)]
+pub fn symplectic_j_xor_2d(u: (f32, f32), v: (f32, f32), exact: bool) -> (f32, f32) {
+    let (su0, _) = rational_sat_and_deriv(u.0, exact);
+    let (su1, _) = rational_sat_and_deriv(u.1, exact);
+    let (sv0, _) = rational_sat_and_deriv(v.0, exact);
+    let (sv1, _) = rational_sat_and_deriv(v.1, exact);
+    // J(v) = (-v1, v0), sigma odd => u0 * (-sv1) - v0 * (-su1) = v0 * su1 - u0 * sv1
+    let o0 = sanitize_bounded_f32(v.0 * su1 - u.0 * sv1, 64.0);
+    let o1 = sanitize_bounded_f32(u.1 * sv0 - v.1 * su0, 64.0);
+    (o0, o1)
+}
+
+/// Точный обратный проход через `symplectic_j_xor_2d`: возвращает `(grad_u, grad_v)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn symplectic_j_xor_2d_backward(
+    u: (f32, f32),
+    v: (f32, f32),
+    g_out: (f32, f32),
+    exact: bool,
+) -> ((f32, f32), (f32, f32)) {
+    let (su0, du0) = rational_sat_and_deriv(u.0, exact);
+    let (su1, du1) = rational_sat_and_deriv(u.1, exact);
+    let (sv0, dv0) = rational_sat_and_deriv(v.0, exact);
+    let (sv1, dv1) = rational_sat_and_deriv(v.1, exact);
+    let g0 = sanitize_bounded_f32(g_out.0, 64.0);
+    let g1 = sanitize_bounded_f32(g_out.1, 64.0);
+    let gu0 = sanitize_f32(-g0 * sv1 - g1 * v.1 * du0);
+    let gu1 = sanitize_f32(g0 * v.0 * du1 + g1 * sv0);
+    let gv0 = sanitize_f32(g0 * su1 + g1 * u.1 * dv0);
+    let gv1 = sanitize_f32(-g0 * u.0 * dv1 - g1 * su0);
+    ((gu0, gu1), (gv0, gv1))
+}
+
+/// Антисимметричное 3D векторное произведение `u × v` для кросс-взаимодействия слотов `Band 2` (`step135`).
+#[axiom_zero]
+#[inline(always)]
+pub fn cross_3d_pair(u: (f32, f32, f32), v: (f32, f32, f32)) -> (f32, f32, f32) {
+    (
+        sanitize_bounded_f32(u.1 * v.2 - u.2 * v.1, 64.0),
+        sanitize_bounded_f32(u.2 * v.0 - u.0 * v.2, 64.0),
+        sanitize_bounded_f32(u.0 * v.1 - u.1 * v.0, 64.0),
+    )
+}
+
+/// Точный обратный проход через `cross_3d_pair`: `g_u = v × g`, `g_v = g × u`.
+#[axiom_zero]
+#[inline(always)]
+pub fn cross_3d_pair_backward(
+    u: (f32, f32, f32),
+    v: (f32, f32, f32),
+    g: (f32, f32, f32),
+) -> ((f32, f32, f32), (f32, f32, f32)) {
+    let gu = (
+        sanitize_f32(v.1 * g.2 - v.2 * g.1),
+        sanitize_f32(v.2 * g.0 - v.0 * g.2),
+        sanitize_f32(v.0 * g.1 - v.1 * g.0),
+    );
+    let gv = (
+        sanitize_f32(g.1 * u.2 - g.2 * u.1),
+        sanitize_f32(g.2 * u.0 - g.0 * u.2),
+        sanitize_f32(g.0 * u.1 - g.1 * u.0),
+    );
+    (gu, gv)
+}
+
+/// Ортогональный 2D ротор Кэли `R_2(t) u in SO(2)` для банковского адаптера (`step136`, 0% sin/cos).
+#[axiom_zero]
+#[inline(always)]
+pub fn rot2_cayley_apply(t: f32, u: (f32, f32)) -> (f32, f32) {
+    let tc = sanitize_bounded_f32(t, 4.5);
+    let t2 = tc * tc;
+    let inv_d = total_div_unit_shifted_f32(1.0, t2);
+    let c = (1.0 - t2) * inv_d;
+    let s = (2.0 * tc) * inv_d;
+    (sanitize_f32(c * u.0 - s * u.1), sanitize_f32(s * u.0 + c * u.1))
+}
+
+/// Точный обратный проход через 2D ротор Кэли `R_2(t) u`: возвращает `(grad_u, grad_t)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn rot2_cayley_backward(t: f32, u: (f32, f32), grad_r: (f32, f32)) -> ((f32, f32), f32) {
+    let tc = sanitize_bounded_f32(t, 4.5);
+    let t2 = tc * tc;
+    let inv_d = total_div_unit_shifted_f32(1.0, t2);
+    let c = (1.0 - t2) * inv_d;
+    let s = (2.0 * tc) * inv_d;
+    let r0 = sanitize_f32(c * u.0 - s * u.1);
+    let r1 = sanitize_f32(s * u.0 + c * u.1);
+    let gu0 = sanitize_f32(c * grad_r.0 + s * grad_r.1);
+    let gu1 = sanitize_f32(-s * grad_r.0 + c * grad_r.1);
+    let gt = sanitize_f32(2.0 * inv_d * (-grad_r.0 * r1 + grad_r.1 * r0));
+    ((gu0, gu1), gt)
+}
+
+/// Ортогональный 3D ротор Кэли `R_3(g) u in SO(3)` от свободного генератора `g in R^3` (`step136`, 0% sin/cos/sqrt):
+/// `R_3(g) u = ((1 - ||g||^2) u + 2 (g × u) + 2 <g, u> g) / (1 + ||g||^2)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn rot3_cayley_vec_apply(g: (f32, f32, f32), u: (f32, f32, f32)) -> (f32, f32, f32) {
+    let gx = sanitize_bounded_f32(g.0, 4.5);
+    let gy = sanitize_bounded_f32(g.1, 4.5);
+    let gz = sanitize_bounded_f32(g.2, 4.5);
+    let g2 = gx * gx + gy * gy + gz * gz;
+    let inv_d = total_div_unit_shifted_f32(1.0, g2);
+    let om = 1.0 - g2;
+    let dot_gu = gx * u.0 + gy * u.1 + gz * u.2;
+    let cx = gy * u.2 - gz * u.1;
+    let cy = gz * u.0 - gx * u.2;
+    let cz = gx * u.1 - gy * u.0;
+    (
+        sanitize_f32((om * u.0 + 2.0 * cx + 2.0 * dot_gu * gx) * inv_d),
+        sanitize_f32((om * u.1 + 2.0 * cy + 2.0 * dot_gu * gy) * inv_d),
+        sanitize_f32((om * u.2 + 2.0 * cz + 2.0 * dot_gu * gz) * inv_d),
+    )
+}
+
+/// Точный обратный проход через 3D ротор Кэли `R_3(g) u`: возвращает `(grad_u, grad_g)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn rot3_cayley_vec_backward(
+    g: (f32, f32, f32),
+    u: (f32, f32, f32),
+    grad_r: (f32, f32, f32),
+) -> ((f32, f32, f32), (f32, f32, f32)) {
+    let gx = sanitize_bounded_f32(g.0, 4.5);
+    let gy = sanitize_bounded_f32(g.1, 4.5);
+    let gz = sanitize_bounded_f32(g.2, 4.5);
+    let g2 = gx * gx + gy * gy + gz * gz;
+    let inv_d = total_div_unit_shifted_f32(1.0, g2);
+    let om = 1.0 - g2;
+    let dot_gu = gx * u.0 + gy * u.1 + gz * u.2;
+    let cx = gy * u.2 - gz * u.1;
+    let cy = gz * u.0 - gx * u.2;
+    let cz = gx * u.1 - gy * u.0;
+    let r = (
+        sanitize_f32((om * u.0 + 2.0 * cx + 2.0 * dot_gu * gx) * inv_d),
+        sanitize_f32((om * u.1 + 2.0 * cy + 2.0 * dot_gu * gy) * inv_d),
+        sanitize_f32((om * u.2 + 2.0 * cz + 2.0 * dot_gu * gz) * inv_d),
+    );
+    // grad_u = R_3(g)^T grad_r = R_3(-g) grad_r
+    let dot_gp = gx * grad_r.0 + gy * grad_r.1 + gz * grad_r.2;
+    let cgpx = gy * grad_r.2 - gz * grad_r.1;
+    let cgpy = gz * grad_r.0 - gx * grad_r.2;
+    let cgpz = gx * grad_r.1 - gy * grad_r.0;
+    let gu = (
+        sanitize_f32((om * grad_r.0 - 2.0 * cgpx + 2.0 * dot_gp * gx) * inv_d),
+        sanitize_f32((om * grad_r.1 - 2.0 * cgpy + 2.0 * dot_gp * gy) * inv_d),
+        sanitize_f32((om * grad_r.2 - 2.0 * cgpz + 2.0 * dot_gp * gz) * inv_d),
+    );
+    // grad_g = (2 / (1 + ||g||^2)) * (u × p + <g,u> p + <p,g> u - <p, u + r> g)
+    let upx = u.1 * grad_r.2 - u.2 * grad_r.1;
+    let upy = u.2 * grad_r.0 - u.0 * grad_r.2;
+    let upz = u.0 * grad_r.1 - u.1 * grad_r.0;
+    let p_ur = grad_r.0 * (u.0 + r.0) + grad_r.1 * (u.1 + r.1) + grad_r.2 * (u.2 + r.2);
+    let two_inv = 2.0 * inv_d;
+    let gg = (
+        sanitize_f32(two_inv * (upx + dot_gu * grad_r.0 + dot_gp * u.0 - p_ur * gx)),
+        sanitize_f32(two_inv * (upy + dot_gu * grad_r.1 + dot_gp * u.1 - p_ur * gy)),
+        sanitize_f32(two_inv * (upz + dot_gu * grad_r.2 + dot_gp * u.2 - p_ur * gz)),
+    );
+    (gu, gg)
+}
+
+/// Рациональный 2D Финслер-Рандерс «причинный диод» (`v0.5.1 P3`, `step137`, 0% `.sqrt()` / `exp` / `tanh`):
+/// `beta = v / sqrt(1 + ||v||^2)` (`||beta|| < 1`),
+/// `tau(delta, v) = sqrt(||delta||^2 + mu0^2) + <beta, delta> > 0`.
+/// Возвращает `(tau, d_tau/d_delta, d_tau/d_v)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn finsler_randers_diode_2d(
+    v: (f32, f32),
+    delta: (f32, f32),
+    mu0: f32,
+    exact: bool,
+) -> (f32, (f32, f32), (f32, f32)) {
+    let v0 = sanitize_bounded_f32(v.0, 12.0);
+    let v1 = sanitize_bounded_f32(v.1, 12.0);
+    let d0 = sanitize_bounded_f32(delta.0, 16.0);
+    let d1 = sanitize_bounded_f32(delta.1, 16.0);
+    let mu = sanitize_f32(mu0).clamp(1e-3, 4.0);
+
+    let rv = inv_sqrt_select(sanitize_f32(1.0 + v0 * v0 + v1 * v1), exact);
+    let b0 = sanitize_f32(v0 * rv);
+    let b1 = sanitize_f32(v1 * rv);
+
+    let a = sanitize_f32(d0 * d0 + d1 * d1 + mu * mu);
+    let rd = inv_sqrt_select(a, exact);
+    let rho = sanitize_f32(a * rd);
+    let bd = sanitize_f32(b0 * d0 + b1 * d1);
+    let tau = sanitize_f32(rho + bd).max(1e-6);
+
+    let dt_dd = (sanitize_f32(d0 * rd + b0), sanitize_f32(d1 * rd + b1));
+    let dt_dv = (
+        sanitize_f32(rv * (d0 - bd * b0)),
+        sanitize_f32(rv * (d1 - bd * b1)),
+    );
+    (tau, dt_dd, dt_dv)
+}
+
+/// Рациональный 3D Финслер-Рандерс «причинный диод» (`v0.5.1 P3`, `step137`, 0% `.sqrt()` / `exp` / `tanh`):
+/// возвращает `(tau, d_tau/d_delta, d_tau/d_v)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn finsler_randers_diode_3d(
+    v: (f32, f32, f32),
+    delta: (f32, f32, f32),
+    mu0: f32,
+    exact: bool,
+) -> (f32, (f32, f32, f32), (f32, f32, f32)) {
+    let v0 = sanitize_bounded_f32(v.0, 12.0);
+    let v1 = sanitize_bounded_f32(v.1, 12.0);
+    let v2 = sanitize_bounded_f32(v.2, 12.0);
+    let d0 = sanitize_bounded_f32(delta.0, 16.0);
+    let d1 = sanitize_bounded_f32(delta.1, 16.0);
+    let d2 = sanitize_bounded_f32(delta.2, 16.0);
+    let mu = sanitize_f32(mu0).clamp(1e-3, 4.0);
+
+    let rv = inv_sqrt_select(sanitize_f32(1.0 + v0 * v0 + v1 * v1 + v2 * v2), exact);
+    let b0 = sanitize_f32(v0 * rv);
+    let b1 = sanitize_f32(v1 * rv);
+    let b2 = sanitize_f32(v2 * rv);
+
+    let a = sanitize_f32(d0 * d0 + d1 * d1 + d2 * d2 + mu * mu);
+    let rd = inv_sqrt_select(a, exact);
+    let rho = sanitize_f32(a * rd);
+    let bd = sanitize_f32(b0 * d0 + b1 * d1 + b2 * d2);
+    let tau = sanitize_f32(rho + bd).max(1e-6);
+
+    let dt_dd = (
+        sanitize_f32(d0 * rd + b0),
+        sanitize_f32(d1 * rd + b1),
+        sanitize_f32(d2 * rd + b2),
+    );
+    let dt_dv = (
+        sanitize_f32(rv * (d0 - bd * b0)),
+        sanitize_f32(rv * (d1 - bd * b1)),
+        sanitize_f32(rv * (d2 - bd * b2)),
+    );
+    (tau, dt_dd, dt_dv)
+}
+
+/// Нормированный направленный контраст 2D диода Финслера–Рандерса (`v0.5.1 P3`, `step137`):
+/// `c(v, delta) = (tau(+delta) - tau(-delta)) / (tau(+delta) + tau(-delta)) = <beta(v), delta> / sqrt(||delta||^2 + mu0^2) in (-1, 1)`.
+/// Строго равен 0 при `v = 0` (нулевой симметричный дрейф при старте), строго антисимметричен `c(v, -delta) = -c(v, delta)`.
+/// Возвращает `(c, dc/ddelta, dc/dv)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn finsler_randers_contrast_2d(
+    v: (f32, f32),
+    delta: (f32, f32),
+    mu0: f32,
+    exact: bool,
+) -> (f32, (f32, f32), (f32, f32)) {
+    let v0 = sanitize_bounded_f32(v.0, 12.0);
+    let v1 = sanitize_bounded_f32(v.1, 12.0);
+    let d0 = sanitize_bounded_f32(delta.0, 16.0);
+    let d1 = sanitize_bounded_f32(delta.1, 16.0);
+    let mu = sanitize_f32(mu0).clamp(1e-3, 4.0);
+
+    let rv = inv_sqrt_select(sanitize_f32(1.0 + v0 * v0 + v1 * v1), exact);
+    let b0 = sanitize_f32(v0 * rv);
+    let b1 = sanitize_f32(v1 * rv);
+
+    let a = sanitize_f32(d0 * d0 + d1 * d1 + mu * mu);
+    let rd = inv_sqrt_select(a, exact);
+    let rd2 = sanitize_f32(rd * rd);
+    let bd = sanitize_f32(b0 * d0 + b1 * d1);
+    let c = sanitize_f32(bd * rd);
+
+    let dc_dd = (
+        sanitize_f32(b0 * rd - c * rd2 * d0),
+        sanitize_f32(b1 * rd - c * rd2 * d1),
+    );
+    let rdv = sanitize_f32(rd * rv);
+    let dc_dv = (
+        sanitize_f32(rdv * (d0 - bd * b0)),
+        sanitize_f32(rdv * (d1 - bd * b1)),
+    );
+    (c, dc_dd, dc_dv)
+}
+
+/// Нормированный направленный контраст 3D диода Финслера–Рандерса (`v0.5.1 P3`, `step137`):
+/// `c(v, delta) = (tau(+delta) - tau(-delta)) / (tau(+delta) + tau(-delta)) in (-1, 1)`.
+/// Возвращает `(c, dc/ddelta, dc/dv)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn finsler_randers_contrast_3d(
+    v: (f32, f32, f32),
+    delta: (f32, f32, f32),
+    mu0: f32,
+    exact: bool,
+) -> (f32, (f32, f32, f32), (f32, f32, f32)) {
+    let v0 = sanitize_bounded_f32(v.0, 12.0);
+    let v1 = sanitize_bounded_f32(v.1, 12.0);
+    let v2 = sanitize_bounded_f32(v.2, 12.0);
+    let d0 = sanitize_bounded_f32(delta.0, 16.0);
+    let d1 = sanitize_bounded_f32(delta.1, 16.0);
+    let d2 = sanitize_bounded_f32(delta.2, 16.0);
+    let mu = sanitize_f32(mu0).clamp(1e-3, 4.0);
+
+    let rv = inv_sqrt_select(sanitize_f32(1.0 + v0 * v0 + v1 * v1 + v2 * v2), exact);
+    let b0 = sanitize_f32(v0 * rv);
+    let b1 = sanitize_f32(v1 * rv);
+    let b2 = sanitize_f32(v2 * rv);
+
+    let a = sanitize_f32(d0 * d0 + d1 * d1 + d2 * d2 + mu * mu);
+    let rd = inv_sqrt_select(a, exact);
+    let rd2 = sanitize_f32(rd * rd);
+    let bd = sanitize_f32(b0 * d0 + b1 * d1 + b2 * d2);
+    let c = sanitize_f32(bd * rd);
+
+    let dc_dd = (
+        sanitize_f32(b0 * rd - c * rd2 * d0),
+        sanitize_f32(b1 * rd - c * rd2 * d1),
+        sanitize_f32(b2 * rd - c * rd2 * d2),
+    );
+    let rdv = sanitize_f32(rd * rv);
+    let dc_dv = (
+        sanitize_f32(rdv * (d0 - bd * b0)),
+        sanitize_f32(rdv * (d1 - bd * b1)),
+        sanitize_f32(rdv * (d2 - bd * b2)),
+    );
+    (c, dc_dd, dc_dv)
+}
+
+/// Рациональный гейт Ляпунова для защиты общего хребта `slots[0]` (`v0.5.1 P4`, `step138`):
+/// `g_Lyap = 1 / (1 + kappa * max(0, e^2 / (sigma^2 + eps) - tau)) in (0, 1]`.
+/// 0% `exp/ln/tanh`, 0% `.sqrt()`, строго положителен и монотонно убывает по всплеску ошибки.
+#[axiom_zero]
+#[inline(always)]
+pub fn lyapunov_backbone_gate(err_sq: f32, sigma_sq: f32, kappa: f32, tau: f32, eps: f32) -> f32 {
+    let e2 = sanitize_bounded_f32(err_sq, 1e6).max(0.0);
+    let s2 = sanitize_bounded_f32(sigma_sq, 1e6).max(0.0);
+    let ep = sanitize_f32(eps).clamp(1e-5, 4.0);
+    let ratio = total_div_f32(e2, sanitize_f32(s2 + ep), 0.0);
+    let excess = sanitize_f32(ratio - sanitize_f32(tau)).max(0.0);
+    total_div_unit_shifted_f32(1.0, sanitize_f32(sanitize_f32(kappa).max(0.0) * excess))
+}
+
+/// Рациональный ограниченный баланс каналов Либеля–Кёрнера (`v0.5.1 P4`, `step138`, 0% `exp`/`ln`):
+/// `w(s) = clamp(1.25 / (1 + s^2), w_min, w_max)` с неотрицательным барьером `B(s) = 0.5 * s^2 >= 0`.
+/// Выполняет шаг градиентного спуска по `s` на `w_raw(s) * L + 0.5 * lam_bar * s^2` и возвращает `w(s)`.
+#[axiom_zero]
+#[inline(always)]
+pub fn rational_lk_balance_step(
+    s: &mut f32,
+    loss_proxy: f32,
+    lr_s: f32,
+    lam_bar: f32,
+    w_min: f32,
+    w_max: f32,
+) -> f32 {
+    let sc = sanitize_f32(*s).clamp(0.15, 3.0);
+    let s2 = sanitize_f32(sc * sc);
+    let inv_d = total_div_unit_shifted_f32(1.0, s2);
+    let w = sanitize_f32(1.25 * inv_d).clamp(w_min, w_max);
+    let l = sanitize_bounded_f32(loss_proxy, 16.0).max(0.0);
+    // d/ds [ 1.25 * L / (1 + s^2) + 0.5 * lam_bar * s^2 ] = s * (lam_bar - 2.5 * L / (1 + s^2)^2)
+    let grad_s = sanitize_bounded_f32(
+        sc * (sanitize_f32(lam_bar) - 2.5 * l * inv_d * inv_d),
+        4.0,
+    );
+    *s = sanitize_f32(sc - sanitize_f32(lr_s) * grad_s).clamp(0.15, 3.0);
+    w
+}

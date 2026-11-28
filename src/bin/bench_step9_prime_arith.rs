@@ -293,7 +293,7 @@ impl ModelKind {
             ModelKind::V040AlgSelCayley => "v0.4.0 Alg.Sel.Cayley 2D   ",
             ModelKind::V041MicroCorePure2L => "v0.4.1 MicroCore PURE 2L   ",
             ModelKind::V041NonAbelianSo3 => "v0.4.1 NonAbelian SO(3)    ",
-            ModelKind::V050UnifiedOneCfg => "v0.5.0 Unified One-Config  ",
+            ModelKind::V050UnifiedOneCfg => "v0.5.1 Unified One-Config  ",
             ModelKind::V050NonAbelianO4 => "v0.5.0 NonAbelian O(4) M=1 ",
             ModelKind::V050FixedQ824 => "v0.5.0 Fixed Q8.24 (0-FPU) ",
             ModelKind::BaselineMlpAdam => "Ref    OnlineMlpAdam H=32  ",
@@ -980,7 +980,7 @@ fn run_cyclic_subgroup_pow_dlog(f: &PrimeField, seeds: &[u64]) {
         let lbl = if shuf {
             format!("Control Label-Shuffle (d={:.1})", dm)
         } else {
-            format!("v0.5.0 AdaptiveO(d) (d={:.1})", dm)
+            format!("v0.5.1 AdaptiveO(d) (d={:.1})", dm)
         };
         print!("{:<30} | {:7.1}", lbl, ram);
         for r in &res { let (mu, sd) = mean_std(r); print!(" | {:5.1}±{:4.1}%", mu, sd); }
@@ -994,7 +994,7 @@ fn main() {
     let f9973 = PrimeField::new(9973);
 
     println!("==========================================================================================");
-    println!(" BENCH STEP 9: PRIME-FIELD MODULAR ARITHMETIC (F_997 & F_9973) — v0.4.0 vs v0.4.1 vs v0.5.0");
+    println!(" BENCH STEP 9: PRIME-FIELD MODULAR ARITHMETIC (F_997 & F_9973) — v0.4.0 vs v0.4.1 vs v0.5.0/v0.5.1");
     println!("==========================================================================================");
     println!("Verified F_997 : prime=true, bits={}, primitive_root g={} (order 996 = 2^2 * 3 * 83, bijection OK)", f997.bits, f997.g);
     println!("Verified F_9973: prime=true, bits={}, primitive_root g={} (order 9972 = 2^2 * 3^2 * 277, bijection OK)", f9973.bits, f9973.g);

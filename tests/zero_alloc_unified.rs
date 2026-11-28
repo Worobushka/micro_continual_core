@@ -42,6 +42,13 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 fn test_unified_zero_heap_allocations_on_hot_paths() {
     let _guard = TEST_LOCK.lock().unwrap();
     let mut cls = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(4, 6, 42));
+    let mut cls_v050 = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config_v050(4, 6, 45));
+    let mut opt_cfg = UnifiedCayleyConfig::one_config(4, 6, 46);
+    opt_cfg.enable_bank_rotor_adapter = true;
+    opt_cfg.enable_finsler_diode = true;
+    opt_cfg.enable_shared_actor_rms = true;
+    let mut cls_opt = UnifiedCayleyCore::new(opt_cfg);
+    cls_opt.active_slot = 1;
     let mut reg = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(2, 6, 43));
     let mut rl = UnifiedCayleyCore::new(UnifiedCayleyConfig::one_config(3, 4, 44));
 
@@ -51,13 +58,19 @@ fn test_unified_zero_heap_allocations_on_hot_paths() {
 
     // Прогрев
     cls.start_episode();
+    cls_v050.start_episode();
+    cls_opt.start_episode();
     reg.start_episode();
     rl.start_episode();
     let _ = cls.step_supervised_class(&x6, 1, true, true, false);
+    let _ = cls_v050.step_supervised_class(&x6, 1, true, true, false);
+    let _ = cls_opt.step_supervised_class(&x6, 1, true, true, false);
     let _ = reg.step_supervised_reg(&x6, 0.5, true, true, false);
     let _ = rl.decide_rl(&x4, true, false, false);
     rl.observe_rl_reward(0.25, &[], false, true);
     let _ = cls.predict_class_readonly(&seq);
+    let _ = cls_v050.predict_class_readonly(&seq);
+    let _ = cls_opt.predict_class_readonly(&seq);
 
     ALLOC_COUNT.store(0, Ordering::SeqCst);
     TRACKING.store(true, Ordering::SeqCst);
@@ -65,14 +78,20 @@ fn test_unified_zero_heap_allocations_on_hot_paths() {
     for step in 0..1000usize {
         if step % 50 == 0 {
             cls.start_episode();
+            cls_v050.start_episode();
+            cls_opt.start_episode();
             reg.start_episode();
             rl.start_episode();
         }
         let _ = cls.step_supervised_class(&x6, step % 4, true, true, true);
+        let _ = cls_v050.step_supervised_class(&x6, step % 4, true, true, true);
+        let _ = cls_opt.step_supervised_class(&x6, step % 4, true, true, true);
         let _ = reg.step_supervised_reg(&x6, 0.4, true, true, true);
         let _ = rl.decide_rl(&x4, true, false, true);
         rl.observe_rl_reward(0.1, &[], (step % 50) == 49, true);
         let _ = cls.predict_class_readonly(&seq);
+        let _ = cls_v050.predict_class_readonly(&seq);
+        let _ = cls_opt.predict_class_readonly(&seq);
         if (step % 50) == 49 {
             let _ = rl.end_episode_score(0.8, true);
         }
